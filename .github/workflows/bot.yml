@@ -26,5 +26,7 @@ jobs:
       - name: Run Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          USER_PHONE: ${{ secrets.USER_PHONE }}
+          USER_PASS: ${{ secrets.USER_PASS }}
         run: |
           timeout 350m python bot.py
