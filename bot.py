@@ -9,7 +9,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = "سلام! ربات فعال شد. 👋\nدستور /autoscan را بزنید تا ربات وارد بخش مشارکت سایت شود."
     await context.bot.send_message(chat_id=update.effective_chat.id, text=msg)
 
-async def autoscan(update: context.ContextTypes.DEFAULT_TYPE, context: ContextTypes.DEFAULT_TYPE):
+async def autoscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال باز کردن مرورگر و ورود به بخش مشارکت سایت...")
     
     try:
