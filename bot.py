@@ -12,6 +12,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text=msg)
 
 async def autoscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not PHONE or not PASSWORD:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ خطا: شماره یا رمز در Secrets تنظیم نشده است!")
+        return
+
     await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال باز کردن مرورگر و لاگین به سایت...")
     
     try:
@@ -23,15 +27,15 @@ async def autoscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await page.wait_for_timeout(3000) 
             
             try:
-                # تایپ کردن شماره موبایل و رمز عبور
-                await page.fill('input[type="text"]', PHONE)
-                await page.fill('input[type="password"]', PASSWORD)
+                # پیدا کردن کادرها بر اساس ترتیب (کادر اول شماره، کادر دوم رمز)
+                await page.locator('input').nth(0).fill(PHONE)
+                await page.locator('input').nth(1).fill(PASSWORD)
                 
                 # کلیک روی دکمه ورود
                 await page.click('button:has-text("ورود")')
                 
-                # صبر می‌کنیم تا صفحه داشبورد بعد از لاگین باز شود
-                await page.wait_for_timeout(7000) 
+                # صبر برای باز شدن صفحه بعد از لاگین
+                await page.wait_for_timeout(8000) 
             except Exception as e:
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ خطا در وارد کردن اطلاعات: {e}")
             
