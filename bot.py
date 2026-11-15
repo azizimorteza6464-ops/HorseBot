@@ -27,22 +27,21 @@ async def autoscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await page.wait_for_timeout(3000) 
             
             try:
-                # ۱. کلیک روی تب "ورود با نام کاربری" (یا رمز عبور)
-                # اگر متن دکمه دقیقا این نبود، ممکن است نیاز به تغییر جزئی داشته باشد
-                await page.get_by_text("ورود با نام کاربری").click()
-                await page.wait_for_timeout(2000) # صبر برای عوض شدن فرم
+                # کلیک روی تب "ورود با رمز عبور" (اصلاح شد)
+                await page.locator('text="ورود با رمز عبور"').click()
+                await page.wait_for_timeout(2000) 
                 
-                # ۲. پر کردن شماره موبایل
+                # پر کردن شماره موبایل
                 await page.locator('input:visible').first.fill(PHONE)
                 await page.wait_for_timeout(1000)
                 
-                # ۳. رفتن به کادر بعدی و تایپ رمز عبور
+                # رفتن به کادر بعدی و تایپ رمز عبور
                 await page.keyboard.press('Tab')
                 await page.wait_for_timeout(500)
                 await page.keyboard.type(PASSWORD)
                 await page.wait_for_timeout(500)
                 
-                # ۴. زدن Enter برای ورود
+                # زدن Enter برای ورود
                 await page.keyboard.press('Enter')
                 
                 # صبر برای باز شدن صفحه بعد از لاگین
@@ -56,7 +55,7 @@ async def autoscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_photo(
                     chat_id=update.effective_chat.id, 
                     photo=photo, 
-                    caption="📸 این صفحه بعد از تلاش برای لاگین با رمز است."
+                    caption="📸 این صفحه بعد از لاگین با رمز است."
                 )
                 
             await browser.close()
