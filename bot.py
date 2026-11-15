@@ -20,9 +20,9 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await context.bot.send_message(chat_id=update.effective_chat.id, text=msg)
 
-if name == 'main':
-    application = ApplicationBuilder().token(TOKEN).build()
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('analyze', analyze))
-    print("ربات در حال اجراست...")
-    application.run_polling()
+application = ApplicationBuilder().token(TOKEN).build()
+application.add_handler(CommandHandler('start', start))
+application.add_handler(CommandHandler('analyze', analyze))
+
+print("ربات در حال اجراست...")
+application.run_polling()
