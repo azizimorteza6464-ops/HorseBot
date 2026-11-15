@@ -1,26 +1,16 @@
+
 import os
-from threading import Thread
-from flask import Flask
+import asyncio
+from flask import Flask, request
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-# --- بخش وب‌سرور برای Render ---
+TOKEN = os.environ.get("BOT_TOKEN")
 app = Flask(name)
-
-@app.route('/')
-def home():
-    return "Bot is running!"
-
-def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-# --- بخش ربات تلگرام ---
-TOKEN = os.environ.get("BOT_TOKEN", "")
+application = Application.builder().token(TOKEN).build()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = "سلام! ربات اسب‌دوانی آق‌قلا فعال شد. 👋\nبرای دریافت تحلیل دور ۴، دستور /analyze را بزنید."
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=msg)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="سلام! ربات اسب‌دوانی آق‌قلا فعال شد. 👋")
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
@@ -34,13 +24,25 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await context.bot.send_message(chat_id=update.effective_chat.id, text=msg)
 
-def run_bot():
-    application = ApplicationBuilder().token(TOKEN).build()
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('analyze', analyze))
-    print("ربات در حال اجراست...")
-    application.run_polling()
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("analyze", analyze))
 
-if __name__ == '__main__':
-    Thread(target=run_web_server).start()
-    run_bot()
+@app.route('/', methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(application.process_update(update))
+    return 'OK', 200
+
+@app.route('/', methods=['GET'])
+def home():
+    return "Bot is running!", 200
+
+@app.route('/setwebhook', methods=['GET'])
+def set_webhook():
+    url = request.url_root
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(application.bot.set_webhook(url))
+    return f"Webhook set to {url}", 200
