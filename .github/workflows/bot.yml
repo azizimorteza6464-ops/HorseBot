@@ -1,48 +1,30 @@
-import os
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
-from playwright.async_api import async_playwright
+name: Run Telegram Bot
 
-TOKEN = os.environ.get("BOT_TOKEN")
+on:
+  schedule:
+    - cron: '0 */5 * * *'
+  workflow_dispatch:
+  push:
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = "سلام! ربات فعال شد. 👋\nدستور /autoscan را بزنید تا ربات وارد بخش مشارکت سایت شود."
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=msg)
-
-async def autoscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال باز کردن مرورگر و ورود به بخش مشارکت سایت...")
-    
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            
-            try:
-                # رفتن به آدرس دقیق بخش مشارکت
-                await page.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
-            except Exception as e:
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ سایت کمی کند بود، در حال گرفتن عکس...")
-            
-            # صبر برای لود شدن کامل صفحه
-            await page.wait_for_timeout(7000) 
-            
-            await page.screenshot(path="screenshot.png")
-            
-            with open("screenshot.png", "rb") as photo:
-                await context.bot.send_photo(
-                    chat_id=update.effective_chat.id, 
-                    photo=photo, 
-                    caption="📸 این چیزی است که ربات در بخش مشارکت می‌بیند."
-                )
-                
-            await browser.close()
-            
-    except Exception as e:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ خطای کلی:\n{str(e)}")
-
-application = ApplicationBuilder().token(TOKEN).build()
-application.add_handler(CommandHandler('start', start))
-application.add_handler(CommandHandler('autoscan', autoscan))
-
-print("ربات در حال اجراست...")
-application.run_polling(bootstrap_retries=-1)
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps
+          
+      - name: Run Bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: |
+          timeout 350m python bot.py
