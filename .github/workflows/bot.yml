@@ -2,8 +2,8 @@ name: Run Telegram Bot
 
 on:
   schedule:
-    - cron: '0 */5 * * *' # اجرای خودکار هر ۵ ساعت
-  workflow_dispatch:      # اجازه اجرای دستی
+    - cron: '0 */5 * * *'
+  workflow_dispatch:
 
 jobs:
   run-bot:
@@ -17,8 +17,11 @@ jobs:
           python-version: '3.9'
           
       - name: Install dependencies
-        run: pip install -r requirements.txt
-        
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps
+          
       - name: Run Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
