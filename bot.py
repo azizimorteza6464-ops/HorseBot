@@ -27,12 +27,20 @@ async def autoscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await page.wait_for_timeout(3000) 
             
             try:
-                # پیدا کردن کادرها بر اساس ترتیب (کادر اول شماره، کادر دوم رمز)
-                await page.locator('input').nth(0).fill(PHONE)
-                await page.locator('input').nth(1).fill(PASSWORD)
+                # ۱. پیدا کردن اولین کادر قابل مشاهده و تایپ شماره موبایل
+                await page.locator('input:visible').first.fill(PHONE)
+                await page.wait_for_timeout(1000)
                 
-                # کلیک روی دکمه ورود
-                await page.click('button:has-text("ورود")')
+                # ۲. زدن دکمه Tab برای رفتن به کادر رمز عبور
+                await page.keyboard.press('Tab')
+                await page.wait_for_timeout(500)
+                
+                # ۳. تایپ کردن رمز عبور (شبیه سازی تایپ انسان)
+                await page.keyboard.type(PASSWORD)
+                await page.wait_for_timeout(500)
+                
+                # ۴. زدن دکمه Enter برای ورود (یا کلیک روی دکمه ورود)
+                await page.keyboard.press('Enter')
                 
                 # صبر برای باز شدن صفحه بعد از لاگین
                 await page.wait_for_timeout(8000) 
