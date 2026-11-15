@@ -10,17 +10,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text=msg)
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="این دستور برای تحلیل ضرایب دستی است (فعلا غیرفعال). از /autoscan استفاده کنید.")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="از /autoscan استفاده کنید.")
 
 async def autoscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال باز کردن مرورگر مخفی و ورود به سایت اسب‌دوانی... (این کار کمی طول می‌کشد)")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال باز کردن مرورگر مخفی...")
     
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
             
-            await page.goto("https://asbdavani.app", timeout=60000)
+            try:
+                # تغییر مهم: به جای load، منتظر domcontentloaded می‌مانیم و زمان را ۹۰ ثانیه می‌کنیم
+                await page.goto("https://asbdavani.app", timeout=90000, wait_until="domcontentloaded")
+            except Exception as e:
+                # اگر باز هم تایم اوت داد، ما را مطلع کن اما ادامه بده
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ سایت کمی کند بود، اما در حال گرفتن عکس...")
+            
+            # ۵ ثانیه صبر می‌کنیم تا بخش‌های اصلی صفحه بالا بیایند
             await page.wait_for_timeout(5000) 
             
             await page.screenshot(path="screenshot.png")
@@ -35,7 +42,7 @@ async def autoscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await browser.close()
             
     except Exception as e:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ خطا در خواندن سایت:\n{str(e)}")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ خطای کلی:\n{str(e)}")
 
 application = ApplicationBuilder().token(TOKEN).build()
 application.add_handler(CommandHandler('start', start))
