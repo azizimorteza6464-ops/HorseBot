@@ -39,25 +39,31 @@ async def sendcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await g_pg.locator('input:visible').first.click()
         await g_pg.keyboard.type(otp)
         await g_pg.wait_for_timeout(1500)
+        
+        # کلیک اول روی تایید
         await g_pg.locator('button:has-text("تایید و ورود")').click()
         await g_pg.wait_for_timeout(4000) 
         
-        # 🔥 ترفند جدید: تلاش برای بستن نشست‌های قبلی
+        # 🔥 ترفند جدید برای تیک زدن نشست‌ها
         try:
-            # پیدا کردن تیک‌های مربعی و کلیک اجباری روی اولین تیک
+            # پیدا کردن مربع‌های تیک و کلیک با زور (force)
             checkboxes = g_pg.locator('input[type="checkbox"]')
             if await checkboxes.count() > 0:
-                await checkboxes.first.click(force=True)
-                await g_pg.wait_for_timeout(1000)
-                # دوباره دکمه تایید را می‌زنیم
+                await checkboxes.first.check(force=True)
+                await g_pg.wait_for_timeout(2000) # صبر میکنیم تا دکمه فعال شود
                 await g_pg.locator('button:has-text("تایید و ورود")').click()
-        except Exception:
-            pass
+            else:
+                # اگر تگ input پیدا نشد، روی خود کلمه Chrome کلیک میکنیم
+                await g_pg.locator('text="Chrome"').first.click(force=True)
+                await g_pg.wait_for_timeout(1000)
+                await g_pg.locator('button:has-text("تایید و ورود")').click()
+        except Exception as e:
+            pass # اگر خطا داد ادامه میدهد
             
         await g_pg.wait_for_timeout(6000)
         await g_pg.screenshot(path="2.png", full_page=True)
         with open("2.png", "rb") as f:
-            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 نتیجه نهایی (اگر جدول را دیدیم، یعنی موفق شدیم!)")
+            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 نتیجه نهایی")
         
         await g_br.close()
         await g_pw.stop()
