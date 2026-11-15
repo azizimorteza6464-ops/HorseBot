@@ -16,46 +16,47 @@ async def autoscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ خطا: شماره یا رمز در Secrets تنظیم نشده است!")
         return
 
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال باز کردن مرورگر و لاگین با رمز عبور...")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال ورود به سایت و استخراج جدول...")
     
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
+            # افزایش زمان انتظار به ۹۰ ثانیه برای جلوگیری از خطای Timed out
+            page.set_default_timeout(90000) 
             
             await page.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
             await page.wait_for_timeout(3000) 
             
             try:
-                # کلیک روی تب "ورود با رمز عبور" (اصلاح شد)
+                # کلیک روی تب ورود با رمز
                 await page.locator('text="ورود با رمز عبور"').click()
                 await page.wait_for_timeout(2000) 
                 
-                # پر کردن شماره موبایل
                 await page.locator('input:visible').first.fill(PHONE)
                 await page.wait_for_timeout(1000)
                 
-                # رفتن به کادر بعدی و تایپ رمز عبور
                 await page.keyboard.press('Tab')
                 await page.wait_for_timeout(500)
                 await page.keyboard.type(PASSWORD)
                 await page.wait_for_timeout(500)
                 
-                # زدن Enter برای ورود
                 await page.keyboard.press('Enter')
                 
-                # صبر برای باز شدن صفحه بعد از لاگین
-                await page.wait_for_timeout(8000) 
+                # صبر میکنیم تا جدول حتما لود شود (منتظر دیدن کلمه R1 می‌مانیم)
+                await page.wait_for_selector('text="R1"', timeout=60000)
+                await page.wait_for_timeout(3000) 
             except Exception as e:
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ خطا در وارد کردن اطلاعات: {e}")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ هشدار (ممکن است صفحه کند بوده باشد): {e}")
             
-            await page.screenshot(path="screenshot.png")
+            # گرفتن عکس از کل صفحه (Full Page)
+            await page.screenshot(path="screenshot.png", full_page=True)
             
             with open("screenshot.png", "rb") as photo:
                 await context.bot.send_photo(
                     chat_id=update.effective_chat.id, 
                     photo=photo, 
-                    caption="📸 این صفحه بعد از لاگین با رمز است."
+                    caption="📸 ورود موفق! جدول مسابقات استخراج شد."
                 )
                 
             await browser.close()
