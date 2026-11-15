@@ -16,7 +16,7 @@ async def autoscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ خطا: شماره یا رمز در Secrets تنظیم نشده است!")
         return
 
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال باز کردن مرورگر و لاگین به سایت...")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال باز کردن مرورگر و لاگین با رمز عبور...")
     
     try:
         async with async_playwright() as p:
@@ -27,19 +27,22 @@ async def autoscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await page.wait_for_timeout(3000) 
             
             try:
-                # ۱. پیدا کردن اولین کادر قابل مشاهده و تایپ شماره موبایل
+                # ۱. کلیک روی تب "ورود با نام کاربری" (یا رمز عبور)
+                # اگر متن دکمه دقیقا این نبود، ممکن است نیاز به تغییر جزئی داشته باشد
+                await page.get_by_text("ورود با نام کاربری").click()
+                await page.wait_for_timeout(2000) # صبر برای عوض شدن فرم
+                
+                # ۲. پر کردن شماره موبایل
                 await page.locator('input:visible').first.fill(PHONE)
                 await page.wait_for_timeout(1000)
                 
-                # ۲. زدن دکمه Tab برای رفتن به کادر رمز عبور
+                # ۳. رفتن به کادر بعدی و تایپ رمز عبور
                 await page.keyboard.press('Tab')
                 await page.wait_for_timeout(500)
-                
-                # ۳. تایپ کردن رمز عبور (شبیه سازی تایپ انسان)
                 await page.keyboard.type(PASSWORD)
                 await page.wait_for_timeout(500)
                 
-                # ۴. زدن دکمه Enter برای ورود (یا کلیک روی دکمه ورود)
+                # ۴. زدن Enter برای ورود
                 await page.keyboard.press('Enter')
                 
                 # صبر برای باز شدن صفحه بعد از لاگین
@@ -53,7 +56,7 @@ async def autoscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_photo(
                     chat_id=update.effective_chat.id, 
                     photo=photo, 
-                    caption="📸 این صفحه بعد از لاگین است."
+                    caption="📸 این صفحه بعد از تلاش برای لاگین با رمز است."
                 )
                 
             await browser.close()
