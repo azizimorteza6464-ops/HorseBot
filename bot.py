@@ -40,32 +40,34 @@ async def sendcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await g_pg.keyboard.type(otp)
         await g_pg.wait_for_timeout(1500)
         
-        # ۱. کلیک اول روی تایید
+        # لاگین
         await g_pg.locator('button:has-text("تایید و ورود")').click()
         await g_pg.wait_for_timeout(4000) 
-        
-        # ۲. کلیک روی کلمه Chrome برای بستن نشست
         try:
             await g_pg.locator('text="Chrome"').first.click(force=True)
             await g_pg.wait_for_timeout(2000)
         except Exception: pass
-            
-        # ۳. کلیک روی دکمه نهایی ورود
         try:
             await g_pg.locator('button:has-text("ورود")').last.click(force=True)
         except Exception: pass
             
-        # صبر طولانی برای باز شدن جدول اصلی
-        await g_pg.wait_for_timeout(8000)
+        await g_pg.wait_for_timeout(6000)
         
-        # ۴. گرفتن عکس برای اینکه مطمئن شویم جدول باز شده
-        await g_pg.screenshot(path="2.png")
+        # 🔥 ترفند جدید: کلیک روی تب "مشارکت" برای دیدن ضرایب
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال رفتن به صفحه مشارکت (ضرایب)...")
+        try:
+            # پیدا کردن منو و کلیک روی مشارکت
+            await g_pg.locator('text="مشارکت"').first.click(force=True)
+            await g_pg.wait_for_timeout(6000) 
+        except Exception as e:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"خطا در باز کردن مشارکت: {e}")
+        
+        # گرفتن عکس
+        await g_pg.screenshot(path="2.png", full_page=True)
         with open("2.png", "rb") as f:
-            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 عکس صفحه نهایی")
+            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 عکس صفحه مشارکت (ضرایب)")
         
-        # ۵. استخراج متن کامل صفحه و ارسال به تلگرام
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال استخراج متن جدول...")
-        
+        # استخراج متن
         page_text = await g_pg.locator('body').inner_text()
         
         with open("page_text.txt", "w", encoding="utf-8") as text_file:
@@ -75,7 +77,7 @@ async def sendcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_document(
                 chat_id=update.effective_chat.id,
                 document=doc,
-                caption="📄 فایل متنی جدول. لطفاً این فایل را برای من بفرستید."
+                caption="📄 فایل متنی صفحه مشارکت."
             )
         
         await g_br.close()
