@@ -46,16 +46,17 @@ async def co(u:Update,c:C):
             rp="";p3,p5,p6=[],[],[]
             for r in([tg]if tg else range(1,mr+1)):
                 res=await ar(pg,r)
-                if res:rp+=f"R{r}:1.{res['w']['n']}({res['w']['w']})2.{res['p']['n']}({res['p']['p']})3.{res['s']['n']}({res['s']['s']})Q:{res['q']}P:{res['pr']['n']}S:{res['su']['n']}\n"
-                        if not tg:
-                            if r<=6:p6.append(res['pr']['n'])
-                            if r<=5:p5.append(res['pr']['n'])
-                            if r in[1,2,3]:p3.append(res['pr']['n'])
-                    else:rp+=f"R{r}:-\n"
-                if not tg:
-                    if p6:rp+=f"P6:{','.join(p6[:6])}\n"
-                    if p5:rp+=f"P5:{','.join(p5[:5])}\n"
-                    if p3:rp+=f"P3:{','.join(p3[:3])}\n"
-                await c.bot.send_message(u.effective_chat.id,rp,parse_mode='Markdown');await b.close()
+                if res:
+                    rp+=f"R{r}:1.{res['w']['n']}({res['w']['w']})2.{res['p']['n']}({res['p']['p']})3.{res['s']['n']}({res['s']['s']})Q:{res['q']}P:{res['pr']['n']}S:{res['su']['n']}\n"
+                    if not tg:
+                        if r<=6:p6.append(res['pr']['n'])
+                        if r<=5:p5.append(res['pr']['n'])
+                        if r in[1,2,3]:p3.append(res['pr']['n'])
+                else:rp+=f"R{r}:-\n"
+            if not tg:
+                if p6:rp+=f"P6:{','.join(p6[:6])}\n"
+                if p5:rp+=f"P5:{','.join(p5[:5])}\n"
+                if p3:rp+=f"P3:{','.join(p3[:3])}\n"
+            await c.bot.send_message(u.effective_chat.id,rp,parse_mode='Markdown');await b.close()
     except Exception as e:await c.bot.send_message(u.effective_chat.id,f"E:{str(e)}")
 app=AB().token(T).build();app.add_handler(CH('start',st));app.add_handler(CH('on',on));app.add_handler(CH('off',off));app.add_handler(CH('check_odds',co));app.run_polling(bootstrap_retries=-1)
