@@ -1,69 +1,10 @@
-import os
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
-from playwright.async_api import async_playwright
+# اضافه کردن پیشنهاد پره‌ها به گزارش
+            final_report += "--- پیشنهادهای ترکیبی (پره) ---\n"
+            final_report += f"🎯 ۶ پره: {', '.join(pareh_6[:6])}\n"
+            final_report += f"🎯 ۵ پره: {', '.join(pareh_5[:5])}\n"
+            final_report += f"🎯 ۳ پره: {', '.join(pareh_3[:3])}\n"
 
-TOKEN = os.environ.get("BOT_TOKEN")
-USER_TOKEN = os.environ.get("USER_TOKEN")
-USER_DEVICE_ID = os.environ.get("USER_DEVICE_ID")
-USER_UDI = os.environ.get("USER_UDI")
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="سلام! /check_odds را بزنید.")
-
-async def check_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not USER_TOKEN or not USER_UDI:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ توکن یا کوکی‌ها تنظیم نشده‌اند!")
-        return
-
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال ورود به سایت...")
-    
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context_browser = await browser.new_context()
-            
-            cookies = [
-                {'name': 'auth_token', 'value': USER_TOKEN, 'domain': '.asbdavani.app', 'path': '/'},
-                {'name': 'device_id', 'value': USER_DEVICE_ID, 'domain': '.asbdavani.app', 'path': '/'},
-                {'name': '_udi', 'value': USER_UDI, 'domain': '.asbdavani.app', 'path': '/'}
-            ]
-            await context_browser.add_cookies(cookies)
-            
-            page = await context_browser.new_page()
-            await page.goto("https://mosharekat.asbdavani.app/", timeout=90000)
-            await page.wait_for_timeout(8000)
-            
-            content = await page.locator('body').inner_text()
-            if "ورود با کد یکبار مصرف" in content:
-                await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ لاگین نشد. (کوکی‌ها منقضی شده‌اند).")
-                await browser.close()
-                return
-                
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ ورود موفق! در حال باز کردن تب آد اسب...")
-            
-            # 🔥 ترفند جدید: کلیک با جاوا اسکریپت برای دور زدن مخفی بودن المان
-            try:
-                await page.evaluate("""
-                    let tabs = Array.from(document.querySelectorAll('span, a, div, button'));
-                    let oddsTab = tabs.find(el => el.textContent.trim() === 'آد اسب');
-                    if (oddsTab) {
-                        oddsTab.click();
-                    }
-                """)
-                await page.wait_for_timeout(6000)
-            except Exception as e:
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ خطا در کلیک آد اسب: {e}")
-            
-            # گرفتن عکس و متن
-            await page.screenshot(path="odds.png")
-            page_text = await page.locator('body').inner_text()
-            with open("odds_text.txt", "w", encoding="utf-8") as text_file:
-                text_file.write(page_text)
-                
-            with open("odds_text.txt", "rb") as doc:
-                await context.bot.send_document(chat_id=update.effective_chat.id, document=doc, caption="📄 متن ضرایب (آد اسب)")
-            
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=final_report, parse_mode='Markdown')
             await browser.close()
             
     except Exception as e:
