@@ -36,37 +36,34 @@ async def sendcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not g_pg: return
     try:
         otp = context.args[0]
+        # ۱. وارد کردن کد
         await g_pg.locator('input:visible').first.click()
         await g_pg.keyboard.type(otp)
         await g_pg.wait_for_timeout(1500)
         
-        # ۱. کلیک اول روی تایید
+        # ۲. کلیک اول روی تایید
         await g_pg.locator('button:has-text("تایید و ورود")').click()
         await g_pg.wait_for_timeout(4000) 
         
-        # ۲. ترفند جدید: پیدا کردن چک‌باکس‌ها و کلیک اجباری روی اولی
+        # ۳. کلیک روی اولین کلمه Chrome برای فعال کردن تیک
         try:
-            checkbox = g_pg.locator('input[type="checkbox"]').first
-            if await checkbox.is_visible():
-                await checkbox.click(force=True)
-            else:
-                # اگر input مخفی بود، با جاوا اسکریپت تیک میزنیم
-                await g_pg.evaluate("document.querySelector('input[type=\"checkbox\"]').click()")
-            
-            await g_pg.wait_for_timeout(2000) # صبر برای فعال شدن دکمه
+            await g_pg.locator('text="Chrome"').first.click(force=True)
+            await g_pg.wait_for_timeout(2000)
         except Exception as e:
             pass
             
-        # ۳. کلیک روی دکمه نهایی
+        # ۴. کلیک نهایی روی دکمه بنفش (تایید و ورود)
         try:
-            await g_pg.locator('button:has-text("ورود")').last.click()
+            await g_pg.locator('button:has-text("ورود")').last.click(force=True)
         except Exception:
             pass
             
+        # صبر طولانی برای باز شدن جدول اصلی
         await g_pg.wait_for_timeout(8000)
+        
         await g_pg.screenshot(path="2.png", full_page=True)
         with open("2.png", "rb") as f:
-            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 نتیجه نهایی (امیدوارم جدول باشه!)")
+            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 نتیجه نهایی (اگر جدول را دیدیم، موفق شدیم!)")
         
         await g_br.close()
         await g_pw.stop()
