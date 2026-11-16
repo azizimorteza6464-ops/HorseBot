@@ -13,7 +13,8 @@ async def analyze_round(page,r):
     txt=await page.locator('body').inner_text();h=[]
     for m in re.finditer(r'(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s*\n\s*([^\n\d]+)',txt):
         w=float(m.group(1));n=m.group(4).strip()
-        if n and 0<w<90: h.append({"name":n,"win":w,"prob":round((1/w)*100,2)})
+        if n and 0<w<90 and not any(x in n for x in ["مقام","شماره","نام","پیش","میان","پی","چابک"]):
+            h.append({"name":n,"win":w,"prob":round((1/w)*100,2)})
     h.sort(key=lambda x:x["prob"],reverse=True);return h
 async def check_odds(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not USER_TOKEN or not USER_UDI: return await context.bot.send_message(chat_id=update.effective_chat.id,text="❌ توکن تنظیم نشده!")
