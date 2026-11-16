@@ -44,24 +44,29 @@ async def sendcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await g_pg.locator('button:has-text("تایید و ورود")').click()
         await g_pg.wait_for_timeout(4000) 
         
-        # ۲. کلیک روی اولین دستگاه (Chrome) برای بستن نشست
+        # ۲. ترفند جدید: پیدا کردن چک‌باکس‌ها و کلیک اجباری روی اولی
         try:
-            await g_pg.locator('div:has-text("Chrome")').first.click(force=True)
-            await g_pg.wait_for_timeout(2000)
-        except Exception:
+            checkbox = g_pg.locator('input[type="checkbox"]').first
+            if await checkbox.is_visible():
+                await checkbox.click(force=True)
+            else:
+                # اگر input مخفی بود، با جاوا اسکریپت تیک میزنیم
+                await g_pg.evaluate("document.querySelector('input[type=\"checkbox\"]').click()")
+            
+            await g_pg.wait_for_timeout(2000) # صبر برای فعال شدن دکمه
+        except Exception as e:
             pass
             
-        # ۳. کلیک روی دکمه نهایی "ورود (بستن 1 نشست)"
+        # ۳. کلیک روی دکمه نهایی
         try:
-            # پیدا کردن آخرین دکمه‌ای که کلمه "ورود" در آن است
             await g_pg.locator('button:has-text("ورود")').last.click()
-        except Exception as e:
+        except Exception:
             pass
             
         await g_pg.wait_for_timeout(8000)
         await g_pg.screenshot(path="2.png", full_page=True)
         with open("2.png", "rb") as f:
-            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 نتیجه نهایی")
+            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 نتیجه نهایی (امیدوارم جدول باشه!)")
         
         await g_br.close()
         await g_pw.stop()
