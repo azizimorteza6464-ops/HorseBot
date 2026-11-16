@@ -36,34 +36,47 @@ async def sendcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not g_pg: return
     try:
         otp = context.args[0]
-        # ۱. وارد کردن کد
         await g_pg.locator('input:visible').first.click()
         await g_pg.keyboard.type(otp)
         await g_pg.wait_for_timeout(1500)
         
-        # ۲. کلیک اول روی تایید
+        # ۱. کلیک اول روی تایید
         await g_pg.locator('button:has-text("تایید و ورود")').click()
         await g_pg.wait_for_timeout(4000) 
         
-        # ۳. کلیک روی اولین کلمه Chrome برای فعال کردن تیک
+        # ۲. کلیک روی کلمه Chrome برای بستن نشست
         try:
             await g_pg.locator('text="Chrome"').first.click(force=True)
             await g_pg.wait_for_timeout(2000)
-        except Exception as e:
-            pass
+        except Exception: pass
             
-        # ۴. کلیک نهایی روی دکمه بنفش (تایید و ورود)
+        # ۳. کلیک روی دکمه نهایی ورود
         try:
             await g_pg.locator('button:has-text("ورود")').last.click(force=True)
-        except Exception:
-            pass
+        except Exception: pass
             
         # صبر طولانی برای باز شدن جدول اصلی
         await g_pg.wait_for_timeout(8000)
         
-        await g_pg.screenshot(path="2.png", full_page=True)
+        # ۴. گرفتن عکس برای اینکه مطمئن شویم جدول باز شده
+        await g_pg.screenshot(path="2.png")
         with open("2.png", "rb") as f:
-            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 نتیجه نهایی (اگر جدول را دیدیم، موفق شدیم!)")
+            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 عکس صفحه نهایی")
+        
+        # ۵. استخراج متن کامل صفحه و ارسال به تلگرام
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال استخراج متن جدول...")
+        
+        page_text = await g_pg.locator('body').inner_text()
+        
+        with open("page_text.txt", "w", encoding="utf-8") as text_file:
+            text_file.write(page_text)
+            
+        with open("page_text.txt", "rb") as doc:
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=doc,
+                caption="📄 فایل متنی جدول. لطفاً این فایل را برای من بفرستید."
+            )
         
         await g_br.close()
         await g_pw.stop()
