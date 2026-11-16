@@ -2,7 +2,6 @@ import os
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
 from playwright.async_api import async_playwright
-import re
 
 TOKEN = os.environ.get("BOT_TOKEN")
 PHONE = os.environ.get("USER_PHONE")
@@ -15,7 +14,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def login_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global g_pw, g_br, g_pg
-    if not PHONE or not PASSWORD: return
+    if not PHONE or not PASSWORD: 
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ شماره یا رمز در Secrets تنظیم نشده است.")
+        return
+        
     await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال تلاش برای ورود با رمز عبور (بدون پیامک)...")
     
     try:
@@ -23,7 +25,7 @@ async def login_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
         g_br = await g_pw.chromium.launch(headless=True)
         g_pg = await g_br.new_page()
         
-        await g_pg.goto("https://mosharekat.asbdavani.app/", timeout=120000)
+        await g_pg.goto("https://mosharekat.asbdavani.app/", timeout=120000, wait_until="domcontentloaded")
         await g_pg.wait_for_timeout(3000)
         
         # کلیک روی تب ورود با رمز عبور
@@ -42,11 +44,13 @@ async def login_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await g_pg.wait_for_timeout(5000)
         
         # بررسی اینکه آیا لاگین شدیم یا کپچا آمد
-        if "ورود با رمز عبور" in await g_pg.locator('body').inner_text():
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ متاسفانه سایت کپچا (من ربات نیستم) نشان داد. نیاز به روش کوکی داریم.")
+        page_content = await g_pg.locator('body').inner_text()
+        
+        if "ورود با رمز عبور" in page_content or "کد تایید" in page_content:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ متاسفانه سایت کپچا (من ربات نیستم) یا خطا نشان داد. نیاز به روش کوکی داریم.")
             await g_pg.screenshot(path="captcha.png")
             with open("captcha.png", "rb") as f:
-                await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f)
+                await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 عکس خطای لاگین با رمز")
         else:
             await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ با موفقیت با رمز عبور وارد شدیم!")
             
