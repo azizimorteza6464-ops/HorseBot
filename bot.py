@@ -53,15 +53,15 @@ async def sendcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         # ۳. کلیک روی دکمه نهایی "ورود (بستن 1 نشست)"
         try:
-            # دکمه‌ای که کلمه "ورود" در آن است را پیدا و کلیک می‌کند
+            # پیدا کردن آخرین دکمه‌ای که کلمه "ورود" در آن است
             await g_pg.locator('button:has-text("ورود")').last.click()
         except Exception as e:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"خطا در کلیک دکمه نهایی: {e}")
+            pass
             
         await g_pg.wait_for_timeout(8000)
         await g_pg.screenshot(path="2.png", full_page=True)
         with open("2.png", "rb") as f:
-            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 نتیجه نهایی (اگر جدول را دیدیم، موفق شدیم!)")
+            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 نتیجه نهایی")
         
         await g_br.close()
         await g_pw.stop()
