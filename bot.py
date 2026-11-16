@@ -4,17 +4,25 @@ from telegram.ext import ApplicationBuilder as AB,ContextTypes as C,CommandHandl
 from playwright.async_api import async_playwright as ap
 T=os.environ.get("BOT_TOKEN");A=os.environ.get("USER_TOKEN");D=os.environ.get("USER_DEVICE_ID");U=os.environ.get("USER_UDI");G=os.environ.get("GH_PAT");R=os.environ.get("GITHUB_REPOSITORY")
 async def s(v):
-    if not R or not G:return"Err"
+    if not R or not G:return"E"
     try:
-        u=f"https://api.github.com/repos/{R}/actions/variables/AUTO_UPDATE"
-        h={"Authorization":f"Bearer {G}","Accept":"application/vnd.github+json"}
+        u=f"https://api.github.com/repos/{R}/actions/variables/AUTO_UPDATE";h={"Authorization":f"Bearer {G}","Accept":"application/vnd.github+json"}
         async with httpx.AsyncClient() as c:
             q=await c.get(u,headers=h)
             if q.status_code==404:await c.post(f"https://api.github.com/repos/{R}/actions/variables",headers=h,json={"name":"AUTO_UPDATE","value":v})
             else:await c.patch(u,headers=h,json={"name":"AUTO_UPDATE","value":v})
         return"OK"
     except Exception as e:return f"E:{str(e)}"
-async def st(u:Update,c:C):await c.bot.send_message(u.effective_chat.id,"Commands: /on /off /check_odds [1-7]")
+async def g():
+    if not R or not G:return"true"
+    try:
+        u=f"https://api.github.com/repos/{R}/actions/variables/AUTO_UPDATE";h={"Authorization":f"Bearer {G}","Accept":"application/vnd.github+json"}
+        async with httpx.AsyncClient() as c:
+            q=await c.get(u,headers=h)
+            if q.status_code==200:return q.json().get("value","true")
+        return"true"
+    except:return"true"
+async def st(u:Update,c:C):await c.bot.send_message(u.effective_chat.id,"/on /off /check_odds")
 async def on(u:Update,c:C):r=await s("true");await c.bot.send_message(u.effective_chat.id,"ON"if r=="OK"else r)
 async def off(u:Update,c:C):r=await s("false");await c.bot.send_message(u.effective_chat.id,"OFF"if r=="OK"else r)
 async def ar(p,r):
@@ -30,8 +38,9 @@ async def ar(p,r):
     t=[y['n']for y in o[:3]];m=[y for y in h if y['n']not in t];su=max(m,key=lambda y:y["pr"])if m else o[-1]
     return{"w":b,"p":p2,"s":s2,"q":q,"pr":r2,"su":su}
 async def co(u:Update,c:C):
-    if not A or not U:return await c.bot.send_message(u.effective_chat.id,"Err Auth")
-    if os.environ.get("AUTO_UPDATE")=="false":return await c.bot.send_message(u.effective_chat.id,"Bot is OFF")
+    if not A or not U:return await c.bot.send_message(u.effective_chat.id,"Err")
+    cst=await g()
+    if cst=="false":return await c.bot.send_message(u.effective_chat.id,"Bot is OFF")
     tg=int(c.args[0])if c.args and c.args[0].isdigit()else None
     await c.bot.send_message(u.effective_chat.id,"Wait...")
     try:
@@ -40,7 +49,7 @@ async def co(u:Update,c:C):
             await ct.add_cookies([{'name':'auth_token','value':A,'domain':'.asbdavani.app','path':'/'},{'name':'device_id','value':D,'domain':'.asbdavani.app','path':'/'},{'name':'_udi','value':U,'domain':'.asbdavani.app','path':'/'}])
             pg=await ct.new_page();pg.set_default_timeout(30000)
             await pg.goto("https://mosharekat.asbdavani.app/",timeout=90000);await pg.wait_for_timeout(3000)
-            if "ورود"in await pg.locator('body').inner_text():return await c.bot.send_message(u.effective_chat.id,"Login Err")
+            if "ورود"in await pg.locator('body').inner_text():return await c.bot.send_message(u.effective_chat.id,"Err")
             await pg.evaluate("let a=document.querySelectorAll('span,a,div,button');let o=Array.from(a).find(e=>e.textContent.trim()==='آد اسب');if(o)o.click();");await pg.wait_for_timeout(2000)
             r7=await pg.locator("text='R 7'").count()>0 or await pg.locator("text='7'").count()>0;mr=7 if r7 else 6
             rp="";p3,p5,p6=[],[],[]
