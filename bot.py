@@ -15,9 +15,14 @@ async def ar(pg,r):
         if n and 0<w<90 and not any(x in n for x in ["مقام","شماره","نام","پیش","میان","پی","چابک"]):
             h.append({"n":n,"w":w,"p":p,"s":s,"pr":(1/w)*40+(1/p)*30+(1/s)*30})
     if not h: return None
-    bw=min(h,key=lambda x:x["w"]);bp=min(h,key=lambda x:x["p"]);bs=min(h,key=lambda x:x["s"]);bpr=max(h,key=lambda x:x["pr"]);t=sorted(h,key=lambda x:x["w"])[:2]
-    q=f"{t[0]['n']} + {t[1]['n']}" if len(t)>1 else "-"
-    return {"w":bw,"p":bp,"s":bs,"q":q,"pr":bpr}
+    sh=sorted(h,key=lambda x:x["w"])
+    bw=sh[0];bp=min(h,key=lambda x:x["p"]);bs=min(h,key=lambda x:x["s"]);bpr=max(h,key=lambda x:x["pr"])
+    q=f"{sh[0]['n']} + {sh[1]['n']}" if len(sh)>1 else "-"
+    # پیدا کردن اسب شگفتی (خارج از 3 اسب برتر)
+    top3=[x['n'] for x in sh[:3]]
+    rest=[x for x in sh if x['n'] not in top3]
+    sur=max(rest,key=lambda x:x["pr"]) if rest else sh[-1]
+    return {"w":bw,"p":bp,"s":bs,"q":q,"pr":bpr,"sur":sur}
 async def co(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not U_T or not U_U: return await context.bot.send_message(chat_id=update.effective_chat.id,text="❌ توکن تنظیم نشده!")
     await context.bot.send_message(chat_id=update.effective_chat.id,text="⏳ تحلیل...")
@@ -33,7 +38,7 @@ async def co(update:Update,context:ContextTypes.DEFAULT_TYPE):
             for r in range(1,8):
                 res=await ar(pg,r)
                 if res:
-                    rep+=f"R{r}:\n🥇 {res['w']['n']} ({res['w']['w']})\n🥈 {res['p']['n']} ({res['p']['p']})\n🥉 {res['s']['n']} ({res['s']['s']})\n👥 {res['q']}\n🎯 {res['pr']['n']}\n\n"
+                    rep+=f"R{r}:\n🥇 پیش‌بر: {res['w']['n']} ({res['w']['w']})\n🥈 میان‌بر: {res['p']['n']} ({res['p']['p']})\n🥉 پی‌بر: {res['s']['n']} ({res['s']['s']})\n👥 دوقلو: {res['q']}\n🎯 پره: {res['pr']['n']}\n🎲 شگفتی: {res['sur']['n']}\n\n"
                     if r<=6: p6.append(res['pr']['n'])
                     if r<=5: p5.append(res['pr']['n'])
                     if r in [1,2,3]: p3.append(res['pr']['n'])
