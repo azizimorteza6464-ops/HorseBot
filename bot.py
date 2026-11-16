@@ -53,19 +53,19 @@ async def sendcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         await g_pg.wait_for_timeout(6000)
         
-        # 🔥 ترفند جدید: کلیک روی تب "مشارکت" برای دیدن ضرایب
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال رفتن به صفحه مشارکت (ضرایب)...")
+        # 🔥 رفتن به تب "آد اسب" برای دیدن ضرایب
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال رفتن به صفحه آد اسب (ضرایب)...")
         try:
-            # پیدا کردن منو و کلیک روی مشارکت
-            await g_pg.locator('text="مشارکت"').first.click(force=True)
+            # کلیک روی منوی پایین (آد اسب)
+            await g_pg.locator('text="آد اسب"').last.click(force=True)
             await g_pg.wait_for_timeout(6000) 
         except Exception as e:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"خطا در باز کردن مشارکت: {e}")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"خطا در باز کردن آد اسب: {e}")
         
         # گرفتن عکس
         await g_pg.screenshot(path="2.png", full_page=True)
         with open("2.png", "rb") as f:
-            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 عکس صفحه مشارکت (ضرایب)")
+            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 عکس صفحه آد اسب")
         
         # استخراج متن
         page_text = await g_pg.locator('body').inner_text()
@@ -77,7 +77,7 @@ async def sendcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_document(
                 chat_id=update.effective_chat.id,
                 document=doc,
-                caption="📄 فایل متنی صفحه مشارکت."
+                caption="📄 فایل متنی صفحه ضرایب."
             )
         
         await g_br.close()
