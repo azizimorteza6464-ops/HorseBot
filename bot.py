@@ -23,7 +23,6 @@ async def check_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
             browser = await p.chromium.launch(headless=True)
             context_browser = await browser.new_context()
             
-            # تزریق هر ۳ کوکی
             cookies = [
                 {'name': 'auth_token', 'value': USER_TOKEN, 'domain': '.asbdavani.app', 'path': '/'},
                 {'name': 'device_id', 'value': USER_DEVICE_ID, 'domain': '.asbdavani.app', 'path': '/'},
@@ -31,26 +30,21 @@ async def check_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
                 
             await context_browser.add_cookies(cookies)
-            
             page = await context_browser.new_page()
             await page.goto("https://mosharekat.asbdavani.app/", timeout=90000)
-            
-            # صبر برای باز شدن کامل داشبورد
             await page.wait_for_timeout(8000)
             
-            # بررسی لاگین بودن
             content = await page.locator('body').inner_text()
             if "ورود با کد یکبار مصرف" in content:
-                await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ متاسفانه لاگین نشد. (شاید توکن منقضی شده یا کوکی‌ها اشتباهند).")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ متاسفانه لاگین نشد.")
                 await browser.close()
                 return
                 
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ ورود با موفقیت انجام شد! در حال رفتن به تب آد اسب...")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ ورود موفق! در حال رفتن به تب آد اسب...")
             
-            # پیدا کردن و کلیک روی آد اسب
             try:
-                await page.locator('text="آد اسب"').wait_for(state="visible", timeout=15000)
-                await page.locator('text="آد اسب"').last.click(force=True)
+                # 🔥 ترفند جدید: انتخاب آخرین دکمه‌ای که متن آد اسب دارد (برای جلوگیری از تداخل)
+                await page.get_by_text("آد اسب").last.click(force=True)
                 await page.wait_for_timeout(6000)
             except Exception as e:
                 await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ آد اسب پیدا نشد: {e}")
@@ -62,7 +56,7 @@ async def check_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text_file.write(page_text)
                 
             with open("odds_text.txt", "rb") as doc:
-                await context.bot.send_document(chat_id=update.effective_chat.id, document=doc, caption="📄 متن ضرایب")
+                await context.bot.send_document(chat_id=update.effective_chat.id, document=doc, caption="📄 متن ضرایب (آد اسب)")
             
             await browser.close()
             
