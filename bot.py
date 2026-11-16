@@ -12,10 +12,11 @@ async def analyze_round(page,r):
     except: pass
     txt=await page.locator('body').inner_text();h=[]
     for m in re.finditer(r'(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s*\n\s*([^\n\d]+)',txt):
-        w=float(m.group(1));n=m.group(4).strip()
+        w,p,s=float(m.group(1)),float(m.group(2)),float(m.group(3));n=m.group(4).strip()
         if n and 0<w<90 and not any(x in n for x in ["مقام","شماره","نام","پیش","میان","پی","چابک"]):
-            h.append({"name":n,"win":w,"prob":round((1/w)*100,2)})
-    h.sort(key=lambda x:x["prob"],reverse=True);return h
+            h.append({"name":n,"win":w,"prob":round((1/w)*100,2),"pareh_score":(1/w)*40+(1/p)*30+(1/s)*30})
+    h.sort(key=lambda x:x["prob"],reverse=True)
+    return h,max(h,key=lambda x:x["pareh_score"]) if h else None
 async def check_odds(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not USER_TOKEN or not USER_UDI: return await context.bot.send_message(chat_id=update.effective_chat.id,text="❌ توکن تنظیم نشده!")
     await context.bot.send_message(chat_id=update.effective_chat.id,text="⏳ در حال تحلیل...")
@@ -27,17 +28,18 @@ async def check_odds(update:Update,context:ContextTypes.DEFAULT_TYPE):
             await pg.goto("https://mosharekat.asbdavani.app/",timeout=90000);await pg.wait_for_timeout(6000)
             if "ورود با کد یکبار مصرف" in await pg.locator('body').inner_text(): return await context.bot.send_message(chat_id=update.effective_chat.id,text="❌ لاگین نشد.")
             await pg.evaluate("let t=Array.from(document.querySelectorAll('span,a,div,button'));let o=t.find(e=>e.textContent.trim()==='آد اسب');if(o)o.click();");await pg.wait_for_timeout(4000)
-            rep="🧠 تحلیل نهایی\n\n";p3,p5,p6=[],[],[]
+            rep="🧠 تحلیل\n\n";p3,p5,p6=[],[],[]
             for r in range(1,8):
-                res=await analyze_round(pg,r)
+                res,bp=await analyze_round(pg,r)
                 if res:
                     best=res[0];rep+=f"🏁 R{r}:\n🥇 پیش‌بر: {best['name']} ({best['prob']}%)\n"
                     if len(res)>1: rep+=f"👥 دوقلو: {res[0]['name']} + {res[1]['name']}\n"
-                    if r<=6: p6.append(best['name'])
-                    if r<=5: p5.append(best['name'])
-                    if r in [1,2,3]: p3.append(best['name'])
+                    if bp: rep+=f"🎯 پره: {bp['name']}\n"
+                    if r<=6: p6.append(bp['name'] if bp else best['name'])
+                    if r<=5: p5.append(bp['name'] if bp else best['name'])
+                    if r in [1,2,3]: p3.append(bp['name'] if bp else best['name'])
                     rep+="\n"
-                else: rep+=f"🏁 R{r}: اطلاعاتی یافت نشد.\n\n"
+                else: rep+=f"🏁 R{r}: یافت نشد.\n\n"
             rep+="--- پره‌ها ---\n"
             if p6: rep+=f"🎯 ۶ پره: {', '.join(p6[:6])}\n"
             if p5: rep+=f"🎯 ۵ پره: {', '.join(p5[:5])}\n"
