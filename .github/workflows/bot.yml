@@ -29,5 +29,7 @@ jobs:
           USER_TOKEN: ${{ secrets.USER_TOKEN }}
           USER_DEVICE_ID: ${{ secrets.USER_DEVICE_ID }}
           USER_UDI: ${{ secrets.USER_UDI }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          AUTO_UPDATE: ${{ vars.AUTO_UPDATE || 'true' }}
         run: |
           timeout 350m python bot.py
