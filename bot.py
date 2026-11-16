@@ -100,23 +100,41 @@ async def ar(p,r):
             for r in([tg]if tg else range(1,mr+1)):
                 res=await ar(pg,r)
                 if res:
-                    rp+=f"\n🏁 دور R{r}\n"
-                    rp+=f"🥇 پیش‌بر: {res['w']['n']} (ضریب {res['w']['w']})\n"
-                    rp+=f"🥈 میان‌بر: {res['p']['n']} (ضریب {res['p']['p']})\n"
-                    rp+=f"🥉 پی‌بر: {res['s']['n']} (ضریب {res['s']['s']})\n"
-                    rp+=f"👥 دوقلو: {res['q']}\n"
-                    rp+=f"🎯 انتخاب پره: {res['pr']['n']}\n"
-                    rp+=f"🎲 اسب شگفتی: {res['su']['n']}\n"
-                    if not tg:
-                        if r<=6:p6.append(res['pr']['n'])
-                        if r<=5:p5.append(res['pr']['n'])
-                        if r in[1,2,3]:p3.append(res['pr']['n'])
-                else:rp+=f"\n🏁 دور R{r}: اطلاعاتی یافت نشد.\n"
-            if not tg:
-                rp+="\n➖➖➖➖➖➖➖➖\n"
-                if p6:rp+=f"🎯 ۶ پره: {', '.join(p6[:6])}\n"
-                if p5:rp+=f"🎯 ۵ پره: {', '.join(p5[:5])}\n"
-                if p3:rp+=f"🎯 ۳ پره: {', '.join(p3[:3])}\n"
-            await c.bot.send_message(u.effective_chat.id,rp,parse_mode='Markdown');await b.close()
-    except Exception as e:await c.bot.send_message(u.effective_chat.id,f"E:{str(e)}")
-app=AB().token(T).build();app.add_handler(CH('start',st));app.add_handler(CH('on',on));app.add_handler(CH('off',off));app.add_handler(CH('check_odds',co));app.run_polling(bootstrap_retries=-1)
+                        rp+=f"\n🏁 دور R{r}\n"
+                        rp+=f"🥇 پیش‌بر: {res['w']['n']} (ضریب {res['w']['w']})\n"
+                        rp+=f"🥈 میان‌بر: {res['p']['n']} (ضریب {res['p']['p']})\n"
+                        rp+=f"🥉 پی‌بر: {res['s']['n']} (ضریب {res['s']['s']})\n"
+                        rp+=f"👥 دوقلو: {res['q']}\n"
+                        rp+=f"🎯 انتخاب پره: {res['pr']['n']}\n"
+                        rp+=f"🎲 اسب شگفتی: {res['su']['n']}\n"
+                        if not tg:
+                            if r<=6:
+                                p6.append(res['pr']['n'])
+                            if r<=5:
+                                p5.append(res['pr']['n'])
+                            if r in [1,2,3]:
+                                p3.append(res['pr']['n'])
+                    else:
+                        rp+=f"\n🏁 دور R{r}: اطلاعاتی یافت نشد.\n"
+                
+                # 🌟 این بخش باید از حلقه for بیرون بیاید (هم‌تراز با for)
+                if not tg:
+                    rp+="\n➖➖➖➖➖➖➖➖\n"
+                    if p6:
+                        rp+=f"🎯 ۶ پره: {', '.join(p6[:6])}\n"
+                    if p5:
+                        rp+=f"🎯 ۵ پره: {', '.join(p5[:5])}\n"
+                    if p3:
+                        rp+=f"🎯 ۳ پره: {', '.join(p3[:3])}\n"
+                
+                await c.bot.send_message(u.effective_chat.id, rp, parse_mode='Markdown')
+                await b.close()
+    except Exception as e:
+        await c.bot.send_message(u.effective_chat.id, f"E:{str(e)}")
+
+app=AB().token(T).build()
+app.add_handler(CH('start',st))
+app.add_handler(CH('on',on))
+app.add_handler(CH('off',off))
+app.add_handler(CH('check_odds',co))
+app.run_polling(bootstrap_retries=-1)
