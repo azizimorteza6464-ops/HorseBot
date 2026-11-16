@@ -13,10 +13,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def check_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not USER_TOKEN or not USER_UDI:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ توکن یا کوکی‌ها در Secrets تنظیم نشده‌اند!")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ توکن یا کوکی‌ها تنظیم نشده‌اند!")
         return
 
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال ورود به سایت با کوکی‌ها (بدون کپچا)...")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال ورود به سایت...")
     
     try:
         async with async_playwright() as p:
@@ -28,26 +28,32 @@ async def check_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {'name': 'device_id', 'value': USER_DEVICE_ID, 'domain': '.asbdavani.app', 'path': '/'},
                 {'name': '_udi', 'value': USER_UDI, 'domain': '.asbdavani.app', 'path': '/'}
             ]
-                
             await context_browser.add_cookies(cookies)
+            
             page = await context_browser.new_page()
             await page.goto("https://mosharekat.asbdavani.app/", timeout=90000)
             await page.wait_for_timeout(8000)
             
             content = await page.locator('body').inner_text()
             if "ورود با کد یکبار مصرف" in content:
-                await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ متاسفانه لاگین نشد.")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ لاگین نشد. (کوکی‌ها منقضی شده‌اند).")
                 await browser.close()
                 return
                 
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ ورود موفق! در حال رفتن به تب آد اسب...")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ ورود موفق! در حال باز کردن تب آد اسب...")
             
+            # 🔥 ترفند جدید: کلیک با جاوا اسکریپت برای دور زدن مخفی بودن المان
             try:
-                # 🔥 ترفند جدید: انتخاب آخرین دکمه‌ای که متن آد اسب دارد (برای جلوگیری از تداخل)
-                await page.get_by_text("آد اسب").last.click(force=True)
+                await page.evaluate("""
+                    let tabs = Array.from(document.querySelectorAll('span, a, div, button'));
+                    let oddsTab = tabs.find(el => el.textContent.trim() === 'آد اسب');
+                    if (oddsTab) {
+                        oddsTab.click();
+                    }
+                """)
                 await page.wait_for_timeout(6000)
             except Exception as e:
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ آد اسب پیدا نشد: {e}")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ خطا در کلیک آد اسب: {e}")
             
             # گرفتن عکس و متن
             await page.screenshot(path="odds.png")
