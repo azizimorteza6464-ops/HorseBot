@@ -4,81 +4,74 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
 from playwright.async_api import async_playwright
 
 TOKEN = os.environ.get("BOT_TOKEN")
-PHONE = os.environ.get("USER_PHONE")
-PASSWORD = os.environ.get("USER_PASS")
-
-g_pw = g_br = g_pg = None
+USER_TOKEN = os.environ.get("USER_TOKEN") # توکن جدید که از مرورگر گرفتیم
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="سلام! /login_pass را بزنید تا ربات با رمز عبور وارد شود و ضرایب را بخواند.")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="سلام! /check_odds را بزنید تا با توکن وارد شوم و ضرایب را بخوانم.")
 
-async def login_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global g_pw, g_br, g_pg
-    if not PHONE or not PASSWORD: 
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ شماره یا رمز در Secrets تنظیم نشده است.")
+async def check_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not USER_TOKEN:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ توکن در Secrets تنظیم نشده!")
         return
-        
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال تلاش برای ورود با رمز عبور (بدون پیامک)...")
+
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="⏳ در حال تزریق توکن و ورود به سایت...")
     
     try:
-        g_pw = await async_playwright().start()
-        g_br = await g_pw.chromium.launch(headless=True)
-        g_pg = await g_br.new_page()
-        
-        await g_pg.goto("https://mosharekat.asbdavani.app/", timeout=120000, wait_until="domcontentloaded")
-        await g_pg.wait_for_timeout(3000)
-        
-        # کلیک روی تب ورود با رمز عبور
-        await g_pg.locator('text="ورود با رمز عبور"').click()
-        await g_pg.wait_for_timeout(2000)
-        
-        # وارد کردن شماره و رمز
-        await g_pg.locator('input:visible').first.fill(PHONE)
-        await g_pg.wait_for_timeout(1000)
-        await g_pg.keyboard.press('Tab')
-        await g_pg.keyboard.type(PASSWORD)
-        await g_pg.wait_for_timeout(1000)
-        
-        # کلیک روی دکمه ورود
-        await g_pg.locator('button:has-text("ورود")').first.click()
-        await g_pg.wait_for_timeout(5000)
-        
-        # بررسی اینکه آیا لاگین شدیم یا کپچا آمد
-        page_content = await g_pg.locator('body').inner_text()
-        
-        if "ورود با رمز عبور" in page_content or "کد تایید" in page_content:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ متاسفانه سایت کپچا (من ربات نیستم) یا خطا نشان داد. نیاز به روش کوکی داریم.")
-            await g_pg.screenshot(path="captcha.png")
-            with open("captcha.png", "rb") as f:
-                await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 عکس خطای لاگین با رمز")
-        else:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ با موفقیت با رمز عبور وارد شدیم!")
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context_browser = await browser.new_context()
             
-            # رفتن به تب آد اسب
-            await g_pg.locator('text="آد اسب"').last.click(force=True)
-            await g_pg.wait_for_timeout(5000)
+            # تزریق کوکی (توکن) به مرورگر
+            await context_browser.add_cookies([{
+                'name': 'auth_token', # احتمالا نام کوکی auth_token است
+                'value': USER_TOKEN,
+                'domain': 'mosharekat.asbdavani.app',
+                'path': '/'
+            }])
             
-            # گرفتن متن صفحه آد اسب
-            page_text = await g_pg.locator('body').inner_text()
+            page = await context_browser.new_page()
             
+            # رفتن مستقیم به صفحه اصلی
+            await page.goto("https://mosharekat.asbdavani.app/", timeout=90000)
+            await page.wait_for_timeout(3000)
+            
+            # بررسی اینکه آیا وارد شده‌ایم (اگر کلمه خوش آمدید نبود یعنی موفق بوده)
+            content = await page.locator('body').inner_text()
+            if "خوش آمدید" in content and "ورود با کد یکبار مصرف" in content:
+                await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ توکن منقضی شده یا نام کوکی اشتباه است. (لطفا دوباره از مرورگر بگیرید).")
+                await browser.close()
+                return
+                
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ ورود با توکن موفق بود! در حال رفتن به صفحه آد اسب...")
+            
+            # کلیک روی تب آد اسب
+            try:
+                await page.locator('text="آد اسب"').last.click(force=True)
+                await page.wait_for_timeout(5000)
+            except Exception as e:
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ خطا در باز کردن آد اسب: {e}")
+            
+            # گرفتن عکس و متن
+            await page.screenshot(path="odds.png", full_page=True)
+            with open("odds.png", "rb") as f:
+                await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="📸 صفحه آد اسب")
+                
+            page_text = await page.locator('body').inner_text()
             with open("odds_text.txt", "w", encoding="utf-8") as text_file:
                 text_file.write(page_text)
                 
             with open("odds_text.txt", "rb") as doc:
                 await context.bot.send_document(
-                    chat_id=update.effective_chat.id,
-                    document=doc,
-                    caption="📄 فایل متنی ضرایب (آد اسب). لطفاً این را برای من بفرستید."
+                    chat_id=update.effective_chat.id, document=doc, 
+                    caption="📄 متن ضرایب. (به زودی اینجا تحلیل می‌نویسم!)"
                 )
-        
-        await g_br.close()
-        await g_pw.stop()
-        g_pg = None
-        
+            
+            await browser.close()
+            
     except Exception as e:
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ خطا: {str(e)}")
 
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler('start', start))
-app.add_handler(CommandHandler('login_pass', login_pass))
+app.add_handler(CommandHandler('check_odds', check_odds))
 app.run_polling(bootstrap_retries=-1)
