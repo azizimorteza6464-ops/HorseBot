@@ -28,5 +28,6 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           USER_PHONE: ${{ secrets.USER_PHONE }}
           USER_PASS: ${{ secrets.USER_PASS }}
+          USER_TOKEN: ${{ secrets.USER_TOKEN }}  # 🌟 این خط اضافه شد
         run: |
           timeout 350m python bot.py
