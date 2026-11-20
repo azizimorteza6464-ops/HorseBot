@@ -272,7 +272,7 @@ async def co(u: Update, c: C):
             await browser.close()
             print("Browser closed.")
 
-if name == 'main':
+if __name__ == '__main__':
     app = AB().token(T).build()
     app.add_handler(CH('start', st))
     app.add_handler(CH('on', on))
