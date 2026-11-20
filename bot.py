@@ -58,19 +58,13 @@ async def ar(p, r_num, c, chat_id):
     horses = {}
     table_text = ""
     try:
-        # 1. کلیک روی جدول مسابقات
+        # 1. رفتن به تب دورهای (که ضرایب و جزئیات در آن است)
         try:
-            await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=10000, force=True)
+            await p.get_by_text("دورهای", exact=False).first.click(timeout=10000, force=True)
             await p.wait_for_timeout(3000)
         except: pass
 
-        # 2. کلیک روی نمایش دورها (برای باز شدن نمای جزئی)
-        try:
-            await p.get_by_text("نمایش دورها", exact=False).first.click(timeout=10000, force=True)
-            await p.wait_for_timeout(3000)
-        except: pass
-
-        # 3. کلیک روی شماره دور
+        # 2. کلیک روی شماره دور
         try:
             await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=5000, force=True)
         except:
@@ -81,6 +75,7 @@ async def ar(p, r_num, c, chat_id):
         await p.wait_for_timeout(7000)
         table_text = await p.locator('body').inner_text()
         
+        # الگوی استخراج داده‌ها
         pattern = r'([^\n]+)\n[^\n]*\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
         
         matches = re.finditer(pattern, table_text)
@@ -101,26 +96,8 @@ async def ar(p, r_num, c, chat_id):
             horses[num] = {
                 "n": name, "num": num, "ior": ior, "j": jockey,
                 "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0
-            }
-            # تلاش برای گرفتن ضرایب
-        try:
-            await p.get_by_text("دورهای", exact=False).first.click(timeout=5000, force=True)
-            await p.wait_for_timeout(3000)
-            await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
-            await p.wait_for_timeout(4000)
-            odds_text = await p.locator('body').inner_text()
-            
-            odds_pattern = r'([^\n]+)\n(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)'
-            for m in re.finditer(odds_pattern, odds_text):
-                name = m.group(1).strip()
-                w_odd = float(m.group(2))
-                for num, h in horses.items():
-                    if name in h['n'] or h['n'] in name:
-                        horses[num]['w_odd'] = w_odd
-                        break
-        except: pass
-
-    except Exception as e:
+        }
+            except Exception as e:
         print(f"Error in round {r_num}: {e}")
         
     if not horses:
@@ -141,6 +118,7 @@ async def ar(p, r_num, c, chat_id):
 
     sorted_horses = sorted(horses.values(), key=lambda y: y['final_sc'], reverse=True)
     
+    # منطق انتخاب بدون تکرار
     w = sorted_horses[0]
     p_horse = sorted_horses[1] if len(sorted_horses) > 1 else w
     s_horse = sorted_horses[2] if len(sorted_horses) > 2 else p_horse
@@ -187,7 +165,7 @@ async def co(u: Update, c: C):
             )
             await context.add_cookies([
                 {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
-            {'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},
+                {'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},
                 {'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}
             ])
             pg = await context.new_page()
@@ -226,12 +204,19 @@ async def co(u: Update, c: C):
     finally:
         if browser: await browser.close()
 
-# --- اجرای مستقیم ربات ---
+# --- راه‌اندازی ربات ---
 app = AB().token(T).build()
 app.add_handler(CH('start', st))
 app.add_handler(CH('on', on))
 app.add_handler(CH('off', off))
 app.add_handler(CH('check_odds', co))
 
-print("Bot is running...")
-app.run_polling(bootstrap_retries=-1, drop_pending_updates=True)
+print("Bot started. Waiting for commands...")
+
+# اجرای ربات برای مدت محدود (مثلاً 5 دقیقه) تا گیت‌هاب هنگ نکند
+import asyncio
+try:
+    asyncio.run(asyncio.wait_for(app.run_polling(bootstrap_retries=-1, drop_pending_updates=True), timeout=300))
+except asyncio.TimeoutError:
+    print("Bot stopped automatically after 5 minutes to save GitHub Action minutes.")
+    sys.exit(0)
