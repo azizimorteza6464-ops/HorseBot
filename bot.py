@@ -3,6 +3,7 @@ from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder as AB, ContextTypes as C, CommandHandler as CH
 from playwright.async_api import async_playwright as ap
 
+# --- تنظیمات اولیه ---
 T = os.environ.get("BOT_TOKEN")
 A = os.environ.get("USER_TOKEN")
 D = os.environ.get("USER_DEVICE_ID")
@@ -10,6 +11,7 @@ U = os.environ.get("USER_UDI")
 G = os.environ.get("GH_PAT")
 R = os.environ.get("GITHUB_REPOSITORY")
 
+# --- توابع ارتباط با API گیت‌هاب ---
 async def s(v):
     if not R or not G: return "E"
     try:
@@ -35,7 +37,9 @@ async def g():
         return "true"
     except: return "true"
 
-async def st(u: Update, c: C): await c.bot.send_message(u.effective_chat.id, "دستورات:\n/on روشن\n/off خاموش\n/check_odds [1-7]")
+# --- دستورات ربات ---
+async def st(u: Update, c: C): 
+    await c.bot.send_message(u.effective_chat.id, "دستورات:\n/on روشن کردن ربات\n/off خاموش کردن ربات\n/check_odds [شماره دور 1-7]")
 
 async def on(u: Update, c: C):
     r = await s("true")
@@ -45,7 +49,7 @@ async def off(u: Update, c: C):
     r = await s("false")
     await c.bot.send_message(u.effective_chat.id, "🛑 ربات خاموش شد" if r == "OK" else r)
 
-# تابع ارسال پیام طولانی به تلگرام (برای جلوگیری از خطای 4096 کاراکتر)
+# --- تابع ارسال پیام طولانی (برای جلوگیری از خطای 4096 کاراکتری تلگرام) ---
 async def send_long_message(c, chat_id, text):
     if len(text) > 4000:
         for i in range(0, len(text), 4000):
@@ -53,33 +57,35 @@ async def send_long_message(c, chat_id, text):
     else:
         await c.bot.send_message(chat_id, text, parse_mode='HTML')
 
+# --- تابع استخراج داده‌های یک دور خاص ---
 async def ar(p, r_num, c, chat_id):
     horses = {}
     try:
+        # کلیک روی جدول مسابقات با force برای جلوگیری از خطای عدم کلیک
         try:
-            await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=5000, force=True)
+            await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=10000, force=True)
             await p.wait_for_timeout(3000)
         except: pass
 
         try:
-            await p.get_by_text("نمایش دورها", exact=False).first.click(timeout=5000, force=True)
+            await p.get_by_text("نمایش دورها", exact=False).first.click(timeout=10000, force=True)
             await p.wait_for_timeout(3000)
         except: pass
 
+        # کلیک روی شماره دور
         try:
-            await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=3000, force=True)
+            await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=5000, force=True)
         except:
             try:
-                await p.get_by_text(str(r_num), exact=True).first.click(timeout=3000, force=True)
+                await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
             except:
-                return None 
+                return None # دور پیدا نشد
         
-        # صبر می‌کنیم تا جدول کامل لود شود (به جای زمان ثابت)
-        await p.wait_for_load_state("networkidle")
-        await p.wait_for_timeout(5000)
-        
+        # صبر می‌کنیم تا جدول رندر شود (به جای networkidle که باعث هنگ می‌شود)
+        await p.wait_for_timeout(6000)
         x = await p.locator('body').inner_text()
         
+        # الگوی استخراج داده‌ها
         pattern = r'([^\n]+)\n[^\n]+\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
         
         for m in re.finditer(pattern, x):
@@ -100,10 +106,12 @@ async def ar(p, r_num, c, chat_id):
                 "n": name, "num": num, "ior": ior, "j": jockey,
                 "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0
             }
-            try:
+
+        # تلاش برای گرفتن ضرایب
+        try:
             await p.get_by_text("دورهای", exact=False).first.click(timeout=5000, force=True)
             await p.wait_for_timeout(3000)
-            await p.get_by_text(str(r_num), exact=True).first.click(timeout=3000, force=True)
+            await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
             await p.wait_for_timeout(3000)
             x_odds = await p.locator('body').inner_text()
             
@@ -118,9 +126,10 @@ async def ar(p, r_num, c, chat_id):
         except: pass
 
     except Exception as e:
-        print(f"Error in scraping: {e}")
+        print(f"Error in round {r_num}: {e}")
         
     if not horses:
+        # ارسال عکس دیباگ اگر جدول خوانده نشد
         try:
             screenshot_path = f"debug_{r_num}.png"
             await p.screenshot(path=screenshot_path, full_page=True)
@@ -131,6 +140,7 @@ async def ar(p, r_num, c, chat_id):
             print(f"Could not send screenshot: {img_e}")
         return None
     
+    # --- محاسبات و آنالیز ---
     good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
     for num, h in horses.items():
         market_score = 100 / (h['w_odd'] + 1) if h['w_odd'] > 0 else 0
@@ -152,6 +162,7 @@ async def ar(p, r_num, c, chat_id):
 
     return {"w": w, "p": p_horse, "s": s_horse, "q": q, "qs": qs, "su": su}
 
+# --- دستور اصلی چک کردن ضرایب ---
 async def co(u: Update, c: C):
     chat_id = u.effective_chat.id
     if not A or not U:
@@ -169,9 +180,9 @@ async def co(u: Update, c: C):
     browser = None
     try:
         async with ap() as p:
-            # تنظیم سایز صفحه برای لود بهتر
             browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(viewport={'width': 1280, 'height': 800})
+            # 🔴 بسیار مهم: تنظیم سایز مرورگر به حالت دسکتاپ تا جدول کامل لود شود
+            context = await browser.new_context(viewport={'width': 1440, 'height': 900})
             await context.add_cookies([
                 {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
                 {'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},
@@ -179,8 +190,11 @@ async def co(u: Update, c: C):
             ])
             pg = await context.new_page()
             pg.set_default_timeout(60000)
-            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="networkidle")
+            
+            # باز کردن سایت
+            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
             await pg.wait_for_timeout(6000)
+
             if "ورود" in await pg.locator('body').inner_text():
                 await c.bot.send_message(chat_id, "⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند.")
                 return
@@ -218,7 +232,9 @@ async def co(u: Update, c: C):
                         if r_num <= len(res_all) and res_all[r_num-1]:
                             res = res_all[r_num-1]
                             names.append(f"{res['w']['num']}-{res['w']['n']}")
-                    return " + ".join(names) if names else "نامشخص"
+                        else:
+                            names.append("نامشخص")
+                    return " + ".join(names)
                 
                 if mr >= 7:
                     rp += f"🔹 ۶ پره (دور ۲ تا ۷): {get_pick([2,3,4,5,6,7])}\n"
@@ -231,23 +247,22 @@ async def co(u: Update, c: C):
                     rp += f"🔹 ۳ پره اول (دور ۱ تا ۳): {get_pick([1,2,3])}\n"
                     rp += f"🔹 ۳ پره دوم (دور ۴ تا ۶): {get_pick([4,5,6])}\n"
                 
-            # استفاده از تابع ارسال طولانی
             await send_long_message(c, chat_id, rp)
             
     except Exception as e:
         await c.bot.send_message(chat_id, f"❌ خطای غیرمنتظره: {str(e)}")
     finally:
-        # این بخش بسیار مهم است: مرورگر حتما باید بسته شود تا پروسه گیت‌هاب هنگ نکند
+        # 🔴 این بخش حیاتی است: مرورگر در هر شرایطی (حتی خطا) باید بسته شود تا گیت‌هاب هنگ نکند
         if browser:
             await browser.close()
 
-app = AB().token(T).build()
-app.add_handler(CH('start', st))
-app.add_handler(CH('on', on))
-app.add_handler(CH('off', off))
-app.add_handler(CH('check_odds', co))
+# --- راه‌اندازی ربات ---
+if name == 'main':
+    app = AB().token(T).build()
+    app.add_handler(CH('start', st))
+    app.add_handler(CH('on', on))
+    app.add_handler(CH('off', off))
+    app.add_handler(CH('check_odds', co))
 
-# ⚠️ نکته مهم برای گیت‌هاب: اجرای این دستور در گیت‌هاب باعث تایم‌اوت 6 ساعته می‌شود.
-# اگر روی سرور شخصی اجرا می‌کنید، این خط درست است.
-# اگر فقط می‌خواهید در گیت‌هاب تست کنید، بهتر است این خط را با یک متغیر جایگزین کنید.
-app.run_polling(bootstrap_retries=-1, drop_pending_updates=True)
+    print("Bot is running...")
+    app.run_polling(bootstrap_retries=-1, drop_pending_updates=True)
