@@ -87,7 +87,7 @@ async def ar(p, r_num, c, chat_id):
         for m in re.finditer(pattern, x):
             name = m.group(1).strip()
             if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "جایزه", "دور"]): continue
-                found = True
+            found = True
             num = int(m.group(2))
             ior = int(m.group(4))
             perf_str = m.group(5)
