@@ -33,15 +33,15 @@ async def g():
         return "true"
     except: return "true"
 
-async def st(u:Update,c:C): await c.bot.send_message(u.effective_chat.id,"دستورات:\n/on روشن کردن\n/off خاموش کردن\n/check_odds [1-7] دریافت تحلیل")
+async def st(u:Update,c:C): await c.bot.send_message(u.effective_chat.id,"Commands:\n/on \n/off \n/check_odds [1-7]")
 
 async def on(u:Update,c:C):
     r=await s("true")
-    await c.bot.send_message(u.effective_chat.id,"✅ ربات روشن شد" if r=="OK" else r)
+    await c.bot.send_message(u.effective_chat.id,"Robot ON" if r=="OK" else r)
 
 async def off(u:Update,c:C):
     r=await s("false")
-    await c.bot.send_message(u.effective_chat.id,"🛑 ربات خاموش شد" if r=="OK" else r)
+    await c.bot.send_message(u.effective_chat.id,"Robot OFF" if r=="OK" else r)
 
 async def ar(p,r):
     try:
@@ -52,7 +52,6 @@ async def ar(p,r):
     x=await p.locator('body').inner_text()
     horses=[]
     
-    # الگوی جدید: تلاش برای خواندن شماره، نام و سه ضریب
     for m in re.finditer(r'(?:^|\n)\s*(?:(\d+)[\s\-\.]*)?([^\n\d]+?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)', x):
         num_str = m.group(1)
         name = m.group(2).strip()
@@ -67,12 +66,10 @@ async def ar(p,r):
             
     if not horses: return
     
-    # اگر شماره‌ای پیدا نشد، به ترتیب شماره‌گذاری کن
     for idx, item in enumerate(horses):
         if item["num"] is None:
             item["num"] = idx + 1
 
-    # مرتب‌سازی
     o = sorted(horses, key=lambda y: y["sc"], reverse=True)
     b = o[0]
     p2 = min(horses, key=lambda y: y["p"])
@@ -86,16 +83,16 @@ async def ar(p,r):
 
 async def co(u:Update,c:C):
     if not A or not U:
-        await c.bot.send_message(u.effective_chat.id,"⚠️ خطا: توکن‌های ورود (A یا U) در تنظیمات گیت‌هاب یافت نشد.")
+        await c.bot.send_message(u.effective_chat.id,"Err Auth: Check Secrets.")
         return
     
     cst=await g()
     if cst=="false":
-        await c.bot.send_message(u.effective_chat.id,"🛑 ربات در حالت خاموش (OFF) است. ابتدا /on را بزنید.")
-     return
+        await c.bot.send_message(u.effective_chat.id,"Robot is OFF.")
+        return
         
     tg=int(c.args[0]) if c.args and c.args[0].isdigit() else None
-    await c.bot.send_message(u.effective_chat.id,"⏳ در حال دریافت اطلاعات، لطفاً صبر کنید...")
+    await c.bot.send_message(u.effective_chat.id,"Please wait...")
     
     try:
         async with ap() as p:
@@ -112,7 +109,7 @@ async def co(u:Update,c:C):
             await pg.wait_for_timeout(4000)
             
             if "ورود" in await pg.locator('body').inner_text():
-                await c.bot.send_message(u.effective_chat.id,"⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند. لطفاً USER_TOKEN, USER_DEVICE_ID, USER_UDI را در گیت‌هاب آپدیت کنید.")
+                await c.bot.send_message(u.effective_chat.id,"Login Err: Update Cookies.")
                 return
                 
             await pg.evaluate("let a=document.querySelectorAll('span,a,div,button');let o=Array.from(a).find(e=>e.textContent.trim()==='آد اسب');if(o)o.click();")
@@ -120,25 +117,25 @@ async def co(u:Update,c:C):
             
             r7=await pg.locator("text='R 7'").count()>0 or await pg.locator("text='7'").count()>0
             mr=7 if r7 else 6
-            rp="📊 تحلیل جامع مسابقات\n"
+            rp="Analysis:\n"
             res_all=[]
             
             for r in ([tg] if tg else range(1,mr+1)):
                 res=await ar(pg,r)
                 if res:
                     res_all.append((r,res))
-                    rp+=f"\n🏁 دور R{r}\n"
-                    rp+=f"🥇 پیش‌بر: {res['w']['num']}-{res['w']['n']} (ضریب {res['w']['w']})\n"
-                    rp+=f"🥈 میان‌بر: {res['p']['num']}-{res['p']['n']} (ضریب {res['p']['p']})\n"
-                    rp+=f"🥉 پی‌بر: {res['s']['num']}-{res['s']['n']} (ضریب {res['s']['s']})\n"
-                    rp+=f"👥 دوقلو: {res['q']}\n"
-                    rp+=f"🎲 اسب شگفتی: {res['su']['num']}-{res['su']['n']}\n"
+                    rp+=f"\nR{r}\n"
+                    rp+=f"Win: {res['w']['num']}-{res['w']['n']} ({res['w']['w']})\n"
+                    rp+=f"Place: {res['p']['num']}-{res['p']['n']} ({res['p']['p']})\n"
+                    rp+=f"Show: {res['s']['num']}-{res['s']['n']} ({res['s']['s']})\n"
+                    rp+=f"Quin: {res['q']}\n"
+                    rp+=f"Surp: {res['su']['num']}-{res['su']['n']}\n"
                 else:
-                    rp+=f"\n🏁 دور R{r}: اطلاعاتی یافت نشد.\n"
+                    rp+=f"\nR{r}: No data.\n"
                     res_all.append((r,None))
                     
             if not tg:
-                rp+="\n➖➖➖➖➖➖➖➖\n"
+                rp+="\n----------\n"
                 def get_p(list_r):
                     names=[]
                     for r_num,res in list_r:
@@ -157,17 +154,16 @@ async def co(u:Update,c:C):
                     range_num=range(1,4); p3_1=get_p(res_all)
                     range_num=range(4,7); p3_2=get_p(res_all)
                     
-                if p6: rp+=f"🎯 ۶ پره: {p6}\n"
-                if p5: rp+=f"🎯 ۵ پره: {p5}\n"
-                if p3_1: rp+=f"🎯 ۳ پره (اول): {p3_1}\n"
-                if p3_2: rp+=f"🎯 ۳ پره (دوم): {p3_2}\n"
+                if p6: rp+=f"6: {p6}\n"
+                if p5: rp+=f"5: {p5}\n"
+                if p3_1: rp+=f"3(1): {p3_1}\n"
+                if p3_2: rp+=f"3(2): {p3_2}\n"
                 
-            # حذف parse_mode برای جلوگیری از خطای کاراکترهای خاص تلگرام
             await c.bot.send_message(u.effective_chat.id,rp)
             await b.close()
             
     except Exception as e:
-        await c.bot.send_message(u.effective_chat.id,f"❌ خطای غیرمنتظره: {str(e)}")
+        await c.bot.send_message(u.effective_chat.id,f"E: {str(e)}")
 
 app=AB().token(T).build()
 app.add_handler(CH('start',st))
@@ -175,5 +171,4 @@ app.add_handler(CH('on',on))
 app.add_handler(CH('off',off))
 app.add_handler(CH('check_odds',co))
 
-# drop_pending_updates=True باعث می‌شود پیام‌های قدیمی که ربات خاموش بوده را نخواند
 app.run_polling(bootstrap_retries=-1, drop_pending_updates=True)
