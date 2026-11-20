@@ -1,4 +1,91 @@
-import os, re, httpx, sys
+num = int(m.group(2))
+            ior = int(m.group(4))
+            perf_str = m.group(5)
+            jockey = m.group(6).strip()
+            
+            perf_score = 0
+            s_map = {'1': 25, '2': 15, '3': 5}
+            for rank in perf_str.split('-'):
+                perf_score += s_map.get(rank.strip(), 0)
+                
+            horses[num] = {
+                "n": name, "num": num, "ior": ior, "j": jockey,
+                "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0
+            }
+        
+        print(f"Found {len(horses)} horses for Round {r_num}")
+
+        try:
+            await p.get_by_text("دورهای", exact=False).first.click(timeout=5000, force=True)
+            await p.wait_for_timeout(3000)
+            await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
+            await p.wait_for_timeout(4000)
+            x_odds = await p.locator('body').inner_text()
+            
+            odds_pattern = r'([^\n]+)\n(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)'
+            for m in re.finditer(odds_pattern, x_odds):
+                name = m.group(1).strip()
+                w_odd = float(m.group(2))
+                for num, h in horses.items():
+                    if name in h['n'] or h['n'] in name:
+                        horses[num]['w_odd'] = w_odd
+                        break
+        except: pass
+
+    except Exception as e:
+        print(f"Error in round {r_num}: {e}")
+        
+    if not horses:
+        try:
+            screenshot_path = f"debug_{r_num}.png"
+            await p.screenshot(path=screenshot_path, full_page=False) 
+            # گرفتن متن صفحه برای اینکه بفهمیم سایت چه چیزی نشان داده
+            page_snippet = x[:500] if 'x' in locals() else "متن صفحه خوانده نشد."
+            
+            with open(screenshot_path, "rb") as image_file:
+                await c.bot.send_photo(
+                    chat_id=chat_id, 
+                    photo=image_file, 
+                    caption=f"⚠️ خطای خواندن دور {r_num}.\n\nمتن صفحه:\n{page_snippet}"
+                )
+            os.remove(screenshot_path)
+        except Exception as img_e:
+            print(f"Could not send screenshot: {img_e}")
+        return None
+    
+    good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
+    for num, h in horses.items():
+        market_score = 100 / (h['w_odd'] + 1) if h['w_odd'] > 0 else 0
+        jockey_bonus = 15 if any(gj in h['j'] for gj in good_jockeys) else 0
+        h['final_sc'] = (h['ior'] * 0.4) + (h['perf_sc'] * 0.25) + (market_score * 0.2) + (jockey_bonus * 0.15)
+
+    sorted_horses = sorted(horses.values(), key=lambda y: y['final_sc'], reverse=True)
+    
+    w = sorted_horses[0]
+    p_horse = sorted_horses[1] if len(sorted_horses) > 1 else w
+    s_horse = max(horses.values(), key=lambda y: y['perf_sc'])
+    q = f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}"
+    
+    surprise_candidates = [h for h in horses.values() if h['w_odd'] >= 8.0 and h['ior'] > 0]
+    surprise_candidates = sorted(surprise_candidates, key=lambda y: y['final_sc'], reverse=True)
+    su = surprise_candidates[0] if surprise_candidates else sorted_horses[-1]
+    su2 = surprise_candidates[1] if len(surprise_candidates) >= 2 else (sorted_horses[-2] if len(sorted_horses) > 1 else w)
+    qs = f"{su['num']}-{su['n']} + {su2['num']}-{su2['n']}"
+
+    return {"w": w, "p": p_horse, "s": s_horse, "q": q, "qs": qs, "su": su}
+
+# --- دستور اصلی چک کردن ضرایب ---
+async def co(u: Update, c: C):
+    chat_id = u.effective_chat.id
+    if not A or not U:
+        await c.bot.send_message(chat_id, "⚠️ خطا: توکن‌های ورود یافت نشد.")
+        return
+    
+    cst = await g()
+    if cst == "false":
+        await c.bot.send_message(chat_id, "🛑 ربات خاموش است. /on را بزنید.")
+        return
+        import os, re, httpx, sys
 from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder as AB, ContextTypes as C, CommandHandler as CH
 from playwright.async_api import async_playwright as ap
@@ -49,7 +136,7 @@ async def off(u: Update, c: C):
     r = await s("false")
     await c.bot.send_message(u.effective_chat.id, "🛑 ربات خاموش شد" if r == "OK" else r)
 
-# --- تابع ارسال پیام طولانی (برای جلوگیری از خطای 4096 کاراکتری تلگرام) ---
+# --- تابع ارسال پیام طولانی ---
 async def send_long_message(c, chat_id, text):
     if len(text) > 4000:
         for i in range(0, len(text), 4000):
@@ -61,142 +148,99 @@ async def send_long_message(c, chat_id, text):
 async def ar(p, r_num, c, chat_id):
     horses = {}
     try:
-        # کلیک روی جدول مسابقات با force برای جلوگیری از خطای عدم کلیک
+        print(f"--> Starting scraping for Round {r_num}")
+        
         try:
             await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=10000, force=True)
             await p.wait_for_timeout(3000)
-        except: pass
+        except Exception as e: 
+            print(f"Could not click 'جدول مسابقات': {e}")
 
         try:
             await p.get_by_text("نمایش دورها", exact=False).first.click(timeout=10000, force=True)
             await p.wait_for_timeout(3000)
-        except: pass
+        except Exception as e: 
+            print(f"Could not click 'نمایش دورها': {e}")
 
-        # کلیک روی شماره دور
         try:
             await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=5000, force=True)
+            print(f"Clicked R {r_num}")
         except:
             try:
                 await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
+                print(f"Clicked {r_num}")
             except:
-                return None # دور پیدا نشد
+                print(f"Round {r_num} button not found!")
+                return None 
         
-        # صبر می‌کنیم تا جدول رندر شود (به جای networkidle که باعث هنگ می‌شود)
-        await p.wait_for_timeout(6000)
+        await p.wait_for_timeout(8000)
         x = await p.locator('body').inner_text()
         
-        # الگوی استخراج داده‌ها
         pattern = r'([^\n]+)\n[^\n]+\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
         
-        for m in re.finditer(pattern, x):
+        matches = re.finditer(pattern, x)
+        for m in matches:
             name = m.group(1).strip()
             if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "جایزه"]): continue
-            
-            num = int(m.group(2))
-            ior = int(m.group(4))
-            perf_str = m.group(5)
-            jockey = m.group(6).strip()
-            
-            perf_score = 0
-            s_map = {'1': 25, '2': 15, '3': 5}
-            for rank in perf_str.split('-'):
-                perf_score += s_map.get(rank.strip(), 0)
+                rp += f"🔹 ۳ پره اول (دور ۱ تا ۳): {get_pick([1,2,3])}\n"
+                    rp += f"🔹 ۳ پره دوم (دور ۵ تا ۷): {get_pick([5,6,7])}\n"
+                else:
+                    rp += f"🔹 ۶ پره (دور ۱ تا ۶): {get_pick([1,2,3,4,5,6])}\n"
+                    rp += f"🔹 ۵ پره (دور ۲ تا ۶): {get_pick([2,3,4,5,6])}\n"
+                    rp += f"🔹 ۳ پره اول (دور ۱ تا ۳): {get_pick([1,2,3])}\n"
+                    rp += f"🔹 ۳ پره دوم (دور ۴ تا ۶): {get_pick([4,5,6])}\n"
                 
-            horses[num] = {
-                "n": name, "num": num, "ior": ior, "j": jockey,
-                "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0
-            }
-
-        # تلاش برای گرفتن ضرایب
-        try:
-            await p.get_by_text("دورهای", exact=False).first.click(timeout=5000, force=True)
-            await p.wait_for_timeout(3000)
-            await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
-            await p.wait_for_timeout(3000)
-            x_odds = await p.locator('body').inner_text()
+            await send_long_message(c, chat_id, rp)
             
-            odds_pattern = r'([^\n]+)\n(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)'
-            for m in re.finditer(odds_pattern, x_odds):
-                name = m.group(1).strip()
-                w_odd = float(m.group(2))
-                for num, h in horses.items():
-                    if name in h['n'] or h['n'] in name:
-                        horses[num]['w_odd'] = w_odd
-                        break
-        except: pass
-
     except Exception as e:
-        print(f"Error in round {r_num}: {e}")
-        
-    if not horses:
-        # ارسال عکس دیباگ اگر جدول خوانده نشد
-        try:
-            screenshot_path = f"debug_{r_num}.png"
-            await p.screenshot(path=screenshot_path, full_page=True)
-            with open(screenshot_path, "rb") as image_file:
-                await c.bot.send_photo(chat_id=chat_id, photo=image_file, caption=f"⚠️ خطای خواندن دور {r_num}. جدول پیدا نشد.")
-            os.remove(screenshot_path)
-        except Exception as img_e:
-            print(f"Could not send screenshot: {img_e}")
-        return None
-    
-    # --- محاسبات و آنالیز ---
-    good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
-    for num, h in horses.items():
-        market_score = 100 / (h['w_odd'] + 1) if h['w_odd'] > 0 else 0
-        jockey_bonus = 15 if any(gj in h['j'] for gj in good_jockeys) else 0
-        h['final_sc'] = (h['ior'] * 0.4) + (h['perf_sc'] * 0.25) + (market_score * 0.2) + (jockey_bonus * 0.15)
+        print(f"FATAL ERROR: {e}")
+        await c.bot.send_message(chat_id, f"❌ خطای غیرمنتظره: {str(e)}")
+    finally:
+        if browser:
+            await browser.close()
+            print("Browser closed.")
 
-    sorted_horses = sorted(horses.values(), key=lambda y: y['final_sc'], reverse=True)
-    
-    w = sorted_horses[0]
-    p_horse = sorted_horses[1] if len(sorted_horses) > 1 else w
-    s_horse = max(horses.values(), key=lambda y: y['perf_sc'])
-    q = f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}"
-    
-    surprise_candidates = [h for h in horses.values() if h['w_odd'] >= 8.0 and h['ior'] > 0]
-    surprise_candidates = sorted(surprise_candidates, key=lambda y: y['final_sc'], reverse=True)
-    su = surprise_candidates[0] if surprise_candidates else sorted_horses[-1]
-    su2 = surprise_candidates[1] if len(surprise_candidates) >= 2 else (sorted_horses[-2] if len(sorted_horses) > 1 else w)
-    qs = f"{su['num']}-{su['n']} + {su2['num']}-{su2['n']}"
+if name == 'main':
+    app = AB().token(T).build()
+    app.add_handler(CH('start', st))
+    app.add_handler(CH('on', on))
+    app.add_handler(CH('off', off))
+    app.add_handler(CH('check_odds', co))
 
-    return {"w": w, "p": p_horse, "s": s_horse, "q": q, "qs": qs, "su": su}
-
-# --- دستور اصلی چک کردن ضرایب ---
-async def co(u: Update, c: C):
-    chat_id = u.effective_chat.id
-    if not A or not U:
-        await c.bot.send_message(chat_id, "⚠️ خطا: توکن‌های ورود یافت نشد.")
-        return
-    
-    cst = await g()
-    if cst == "false":
-        await c.bot.send_message(chat_id, "🛑 ربات خاموش است. /on را بزنید.")
-        return
-        
-    tg = int(c.args[0]) if c.args and c.args[0].isdigit() else None
+    print("Bot is running...")
+    app.run_polling(bootstrap_retries=-1, drop_pending_updates=True)
+tg = int(c.args[0]) if c.args and c.args[0].isdigit() else None
     await c.bot.send_message(chat_id, "⏳ در حال تحلیل (حالت دیباگ)...")
     
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True)
-            # 🔴 بسیار مهم: تنظیم سایز مرورگر به حالت دسکتاپ تا جدول کامل لود شود
-            context = await browser.new_context(viewport={'width': 1440, 'height': 900})
+            # 🔴 مخفی کردن ربات از چشم سایت (استفاده از User-Agent واقعی)
+            browser = await p.chromium.launch(
+                headless=True,
+                args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
+            )
+            context = await browser.new_context(
+                viewport={'width': 1440, 'height': 900},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
             await context.add_cookies([
                 {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
                 {'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},
                 {'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}
             ])
             pg = await context.new_page()
-            pg.set_default_timeout(60000)
+            pg.set_default_timeout(90000)
             
-            # باز کردن سایت
-            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
-            await pg.wait_for_timeout(6000)
+            print("Navigating to website...")
+            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
+            await pg.wait_for_timeout(10000) 
 
-            if "ورود" in await pg.locator('body').inner_text():
-                await c.bot.send_message(chat_id, "⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند.")
+            print("Checking for login status...")
+            page_text = await pg.locator('body').inner_text()
+            # اگر کلمه ورود در صفحه بود و دکمه‌های اصلی نبود، یعنی کوکی خراب است
+            if "ورود" in page_text and "شماره موبایل" in page_text:
+                await c.bot.send_message(chat_id, "⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند. لطفا توکن‌های جدید را در سکرت‌های گیت‌هاب جایگزین کنید.")
                 return
                 
             rp = "📊 <b>تحلیل حرفه‌ای</b> 📊\n"
@@ -239,30 +283,3 @@ async def co(u: Update, c: C):
                 if mr >= 7:
                     rp += f"🔹 ۶ پره (دور ۲ تا ۷): {get_pick([2,3,4,5,6,7])}\n"
                     rp += f"🔹 ۵ پره (دور ۳ تا ۷): {get_pick([3,4,5,6,7])}\n"
-                    rp += f"🔹 ۳ پره اول (دور ۱ تا ۳): {get_pick([1,2,3])}\n"
-                    rp += f"🔹 ۳ پره دوم (دور ۵ تا ۷): {get_pick([5,6,7])}\n"
-                else:
-                    rp += f"🔹 ۶ پره (دور ۱ تا ۶): {get_pick([1,2,3,4,5,6])}\n"
-                    rp += f"🔹 ۵ پره (دور ۲ تا ۶): {get_pick([2,3,4,5,6])}\n"
-                    rp += f"🔹 ۳ پره اول (دور ۱ تا ۳): {get_pick([1,2,3])}\n"
-                    rp += f"🔹 ۳ پره دوم (دور ۴ تا ۶): {get_pick([4,5,6])}\n"
-                
-            await send_long_message(c, chat_id, rp)
-            
-    except Exception as e:
-        await c.bot.send_message(chat_id, f"❌ خطای غیرمنتظره: {str(e)}")
-    finally:
-        # 🔴 این بخش حیاتی است: مرورگر در هر شرایطی (حتی خطا) باید بسته شود تا گیت‌هاب هنگ نکند
-        if browser:
-            await browser.close()
-
-# --- راه‌اندازی ربات ---
-if __name__ == '__main__':
-    app = AB().token(T).build()
-    app.add_handler(CH('start', st))
-    app.add_handler(CH('on', on))
-    app.add_handler(CH('off', off))
-    app.add_handler(CH('check_odds', co))
-
-    print("Bot is running...")
-    app.run_polling(bootstrap_retries=-1, drop_pending_updates=True)
