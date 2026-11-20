@@ -80,12 +80,12 @@ async def ar(p, r_num, c, chat_id):
             await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=5000, force=True)
             print(f"Clicked R {r_num}")
         except:
-            try:
-                await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
+        try:
+            await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
                 print(f"Clicked {r_num}")
-            except:
+        except:
                 print(f"Round {r_num} button not found!")
-                return None 
+            return None 
         
         await p.wait_for_timeout(8000)
         x = await p.locator('body').inner_text()
