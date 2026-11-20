@@ -58,13 +58,11 @@ async def ar(p, r_num, c, chat_id):
     horses = {}
     table_text = ""
     try:
-        # کلیک روی تب جدول
         try:
             await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=10000, force=True)
             await p.wait_for_timeout(3000)
         except: pass
 
-        # کلیک روی شماره دور
         try:
             await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=5000, force=True)
         except:
@@ -72,8 +70,7 @@ async def ar(p, r_num, c, chat_id):
                 await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
             except: return None 
         
-        # صبر برای لود جدول
-        await p.wait_for_timeout(6000)
+        await p.wait_for_timeout(7000)
         table_text = await p.locator('body').inner_text()
         
         pattern = r'([^\n]+)\n[^\n]*\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
@@ -96,8 +93,8 @@ async def ar(p, r_num, c, chat_id):
             horses[num] = {
                 "n": name, "num": num, "ior": ior, "j": jockey,
                 "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0
-                                        }
-            # تلاش برای گرفتن ضرایب
+            }
+
         try:
             await p.get_by_text("دورهای", exact=False).first.click(timeout=5000, force=True)
             await p.wait_for_timeout(3000)
@@ -119,6 +116,14 @@ async def ar(p, r_num, c, chat_id):
         print(f"Error in round {r_num}: {e}")
         
     if not horses:
+        # اگر جدول خوانده نشد، عکس صفحه را برای دیباگ می‌فرستیم
+        try:
+            screenshot_path = f"debug_{r_num}.png"
+            await p.screenshot(path=screenshot_path, full_page=False)
+            with open(screenshot_path, "rb") as image_file:
+                await c.bot.send_photo(chat_id=chat_id, photo=image_file, caption=f"⚠️ خطای خواندن جدول در دور {r_num}. احتمالا کوکی‌ها منقضی شده‌اند.")
+            os.remove(screenshot_path)
+        except: pass
         return None
     
     good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
@@ -140,7 +145,6 @@ async def ar(p, r_num, c, chat_id):
     
     q = f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}"
     
-    # اسب شگفتی (ضریب بالا)
     surprise_candidates = [h for h in horses.values() if h['w_odd'] >= 8.0 and h['ior'] > 0]
     surprise_candidates = sorted(surprise_candidates, key=lambda y: y['final_sc'], reverse=True)
     
@@ -176,9 +180,9 @@ async def co(u: Update, c: C):
             browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
             
             context = await browser.new_context(
-                viewport={'width': 1440, 'height': 900},
+                viewport={'width': 1920, 'height': 1080},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
+                  )
             await context.add_cookies([
                 {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
                 {'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},
@@ -188,9 +192,10 @@ async def co(u: Update, c: C):
             pg.set_default_timeout(60000)
             
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
-            await pg.wait_for_timeout(10000)
+            await pg.wait_for_timeout(10000) 
+
             if "ورود" in await pg.locator('body').inner_text() and "شماره موبایل" in await pg.locator('body').inner_text():
-                await c.bot.send_message(chat_id, "⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند.")
+                await c.bot.send_message(chat_id, "⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند. لطفا توکن‌ها را آپدیت کنید.")
                 return
                 
             rp = "📊 <b>تحلیل جامع مسابقات</b> 📊\n"
@@ -219,7 +224,7 @@ async def co(u: Update, c: C):
     finally:
         if browser: await browser.close()
 
-if __name__ == '__main__':
+if name == 'main':
     app = AB().token(T).build()
     app.add_handler(CH('start', st))
     app.add_handler(CH('on', on))
