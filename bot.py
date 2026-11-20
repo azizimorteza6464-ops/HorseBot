@@ -45,8 +45,9 @@ async def off(u: Update, c: C):
 
 async def ar(p, r_num, c, chat_id):
     horses = {}
+    x = ""
     try:
-        # رفتن به تب جدول مسابقات (استفاده از تابع برای جلوگیری از خطای return)
+        # 1. کلیک روی تب جدول مسابقات
         await p.evaluate("""() => {
             let a=document.querySelectorAll('a,div,span,button');
             let o=Array.from(a).find(e=>e.textContent.includes('جدول مسا'));
@@ -54,6 +55,7 @@ async def ar(p, r_num, c, chat_id):
         }""")
         await p.wait_for_timeout(4000)
         
+        # 2. کلیک روی نمایش دورها
         try:
             await p.evaluate("""() => {
                 let a=document.querySelectorAll('a,div,span,button');
@@ -63,40 +65,52 @@ async def ar(p, r_num, c, chat_id):
             await p.wait_for_timeout(3000)
         except: pass
         
-        # کلیک روی دور مورد نظر (اصلاح خطای return)
-        clicked = await p.evaluate(f"""() => {{
-            let elements = Array.from(document.querySelectorAll('div,span,button,a'));
-            let btn = elements.find(e => e.textContent.trim() === 'R {r_num}' || e.textContent.trim() === '{r_num}');
-            if(btn) {{ btn.click(); return true; }}
-            return false;
-        }}""")
-        
-        if not clicked: return None
+        # 3. کلیک روی شماره دور با استفاده از قابلیت Playwright
+        try:
+            await p.get_by_text(str(r_num), exact=True).first.click(timeout=4000)
+        except:
+            # اگر پیدا نکرد، با جاوا اسکریپت کلیک می‌کنیم
+            clicked = await p.evaluate(f"""() => {{
+                let elements = Array.from(document.querySelectorAll('div,span,button,a'));
+                let btn = elements.find(e => e.textContent.trim() === '{r_num}');
+                if(btn) {{ btn.click(); return true; }}
+                return false;
+            }}""")
+            if not clicked: 
+                return None
             
-        await p.wait_for_timeout(6000) 
-        
+        await p.wait_for_timeout(5000) 
         x = await p.locator('body').inner_text()
-        pattern = r'([^\n]+)\n[^\n]+\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
         
-        for m in re.finditer(pattern, x):
-            name = m.group(1).strip()
-            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "جایزه", "دور"]): continue
-            
-            num = int(m.group(2))
-            ior = int(m.group(4))
-            perf_str = m.group(5)
-            jockey = m.group(6).strip()
-            
-            perf_score = 0
-            s_map = {'1': 25, '2': 15, '3': 5}
-            for rank in perf_str.split('-'):
-                perf_score += s_map.get(rank, 0)
-                
-            horses[num] = {
-                "n": name, "num": num, "ior": ior, "j": jockey,
-                "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0
-            }
-            # رفتن به تب دورهای برای ضرایب
+        # روش جدید خواندن: خط به خط می‌گردیم
+        lines = [line.strip() for line in x.split('\n') if line.strip()]
+        
+        for i in range(len(lines) - 5):
+            # دنبال خطی می‌گردیم که فقط یک عدد باشد (نمره IOR)
+            if lines[i].isdigit():
+                ior = int(lines[i])
+                if 0 < ior < 200: # محدوده منطقی برای IOR
+                    perf = lines[i+1]
+                    # خط بعد از IOR باید سابقه باشد (شامل خط تیره)
+                    if '-' in perf:
+                        # شماره اسب دو خط بالاتر است (مثلاً "6 58Kg")
+                        num_part = lines[i-2].split()[0]
+                        if num_part.isdigit():
+                            num = int(num_part)
+                            name = lines[i-4]
+                            if len(name) > 2 and not any(k in name for k in ["مقام", "اسب", "سن"]):
+                                
+                                perf_score = 0
+                                s_map = {'1': 25, '2': 15, '3': 5}
+                                for rank in perf.split('-'):
+                                    perf_score += s_map.get(rank.strip(), 0)
+                                    
+                                horses[num] = {
+                                    "n": name, "num": num, "ior": ior, "j": "نامشخص",
+                                    "perf": perf, "perf_sc": perf_score, "w_odd": 50.0
+                                }
+
+        # 4. رفتن به تب دورهای برای خواندن ضرایب
         await p.evaluate("""() => {
             let a=document.querySelectorAll('a,div,span,button');
             let o=Array.from(a).find(e=>e.textContent.includes('دورهای'));
@@ -104,15 +118,9 @@ async def ar(p, r_num, c, chat_id):
         }""")
         await p.wait_for_timeout(3000)
         
-        clicked_odds = await p.evaluate(f"""() => {{
-            let elements = Array.from(document.querySelectorAll('div,span,button,a'));
-            let btn = elements.find(e => e.textContent.trim() === 'R {r_num}' || e.textContent.trim() === '{r_num}');
-            if(btn) {{ btn.click(); return true; }}
-            return false;
-        }}""")
-        
-        if clicked_odds:
-            await p.wait_for_timeout(4000)
+        try:
+            await p.get_by_text(str(r_num), exact=True).first.click(timeout=3000)
+            await p.wait_for_timeout(3000)
             x_odds = await p.locator('body').inner_text()
             odds_pattern = r'([^\n]+)\n(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)'
             for m in re.finditer(odds_pattern, x_odds):
@@ -122,15 +130,21 @@ async def ar(p, r_num, c, chat_id):
                     if name in h['n'] or h['n'] in name:
                         horses[num]['w_odd'] = w_odd
                         break
+        except: pass
 
     except Exception as e:
-        # اگر خطایی رخ داد، به جای کرش کردن، در کنسول چاپ می شود
         print(f"Error: {e}")
         
-    if not horses: return None
+    # اگر هیچ اسبی پیدا نشد، متن خام را برای دیباگ می‌فرستیم
+    if not horses and x:
+        debug_msg = f"⚠️ خطای خواندن دور {r_num}\n\nمتن دریافتی از سایت:\n{x[:800]}"
+        await c.bot.send_message(chat_id, debug_msg, parse_mode='Markdown')
+        return None
+    elif not horses:
+        return None
     
+    # ادامه محاسبات...
     good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
-    
     for num, h in horses.items():
         market_score = 100 / (h['w_odd'] + 1) if h['w_odd'] > 0 else 0
         jockey_bonus = 15 if any(gj in h['j'] for gj in good_jockeys) else 0
@@ -186,6 +200,7 @@ async def co(u: Update, c: C):
             pg.set_default_timeout(60000)
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
             await pg.wait_for_timeout(6000)
+            
             if "ورود" in await pg.locator('body').inner_text():
                 await c.bot.send_message(chat_id, "⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند.")
                 return
@@ -195,7 +210,6 @@ async def co(u: Update, c: C):
             
             max_r = tg if tg else 7
             for r in ([tg] if tg else range(1, max_r + 1)):
-                # برای اینکه تلگرام بلاک نشود، فقط یک پیام کلی می فرستیم
                 res = await ar(pg, r, c, chat_id)
                 
                 if res:
@@ -244,8 +258,7 @@ async def co(u: Update, c: C):
             
     except Exception as e:
         await c.bot.send_message(chat_id, f"❌ خطای غیرمنتظره: {str(e)}")
-
-app = AB().token(T).build()
+        app = AB().token(T).build()
 app.add_handler(CH('start', st))
 app.add_handler(CH('on', on))
 app.add_handler(CH('off', off))
