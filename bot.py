@@ -78,7 +78,7 @@ async def co(u:Update,c:C):
     await c.bot.send_message(u.effective_chat.id,"Login Err")
     return
    await pg.evaluate("let a=document.querySelectorAll('span,a,div,button');let o=Array.from(a).find(e=>e.textContent.trim()==='آد اسب');if(o)o.click();")
-      await pg.wait_for_timeout(4000)
+   await pg.wait_for_timeout(4000)
    r7=await pg.locator("text='R 7'").count()>0 or await pg.locator("text='7'").count()>0
    mr=7 if r7 else 6
    rp="📊 تحلیل جامع مسابقات\n"
