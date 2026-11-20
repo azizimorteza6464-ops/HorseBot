@@ -58,13 +58,19 @@ async def ar(p, r_num, c, chat_id):
     horses = {}
     table_text = ""
     try:
-        # کلیک روی جدول مسابقات
+        # 1. کلیک روی جدول مسابقات
         try:
             await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=10000, force=True)
             await p.wait_for_timeout(3000)
         except: pass
 
-        # کلیک روی شماره دور
+        # 2. کلیک روی نمایش دورها (برای باز شدن نمای جزئی)
+        try:
+            await p.get_by_text("نمایش دورها", exact=False).first.click(timeout=10000, force=True)
+            await p.wait_for_timeout(3000)
+        except: pass
+
+        # 3. کلیک روی شماره دور
         try:
             await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=5000, force=True)
         except:
@@ -72,11 +78,10 @@ async def ar(p, r_num, c, chat_id):
                 await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
             except: return None 
         
-        await p.wait_for_timeout(6000)
+        await p.wait_for_timeout(7000)
         table_text = await p.locator('body').inner_text()
         
-        # الگوی استخراج داده‌ها (همان الگوی اولیه که کار می‌کرد)
-        pattern = r'([^\n]+)\n[^\n]+\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
+        pattern = r'([^\n]+)\n[^\n]*\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
         
         matches = re.finditer(pattern, table_text)
         for m in matches:
@@ -123,7 +128,7 @@ async def ar(p, r_num, c, chat_id):
             screenshot_path = f"debug_{r_num}.png"
             await p.screenshot(path=screenshot_path, full_page=False)
             with open(screenshot_path, "rb") as image_file:
-                await c.bot.send_photo(chat_id=chat_id, photo=image_file, caption=f"⚠️ خطای خواندن جدول در دور {r_num}.")
+                await c.bot.send_photo(chat_id=chat_id, photo=image_file, caption=f"⚠️ خطای خواندن جدول در دور {r_num}. ظاهر صفحه را چک کنید.")
             os.remove(screenshot_path)
         except: pass
         return None
@@ -136,18 +141,12 @@ async def ar(p, r_num, c, chat_id):
 
     sorted_horses = sorted(horses.values(), key=lambda y: y['final_sc'], reverse=True)
     
-    # --- منطق انتخاب بدون تکرار (اصلاح شده) ---
-    w = sorted_horses[0] # انتخاب اول
-    
-    # انتخاب دوم (حتما با انتخاب اول فرق دارد)
+    w = sorted_horses[0]
     p_horse = sorted_horses[1] if len(sorted_horses) > 1 else w
-    
-    # انتخاب سوم (حتما با اول و دوم فرق دارد)
     s_horse = sorted_horses[2] if len(sorted_horses) > 2 else p_horse
     
     q = f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}"
     
-    # اسب‌های شگفتی (ضریب بالا)
     surprise_candidates = [h for h in horses.values() if h['w_odd'] >= 8.0 and h['ior'] > 0]
     surprise_candidates = sorted(surprise_candidates, key=lambda y: y['final_sc'], reverse=True)
     
@@ -182,14 +181,13 @@ async def co(u: Update, c: C):
         async with ap() as p:
             browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
             
-            # 🔴 برگشت به حالت دسکتاپ تا جدول با جزئیات لود شود
             context = await browser.new_context(
                 viewport={'width': 1440, 'height': 900},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
             await context.add_cookies([
                 {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
-                {'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},
+            {'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},
                 {'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}
             ])
             pg = await context.new_page()
