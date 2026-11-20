@@ -58,11 +58,13 @@ async def ar(p, r_num, c, chat_id):
     horses = {}
     table_text = ""
     try:
+        # کلیک روی تب جدول
         try:
             await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=10000, force=True)
             await p.wait_for_timeout(3000)
         except: pass
 
+        # کلیک روی شماره دور
         try:
             await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=5000, force=True)
         except:
@@ -70,7 +72,8 @@ async def ar(p, r_num, c, chat_id):
                 await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
             except: return None 
         
-        await p.wait_for_timeout(7000)
+        # صبر برای لود جدول
+        await p.wait_for_timeout(6000)
         table_text = await p.locator('body').inner_text()
         
         pattern = r'([^\n]+)\n[^\n]*\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
@@ -93,8 +96,8 @@ async def ar(p, r_num, c, chat_id):
             horses[num] = {
                 "n": name, "num": num, "ior": ior, "j": jockey,
                 "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0
-            }
-
+                                        }
+            # تلاش برای گرفتن ضرایب
         try:
             await p.get_by_text("دورهای", exact=False).first.click(timeout=5000, force=True)
             await p.wait_for_timeout(3000)
@@ -137,6 +140,7 @@ async def ar(p, r_num, c, chat_id):
     
     q = f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}"
     
+    # اسب شگفتی (ضریب بالا)
     surprise_candidates = [h for h in horses.values() if h['w_odd'] >= 8.0 and h['ior'] > 0]
     surprise_candidates = sorted(surprise_candidates, key=lambda y: y['final_sc'], reverse=True)
     
@@ -172,7 +176,7 @@ async def co(u: Update, c: C):
             browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
             
             context = await browser.new_context(
-                viewport={'width': 1920, 'height': 1080},
+                viewport={'width': 1440, 'height': 900},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
             await context.add_cookies([
@@ -215,7 +219,7 @@ async def co(u: Update, c: C):
     finally:
         if browser: await browser.close()
 
-if __name__ == '__main__':
+if name == 'main':
     app = AB().token(T).build()
     app.add_handler(CH('start', st))
     app.add_handler(CH('on', on))
