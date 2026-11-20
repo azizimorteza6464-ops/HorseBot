@@ -1,174 +1,253 @@
-import os,re,httpx
+import os, re, httpx
 from telegram import Update
-from telegram.ext import ApplicationBuilder as AB,ContextTypes as C,CommandHandler as CH
+from telegram.ext import ApplicationBuilder as AB, ContextTypes as C, CommandHandler as CH
 from playwright.async_api import async_playwright as ap
 
-T=os.environ.get("BOT_TOKEN")
-A=os.environ.get("USER_TOKEN")
-D=os.environ.get("USER_DEVICE_ID")
-U=os.environ.get("USER_UDI")
-G=os.environ.get("GH_PAT")
-R=os.environ.get("GITHUB_REPOSITORY")
+# --- متغیرهای محیطی ---
+T = os.environ.get("BOT_TOKEN")
+A = os.environ.get("USER_TOKEN")
+D = os.environ.get("USER_DEVICE_ID")
+U = os.environ.get("USER_UDI")
+G = os.environ.get("GH_PAT")
+R = os.environ.get("GITHUB_REPOSITORY")
 
+# --- توابع کمکی (روشن/خاموش کردن) ---
 async def s(v):
     if not R or not G: return "E"
     try:
-        u=f"https://api.github.com/repos/{R}/actions/variables/AUTO_UPDATE"
-        h={"Authorization":f"Bearer {G}","Accept":"application/vnd.github+json"}
+        u = f"https://api.github.com/repos/{R}/actions/variables/AUTO_UPDATE"
+        h = {"Authorization": f"Bearer {G}", "Accept": "application/vnd.github+json"}
         async with httpx.AsyncClient() as c:
-            q=await c.get(u,headers=h)
-            if q.status_code==404: await c.post(f"https://api.github.com/repos/{R}/actions/variables",headers=h,json={"name":"AUTO_UPDATE","value":v})
-            else: await c.patch(u,headers=h,json={"name":"AUTO_UPDATE","value":v})
+            q = await c.get(u, headers=h)
+            if q.status_code == 404:
+                await c.post(f"https://api.github.com/repos/{R}/actions/variables", headers=h, json={"name": "AUTO_UPDATE", "value": v})
+            else:
+                await c.patch(u, headers=h, json={"name": "AUTO_UPDATE", "value": v})
         return "OK"
     except: return "E"
 
 async def g():
     if not R or not G: return "true"
     try:
-        u=f"https://api.github.com/repos/{R}/actions/variables/AUTO_UPDATE"
-        h={"Authorization":f"Bearer {G}","Accept":"application/vnd.github+json"}
+        u = f"https://api.github.com/repos/{R}/actions/variables/AUTO_UPDATE"
+        h = {"Authorization": f"Bearer {G}", "Accept": "application/vnd.github+json"}
         async with httpx.AsyncClient() as c:
-            q=await c.get(u,headers=h)
-            if q.status_code==200: return q.json().get("value","true")
+            q = await c.get(u, headers=h)
+            if q.status_code == 200: return q.json().get("value", "true")
         return "true"
     except: return "true"
 
-async def st(u:Update,c:C): await c.bot.send_message(u.effective_chat.id,"Commands:\n/on \n/off \n/check_odds [1-7]")
+# --- دستورات تلگرام ---
+async def st(u: Update, c: C): await c.bot.send_message(u.effective_chat.id, "دستورات:\n/on روشن\n/off خاموش\n/check_odds [1-7]")
+async def on(u: Update, c: C):
+    r = await s("true")
+    await c.bot.send_message(u.effective_chat.id, "✅ ربات روشن شد" if r == "OK" else r)
+async def off(u: Update, c: C):
+    r = await s("false")
+    await c.bot.send_message(u.effective_chat.id, "🛑 ربات خاموش شد" if r == "OK" else r)
 
-async def on(u:Update,c:C):
-    r=await s("true")
-    await c.bot.send_message(u.effective_chat.id,"Robot ON" if r=="OK" else r)
-
-async def off(u:Update,c:C):
-    r=await s("false")
-    await c.bot.send_message(u.effective_chat.id,"Robot OFF" if r=="OK" else r)
-
-async def ar(p,r):
+# --- تابع استخراج اطلاعات یک دور ---
+async def ar(p, r_num):
+    horses = {}
     try:
-        await p.evaluate(f"let a=document.querySelectorAll('div,span,button,a');let t=Array.from(a).find(e=>e.textContent.trim()==='{r}'||e.textContent.trim()==='R {r}');if(t)t.click();")
+        # 1. رفتن به تب "جدول مسابقات" و کلیک روی "نمایش دورها"
+        await p.evaluate("let a=document.querySelectorAll('a,div,span,button');let o=Array.from(a).find(e=>e.textContent.includes('جدول مسا'));if(o)o.click();")
         await p.wait_for_timeout(3000)
-    except: pass
-    
-    x=await p.locator('body').inner_text()
-    horses=[]
-    
-    for m in re.finditer(r'(?:^|\n)\s*(?:(\d+)[\s\-\.]*)?([^\n\d]+?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)', x):
-        num_str = m.group(1)
-        name = m.group(2).strip()
-        w = float(m.group(3))
-        pl = float(m.group(4))
-        sh = float(m.group(5))
+        try:
+            await p.evaluate("let a=document.querySelectorAll('a,div,span,button');let o=Array.from(a).find(e=>e.textContent.includes('نمایش دورها'));if(o)o.click();")
+            await p.wait_for_timeout(3000)
+        except: pass
         
-        if name and 0 < w < 90 and not any(k in name for k in ["مقام","شماره","نام","پیش","میان","پی","چابک"]):
-            score = (1/w)*50 + (1/pl)*30 + (1/sh)*20
-            actual_num = int(num_str) if num_str else None
-            horses.append({"n": name, "num": actual_num, "w": w, "p": pl, "s": sh, "sc": score})
+        # 2. کلیک روی دور مورد نظر
+        clicked = await p.evaluate(f"""
+            let elements = Array.from(document.querySelectorAll('div,span,button,a'));
+            let btn = elements.find(e => e.textContent.trim() === 'R {r_num}' || e.textContent.trim() === '{r_num}');
+            if(btn) {{ btn.click(); return true; }}
+            return false;
+        """)
+        if not clicked: return None
+        await p.wait_for_timeout(4000) 
+        
+        # 3. استخراج اطلاعات پایه (نام، شماره، IOR، سابقه، چابکسوار)
+        x = await p.locator('body').inner_text()
+        pattern = r'([^\n]+)\n[^\n]+\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
+        
+        for m in re.finditer(pattern, x):
+            name = m.group(1).strip()
+            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "جایزه", "دور"]): continue
             
-    if not horses: return
-    
-    for idx, item in enumerate(horses):
-        if item["num"] is None:
-            item["num"] = idx + 1
+            num = int(m.group(2))
+            ior = int(m.group(4))
+            perf_str = m.group(5)
+            jockey = m.group(6).strip()
+            
+            # محاسبه امتیاز سابقه (مقام اول = 25، دوم = 15، سوم = 5)
+            perf_score = 0
+            for rank in perf_str.split('-'):
+                if rank == '1': perf_score += 25
+                    elif rank == '2': perf_score += 15
+                elif rank == '3': perf_score += 5
+                
+            horses[num] = {
+                "n": name, "num": num, "ior": ior, "j": jockey,
+                "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0
+            }
 
-    o = sorted(horses, key=lambda y: y["sc"], reverse=True)
-    b = o[0]
-    p2 = min(horses, key=lambda y: y["p"])
-    s2 = min(horses, key=lambda y: y["s"])
-    q = f"{o[0]['num']}-{o[0]['n']} + {o[1]['num']}-{o[1]['n']}" if len(o) > 1 else "-"
-    t_names = [y['n'] for y in o[:3]]
-    others = [y for y in horses if y['n'] not in t_names]
-    su = max(others, key=lambda y: y["sc"]) if others else o[-1]
-    
-    return {"w": b, "p": p2, "s": s2, "q": q, "pr": b, "su": su}
+        # 4. رفتن به تب "دورهای" برای خواندن ضرایب زنده
+        await p.evaluate("let a=document.querySelectorAll('a,div,span,button');let o=Array.from(a).find(e=>e.textContent.includes('دورهای'));if(o)o.click();")
+        await p.wait_for_timeout(3000)
+        
+        clicked_odds = await p.evaluate(f"""
+            let elements = Array.from(document.querySelectorAll('div,span,button,a'));
+            let btn = elements.find(e => e.textContent.trim() === 'R {r_num}' || e.textContent.trim() === '{r_num}');
+            if(btn) {{ btn.click(); return true; }}
+            return false;
+        """)
+        
+        if clicked_odds:
+            await p.wait_for_timeout(4000)
+            x_odds = await p.locator('body').inner_text()
+            odds_pattern = r'([^\n]+)\n(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)'
+            for m in re.finditer(odds_pattern, x_odds):
+                name = m.group(1).strip()
+                w_odd = float(m.group(2))
+                for num, h in horses.items():
+                    if name in h['n'] or h['n'] in name:
+                        horses[num]['w_odd'] = w_odd
+                        break
 
-async def co(u:Update,c:C):
+    except Exception as e:
+        print(f"Error scraping round {r_num}: {e}")
+        
+    if not horses: return None
+    
+    # --- محاسبه امتیاز نهایی ---
+    good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
+    
+    for num, h in horses.items():
+        market_score = 100 / (h['w_odd'] + 1) if h['w_odd'] > 0 else 0
+        jockey_bonus = 15 if any(gj in h['j'] for gj in good_jockeys) else 0
+        h['final_sc'] = (h['ior'] * 0.4) + (h['perf_sc'] * 0.25) + (market_score * 0.2) + (jockey_bonus * 0.15)
+
+    sorted_horses = sorted(horses.values(), key=lambda y: y['final_sc'], reverse=True)
+    
+    # انتخاب‌ها
+    w = sorted_horses[0]
+    p_horse = sorted_horses[1] if len(sorted_horses) > 1 else w
+    s_horse = max(horses.values(), key=lambda y: y['perf_sc'])
+    
+    q = f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}"
+    
+    # --- منطق جدید اسب شگفتی و دوقلو شگفتی ---
+    # شگفتی: اسبی با ضریب بالای 8 و IOR بالای 0
+    surprise_candidates = [h for h in horses.values() if h['w_odd'] >= 8.0 and h['ior'] > 0]
+    surprise_candidates = sorted(surprise_candidates, key=lambda y: y['final_sc'], reverse=True)
+
+    su = surprise_candidates[0] if surprise_candidates else sorted_horses[-1]
+
+    # دوقلو شگفتی: دو اسب برتر از میان کاندیداهای شگفتی
+    if len(surprise_candidates) >= 2:
+        su2 = surprise_candidates[1]
+    else:
+        # اگر کمتر از ۲ شگفتی داشتیم، از بین بقیه اسب‌های برتر انتخاب می‌کنیم
+        others = [h for h in sorted_horses if h['num'] != w['num'] and h['num'] != p_horse['num']]
+        su2 = others[0] if others else w
+
+    qs = f"{su['num']}-{su['n']} + {su2['num']}-{su2['n']}"
+
+    return {"w": w, "p": p_horse, "s": s_horse, "q": q, "qs": qs, "su": su}
+
+# --- دستور اصلی /check_odds ---
+async def co(u: Update, c: C):
     if not A or not U:
-        await c.bot.send_message(u.effective_chat.id,"Err Auth: Check Secrets.")
+        await c.bot.send_message(u.effective_chat.id, "⚠️ خطا: توکن‌های ورود یافت نشد.")
         return
     
-    cst=await g()
-    if cst=="false":
-        await c.bot.send_message(u.effective_chat.id,"Robot is OFF.")
+    cst = await g()
+    if cst == "false":
+        await c.bot.send_message(u.effective_chat.id, "🛑 ربات خاموش است. /on را بزنید.")
         return
         
-    tg=int(c.args[0]) if c.args and c.args[0].isdigit() else None
-    await c.bot.send_message(u.effective_chat.id,"Please wait...")
+    tg = int(c.args[0]) if c.args and c.args[0].isdigit() else None
+    await c.bot.send_message(u.effective_chat.id, "⏳ در حال تحلیل فنی و بررسی ضرایب زنده...")
     
     try:
         async with ap() as p:
-            b=await p.chromium.launch(headless=True)
-            ct=await b.new_context()
+            b = await p.chromium.launch(headless=True)
+            ct = await b.new_context()
             await ct.add_cookies([
-                {'name':'auth_token','value':A,'domain':'.asbdavani.app','path':'/'},
-                {'name':'device_id','value':D,'domain':'.asbdavani.app','path':'/'},
-                {'name':'_udi','value':U,'domain':'.asbdavani.app','path':'/'}
+                {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
+                {'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},
+                {'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}
             ])
-            pg=await ct.new_page()
-            pg.set_default_timeout(30000)
-            await pg.goto("https://mosharekat.asbdavani.app/",timeout=90000)
-            await pg.wait_for_timeout(4000)
+            pg = await ct.new_page()
+            pg.set_default_timeout(40000)
+            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
+            await pg.wait_for_timeout(5000)
             
             if "ورود" in await pg.locator('body').inner_text():
-                await c.bot.send_message(u.effective_chat.id,"Login Err: Update Cookies.")
+                await c.bot.send_message(u.effective_chat.id, "⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند.")
                 return
                 
-            await pg.evaluate("let a=document.querySelectorAll('span,a,div,button');let o=Array.from(a).find(e=>e.textContent.trim()==='آد اسب');if(o)o.click();")
-            await pg.wait_for_timeout(4000)
+            rp = "📊 *تحلیل حرفه‌ای (فنی + ضرایب)* 📊\n"
+            res_all = []
             
-            r7=await pg.locator("text='R 7'").count()>0 or await pg.locator("text='7'").count()>0
-            mr=7 if r7 else 6
-            rp="Analysis:\n"
-            res_all=[]
-            
-            for r in ([tg] if tg else range(1,mr+1)):
-                res=await ar(pg,r)
-                if res:
-                    res_all.append((r,res))
-                    rp+=f"\nR{r}\n"
-                    rp+=f"Win: {res['w']['num']}-{res['w']['n']} ({res['w']['w']})\n"
-                    rp+=f"Place: {res['p']['num']}-{res['p']['n']} ({res['p']['p']})\n"
-                    rp+=f"Show: {res['s']['num']}-{res['s']['n']} ({res['s']['s']})\n"
-                    rp+=f"Quin: {res['q']}\n"
-                    rp+=f"Surp: {res['su']['num']}-{res['su']['n']}\n"
-                else:
-                    rp+=f"\nR{r}: No data.\n"
-                    res_all.append((r,None))
-                    
-            if not tg:
-                rp+="\n----------\n"
-                def get_p(list_r):
-                    names=[]
-                    for r_num,res in list_r:
-                        if r_num in range_num and res:
-                            names.append(f"{res['pr']['num']}-{res['pr']['n']}")
-                    return ", ".join(names)
-                    
-                if mr==7:
-                    range_num=range(2,8); p6=get_p(res_all)
-                    range_num=range(2,7); p5=get_p(res_all)
-                    range_num=range(1,4); p3_1=get_p(res_all)
-                    range_num=range(5,8); p3_2=get_p(res_all)
-                else:
-                    range_num=range(1,7); p6=get_p(res_all)
-                    range_num=range(2,7); p5=get_p(res_all)
-                    range_num=range(1,4); p3_1=get_p(res_all)
-                    range_num=range(4,7); p3_2=get_p(res_all)
-                    
-                if p6: rp+=f"6: {p6}\n"
-                if p5: rp+=f"5: {p5}\n"
-                if p3_1: rp+=f"3(1): {p3_1}\n"
-                if p3_2: rp+=f"3(2): {p3_2}\n"
+            max_r = tg if tg else 7
+            for r in ([tg] if tg else range(1, max_r + 1)):
+                res = await ar(pg, r)
                 
-            await c.bot.send_message(u.effective_chat.id,rp)
+                if res:
+                    res_all.append(res)
+                    rp += f"\n🏁 *دور R{r}*\n"
+                    rp += f"🥇 پیش‌بر: {res['w']['num']}-{res['w']['n']} (ضریب {res['w']['w_odd']})\n"
+                    rp += f"└ ⭐ IOR: {res['w']['ior']} | 👤 چابک: {res['w']['j']}\n"
+                    rp += f"🥈 میان‌بر: {res['p']['num']}-{res['p']['n']} (ضریب {res['p']['w_odd']})\n"
+                    rp += f"🥉 پی‌بر: {res['s']['num']}-{res['s']['n']} (سابقه: {res['s']['perf']})\n"
+                    rp += f"👥 دوقلو: {res['q']}\n"
+                    rp += f"🎲 شگفتی: {res['su']['num']}-{res['su']['n']}\n"
+                    rp += f"🔥 دوقلو شگفتی: {res['qs']}\n"
+                else:
+                    if tg:
+                        rp += f"\n🏁 دور R{r}: اطلاعاتی یافت نشد.\n"
+                    res_all.append(None)
+                    
+            if not tg and len(res_all) > 0:
+                valid_rounds = [i+1 for i, res in enumerate(res_all) if res is not None]
+                mr = max(valid_rounds) if valid_rounds else 6 
+                
+                rp += "\n➖➖➖➖➖➖➖➖\n"
+                rp += f"🎯 *ترکیب‌های پیشنهادی (مسابقه {mr} دوره)* 🎯\n"
+                
+                def get_pick(round_list):
+                    names = []
+                    for r_num in round_list:
+                        if r_num <= len(res_all) and res_all[r_num-1]:
+                            res = res_all[r_num-1]
+                            names.append(f"{res['w']['num']}-{res['w']['n']}")
+                    return " + ".join(names) if names else "نامشخص"
+                
+                if mr >= 7:
+                    rp += f"🔹 ۶ پره (دور ۲ تا ۷): {get_pick([2,3,4,5,6,7])}\n"
+                    rp += f"🔹 ۵ پره (دور ۳ تا ۷): {get_pick([3,4,5,6,7])}\n"
+                    rp += f"🔹 ۳ پره اول (دور ۱ تا ۳): {get_pick([1,2,3])}\n"
+                    rp += f"🔹 ۳ پره دوم (دور ۵ تا ۷): {get_pick([5,6,7])}\n"
+                else:
+                    rp += f"🔹 ۶ پره (دور ۱ تا ۶): {get_pick([1,2,3,4,5,6])}\n"
+                    rp += f"🔹 ۵ پره (دور ۲ تا ۶): {get_pick([2,3,4,5,6])}\n"
+                    rp += f"🔹 ۳ پره اول (دور ۱ تا ۳): {get_pick([1,2,3])}\n"
+                    rp += f"🔹 ۳ پره دوم (دور ۴ تا ۶): {get_pick([4,5,6])}\n"
+                
+            await c.bot.send_message(u.effective_chat.id, rp, parse_mode='HTML')
             await b.close()
             
     except Exception as e:
-        await c.bot.send_message(u.effective_chat.id,f"E: {str(e)}")
+        await c.bot.send_message(u.effective_chat.id, f"❌ خطای غیرمنتظره: {str(e)}")
 
-app=AB().token(T).build()
-app.add_handler(CH('start',st))
-app.add_handler(CH('on',on))
-app.add_handler(CH('off',off))
-app.add_handler(CH('check_odds',co))
+# --- راه‌اندازی ربات ---
+app = AB().token(T).build()
+app.add_handler(CH('start', st))
+app.add_handler(CH('on', on))
+app.add_handler(CH('off', off))
+app.add_handler(CH('check_odds', co))
 
 app.run_polling(bootstrap_retries=-1, drop_pending_updates=True)
