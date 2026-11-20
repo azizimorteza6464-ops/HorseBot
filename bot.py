@@ -97,7 +97,7 @@ async def ar(p, r_num, c, chat_id):
 
     except Exception as e:
         print(f"Error in round {r_num}: {e}")
-        if not horses:
+    if not horses:
         try:
             screenshot_path = f"debug_{r_num}.png"
             await p.screenshot(path=screenshot_path, full_page=False)
