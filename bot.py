@@ -84,11 +84,10 @@ async def ar(p, r, is_deep=False):
     su = max(m, key=lambda y: y["sc"]) if m else o[-1]
     return {"w": b, "p": p2, "s": s2, "q": q, "pr": b, "su": su}
     async def co(u: Update, c: C, tg=None, is_deep=False):
-        if not A or not U: 
-        return await c.bot.send_message(u.effective_chat.id, "Err Auth")
-        if await g() == "false": 
+    if not A or not U: 
+    return await c.bot.send_message(u.effective_chat.id, "Err Auth")
+    if await g() == "false": 
         return await c.bot.send_message(u.effective_chat.id, "Bot is OFF")
-    
     await c.bot.send_message(u.effective_chat.id, "⏳ در حال تحلیل...")
     try:
         async with ap() as p:
