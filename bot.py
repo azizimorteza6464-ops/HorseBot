@@ -199,7 +199,7 @@ async def co(u: Update, c: C):
     finally:
         if browser: await browser.close()
 
-# --- راه‌اندازی و مدیریت صحیح چرخه رویداد (بدون خطا) ---
+# --- راه‌اندازی و مدیریت صحیح ---
 async def main():
     app = AB().token(T).build()
     app.add_handler(CH('start', st))
@@ -209,15 +209,12 @@ async def main():
 
     print("Bot started. Waiting for commands (runs for 5 minutes)...")
 
-    # مقداردهی اولیه و شروع
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
 
-    # ربات به مدت 300 ثانیه (5 دقیقه) فعال می‌ماند
     await asyncio.sleep(300)
 
-    # خاموش کردن ایمن و بدون خطا
     print("Stopping bot safely...")
     await app.updater.stop()
     await app.stop()
