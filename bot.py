@@ -184,7 +184,7 @@ async def co(u, c, tg=None):
             
             if "ورود" in await pg.locator('body').inner_text():
 
-await c.bot.send_message(chat_id, "⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند.")
+                await c.bot.send_message(chat_id, "⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند.")
                 return
                 
             rp = "📊 *تحلیل حرفه‌ای* 📊\n"
