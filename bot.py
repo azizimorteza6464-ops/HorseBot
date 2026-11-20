@@ -33,9 +33,9 @@ async def off(u:Update,c:C):
     await c.bot.send_message(u.effective_chat.id,"OFF"if r=="OK"else r)
     async def ar(p,r):
         try:
-        await p.evaluate(f"let a=document.querySelectorAll('div,span,button,a');let t=Array.from(a).find(e=>e.textContent.trim()==='{r}'||e.textContent.trim()==='R {r}');if(t)t.click();")
-        await p.wait_for_timeout(3000)
-    except: pass
+            await p.evaluate(f"let a=document.querySelectorAll('div,span,button,a');let t=Array.from(a).find(e=>e.textContent.trim()==='{r}'||e.textContent.trim()==='R {r}');if(t)t.click();")
+            await p.wait_for_timeout(3000)
+        except: pass
     x=await p.locator('body').inner_text()
     h=[]
     # استخراج اسم، شماره و سه ضریب
