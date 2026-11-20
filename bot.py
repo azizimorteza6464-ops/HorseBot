@@ -97,7 +97,7 @@ async def ar(p, r_num, c, chat_id):
 
     except Exception as e:
         print(f"Error in round {r_num}: {e}")
-    if not horses:
+        if not horses:
         try:
             screenshot_path = f"debug_{r_num}.png"
             await p.screenshot(path=screenshot_path, full_page=False)
@@ -199,20 +199,33 @@ async def co(u: Update, c: C):
     finally:
         if browser: await browser.close()
 
-# راه‌اندازی ربات
-app = AB().token(T).build()
-app.add_handler(CH('start', st))
-app.add_handler(CH('on', on))
-app.add_handler(CH('off', off))
-app.add_handler(CH('check_odds', co))
+# --- راه‌اندازی و مدیریت صحیح چرخه رویداد (بدون خطا) ---
+async def main():
+    app = AB().token(T).build()
+    app.add_handler(CH('start', st))
+    app.add_handler(CH('on', on))
+    app.add_handler(CH('off', off))
+    app.add_handler(CH('check_odds', co))
 
-print("Bot started.")
+    print("Bot started. Waiting for commands (runs for 5 minutes)...")
 
-# تایمر 5 دقیقه‌ای برای جلوگیری از هنگ کردن گیت‌هاب
-async def run_bot():
+    # مقداردهی اولیه و شروع
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(drop_pending_updates=True)
+
+    # ربات به مدت 300 ثانیه (5 دقیقه) فعال می‌ماند
+    await asyncio.sleep(300)
+
+    # خاموش کردن ایمن و بدون خطا
+    print("Stopping bot safely...")
+    await app.updater.stop()
+    await app.stop()
+    await app.shutdown()
+    print("Bot stopped successfully. GitHub Action will now finish.")
+
+if name == 'main':
     try:
-        await asyncio.wait_for(app.run_polling(bootstrap_retries=-1, drop_pending_updates=True), timeout=300)
-    except asyncio.TimeoutError:
-        print("Bot stopped after 5 minutes.")
-
-asyncio.run(run_bot())
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
