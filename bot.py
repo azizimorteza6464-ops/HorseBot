@@ -85,7 +85,7 @@ async def ar(p, r_num):
             perf_score = 0
             for rank in perf_str.split('-'):
                 if rank == '1': perf_score += 25
-                    elif rank == '2': perf_score += 15
+                elif rank == '2': perf_score += 15
                 elif rank == '3': perf_score += 5
                 
             horses[num] = {
