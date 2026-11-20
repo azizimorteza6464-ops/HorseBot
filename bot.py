@@ -93,7 +93,7 @@ async def ar(p, r_num, c, chat_id):
             
             num = int(m.group(2))
 
-ior = int(m.group(4))
+            ior = int(m.group(4))
             perf_str = m.group(5)
             jockey = m.group(6).strip()
             
