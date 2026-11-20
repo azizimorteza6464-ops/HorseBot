@@ -56,59 +56,35 @@ async def send_long_message(c, chat_id, text):
 
 async def ar(p, r_num, c, chat_id):
     horses = {}
+    table_text = ""
     try:
-        print(f"--> Analyzing Round {r_num}")
-        
-        # 1. رفتن به تب جدول مسابقات
         try:
             await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=10000, force=True)
             await p.wait_for_timeout(3000)
         except: pass
 
-        # 2. کلیک روی شماره دور
         try:
             await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=5000, force=True)
         except:
             try:
                 await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
-            except:
-                print(f"Round {r_num} button not found!")
-                return None 
+            except: return None 
         
-        # 3. صبر کردن تا جدول حتما لود شود
-        await p.wait_for_timeout(6000)
+        await p.wait_for_timeout(7000)
+        table_text = await p.locator('body').inner_text()
         
-        # 🔴 نکته کلیدی: به جای خواندن کل صفحه، فقط تگ TABLE را می‌خوانیم
-        table_text = ""
-        try:
-            tables = await p.locator('table').all()
-            for t in tables:
-                txt = await t.inner_text()
-                # اگر جدولی پیدا شد که شامل کلمات کلیدی اسب باشد، همان را برمی‌داریم
-                if "اسب" in txt or "Kg" in txt or "چابک" in txt:
-                    table_text += txt + "\n"
-        except Exception as e:
-            print(f"Table locator error: {e}")
-
-        # اگر جدول پیدا نشد، برمی‌گردیم به خواندن کل صفحه
-        if not table_text:
-            table_text = await p.locator('body').inner_text()
-
-        # 4. الگوی جدید و بسیار دقیق‌تر برای استخراج داده‌های اسب
-        # این الگو نام، شماره، وزن، IOR، سابقه و چابک‌سوار را شکار می‌کند
         pattern = r'([^\n]+)\n[^\n]*\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
         
         matches = re.finditer(pattern, table_text)
         for m in matches:
             name = m.group(1).strip()
-            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "جایزه", "اسبدوانی", "پخش زنده"]): continue
+            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "جایزه", "اسبدوانی", "پخش زنده", "مشارکت", "آد اسب"]): continue
             
             num = int(m.group(2))
             ior = int(m.group(4))
             perf_str = m.group(5)
             jockey = m.group(6).strip()
             
-            # محاسبه امتیاز سابقه (بر اساس مقام‌های قبلی: 1=25، 2=15، 3=5)
             perf_score = 0
             s_map = {'1': 25, '2': 15, '3': 5}
             for rank in perf_str.split('-'):
@@ -118,17 +94,14 @@ async def ar(p, r_num, c, chat_id):
                 "n": name, "num": num, "ior": ior, "j": jockey,
                 "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0
             }
-        
-        print(f"Found {len(horses)} horses for Round {r_num}")
 
-        # 5. تلاش برای گرفتن ضرایب (Odds)
         try:
             await p.get_by_text("دورهای", exact=False).first.click(timeout=5000, force=True)
             await p.wait_for_timeout(3000)
             await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
             await p.wait_for_timeout(4000)
-            
             odds_text = await p.locator('body').inner_text()
+            
             odds_pattern = r'([^\n]+)\n(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)'
             for m in re.finditer(odds_pattern, odds_text):
                 name = m.group(1).strip()
@@ -143,41 +116,40 @@ async def ar(p, r_num, c, chat_id):
         print(f"Error in round {r_num}: {e}")
         
     if not horses:
-        try:
-            screenshot_path = f"debug_{r_num}.png"
-            await p.screenshot(path=screenshot_path, full_page=False) 
-            page_snippet = table_text[:500] if 'table_text' in locals() else "متن خوانده نشد."
-            with open(screenshot_path, "rb") as image_file:
-                await c.bot.send_photo(chat_id=chat_id, photo=image_file, caption=f"⚠️ خطای خواندن دور {r_num}.\n\nمتن جدول:\n{page_snippet}")
-            os.remove(screenshot_path)
-        except Exception as img_e: print(f"Could not send screenshot: {img_e}")
         return None
     
-    # 6. فرمول پیشرفته تحلیل و امتیازدهی
     good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
     for num, h in horses.items():
-        # امتیاز بازار (هرچه ضریب کمتر، شانس بالاتر)
         market_score = 100 / (h['w_odd'] + 1) if h['w_odd'] > 0 else 0
-        # امتیاز چابک‌سوار (اگر از چابک‌سواران مطرح باشد)
         jockey_bonus = 20 if any(gj in h['j'] for gj in good_jockeys) else 0
-        
-        # ترکیب نهایی (وزن‌دهی به IOR، سابقه، ضریب و چابک‌سوار)
         h['final_sc'] = (h['ior'] * 0.35) + (h['perf_sc'] * 0.30) + (market_score * 0.20) + (jockey_bonus * 0.15)
 
-    # مرتب‌سازی بر اساس امتیاز نهایی
     sorted_horses = sorted(horses.values(), key=lambda y: y['final_sc'], reverse=True)
     
-    w = sorted_horses[0] # انتخاب اول
-    p_horse = sorted_horses[1] if len(sorted_horses) > 1 else w # انتخاب دوم
-    s_horse = max(horses.values(), key=lambda y: y['perf_sc']) # بهترین سابقه
+    # --- منطق انتخاب بدون تکرار ---
+    w = sorted_horses[0]
+    
+    remaining_2 = [h for h in sorted_horses if h['num'] != w['num']]
+    p_horse = remaining_2[0] if remaining_2 else w
+    
+    remaining_3 = [h for h in remaining_2 if h['num'] != p_horse['num']]
+    s_horse = remaining_3[0] if remaining_3 else p_horse
+    
     q = f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}"
     
-    # گزینه‌های شگفتی‌ساز (اسب‌هایی با ضریب بالا اما IOR خوب)
     surprise_candidates = [h for h in horses.values() if h['w_odd'] >= 8.0 and h['ior'] > 0]
     surprise_candidates = sorted(surprise_candidates, key=lambda y: y['final_sc'], reverse=True)
-    su = surprise_candidates[0] if surprise_candidates else sorted_horses[-1]
-    su2 = surprise_candidates[1] if len(surprise_candidates) >= 2 else (sorted_horses[-2] if len(sorted_horses) > 1 else w)
+    
+    if surprise_candidates:
+        su = surprise_candidates[0]
+        remaining_su = [h for h in surprise_candidates if h['num'] != su['num']]
+        su2 = remaining_su[0] if remaining_su else (sorted_horses[-1] if sorted_horses[-1]['num'] != su['num'] else sorted_horses[0])
+    else:
+        su = sorted_horses[-1]
+        su2 = sorted_horses[-2] if len(sorted_horses) > 1 else sorted_horses[0]
+        
     qs = f"{su['num']}-{su['n']} + {su2['num']}-{su2['n']}"
+
     return {"w": w, "p": p_horse, "s": s_horse, "q": q, "qs": qs, "su": su}
 
 async def co(u: Update, c: C):
@@ -197,8 +169,12 @@ async def co(u: Update, c: C):
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
-            context = await browser.new_context(viewport={'width': 1440, 'height': 900})
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
+            
+            context = await browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
             await context.add_cookies([
                 {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
                 {'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},
@@ -208,8 +184,7 @@ async def co(u: Update, c: C):
             pg.set_default_timeout(60000)
             
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
-            await pg.wait_for_timeout(8000) 
-
+            await pg.wait_for_timeout(10000)
             if "ورود" in await pg.locator('body').inner_text() and "شماره موبایل" in await pg.locator('body').inner_text():
                 await c.bot.send_message(chat_id, "⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند.")
                 return
@@ -217,21 +192,19 @@ async def co(u: Update, c: C):
             rp = "📊 <b>تحلیل جامع مسابقات</b> 📊\n"
             res_all = []
             
-            max_r = tg if tg else 1 # پیش‌فرض فقط دور 1 را چک کن
+            max_r = tg if tg else 4 
             for r in ([tg] if tg else range(1, max_r + 1)):
                 res = await ar(pg, r, c, chat_id)
                 
                 if res:
                     res_all.append(res)
                     rp += f"\n🏁 <b>دور R{r}</b>\n"
-                    rp += f"🥇 <b>انتخاب اول:</b> {res['w']['num']}-{res['w']['n']}\n"
-                    rp += f"└ ⭐ IOR: {res['w']['ior']} | 👤 چابک: {res['w']['j']} | 📈 ضریب: {res['w']['w_odd']}\n"
-                    rp += f"🥈 <b>انتخاب دوم:</b> {res['p']['num']}-{res['p']['n']}\n"
-                    rp += f"└ ⭐ IOR: {res['p']['ior']} | 👤 چابک: {res['p']['j']} | 📈 ضریب: {res['p']['w_odd']}\n"
-                    rp += f"🥉 <b>بهترین سابقه:</b> {res['s']['num']}-{res['s']['n']}\n"
-                    rp += f"└ 📜 سابقه مقام‌ها: {res['s']['perf']}\n"
-                    rp += f"👥 <b>ترکیب دوقلو:</b> {res['q']}\n"
-                    rp += f"🎲 <b>شگفتی‌ساز:</b> {res['su']['num']}-{res['su']['n']}\n"
+                    rp += f"🥇 پیش‌بر: {res['w']['num']}-{res['w']['n']} (ضریب {res['w']['w_odd']})\n"
+                    rp += f"🥈 میان‌بر: {res['p']['num']}-{res['p']['n']} (ضریب {res['p']['w_odd']})\n"
+                    rp += f"🥉 پی‌بر: {res['s']['num']}-{res['s']['n']} (ضریب {res['s']['w_odd']})\n"
+                    rp += f"👥 دوقلو: {res['q']}\n"
+                    rp += f"🎲 اسب شگفتی: {res['su']['num']}-{res['su']['n']}\n"
+                    rp += f"🔥 دوقلوی شگفتی: {res['qs']}\n"
                 else:
                     res_all.append(None)
                     
@@ -242,7 +215,7 @@ async def co(u: Update, c: C):
     finally:
         if browser: await browser.close()
 
-if __name__ == '__main__':
+if name == 'main':
     app = AB().token(T).build()
     app.add_handler(CH('start', st))
     app.add_handler(CH('on', on))
