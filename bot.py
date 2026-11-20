@@ -1,4 +1,4 @@
-import os, re, httpx, sys
+import os, re, httpx, sys, asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder as AB, ContextTypes as C, CommandHandler as CH
 from playwright.async_api import async_playwright as ap
@@ -37,7 +37,7 @@ async def g():
     except: return "true"
 
 async def st(u: Update, c: C): 
-    await c.bot.send_message(u.effective_chat.id, "دستورات:\n/on روشن کردن ربات\n/off خاموش کردن ربات\n/check_odds [شماره دور]")
+    await c.bot.send_message(u.effective_chat.id, "دستورات:\n/on روشن\n/off خاموش\n/check_odds [دور]")
 
 async def on(u: Update, c: C):
     r = await s("true")
@@ -58,13 +58,11 @@ async def ar(p, r_num, c, chat_id):
     horses = {}
     table_text = ""
     try:
-        # 1. رفتن به تب دورهای (که ضرایب و جزئیات در آن است)
         try:
             await p.get_by_text("دورهای", exact=False).first.click(timeout=10000, force=True)
             await p.wait_for_timeout(3000)
         except: pass
 
-        # 2. کلیک روی شماره دور
         try:
             await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=5000, force=True)
         except:
@@ -75,13 +73,12 @@ async def ar(p, r_num, c, chat_id):
         await p.wait_for_timeout(7000)
         table_text = await p.locator('body').inner_text()
         
-        # الگوی استخراج داده‌ها
         pattern = r'([^\n]+)\n[^\n]*\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
         
         matches = re.finditer(pattern, table_text)
         for m in matches:
             name = m.group(1).strip()
-            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "جایزه", "اسبدوانی", "پخش زنده", "مشارکت", "آد اسب"]): continue
+            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "جایزه", "اسبدوانی", "پخش زنده"]): continue
             
             num = int(m.group(2))
             ior = int(m.group(4))
@@ -96,16 +93,16 @@ async def ar(p, r_num, c, chat_id):
             horses[num] = {
                 "n": name, "num": num, "ior": ior, "j": jockey,
                 "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0
-        }
-            except Exception as e:
+            }
+
+    except Exception as e:
         print(f"Error in round {r_num}: {e}")
-        
-    if not horses:
+        if not horses:
         try:
             screenshot_path = f"debug_{r_num}.png"
             await p.screenshot(path=screenshot_path, full_page=False)
             with open(screenshot_path, "rb") as image_file:
-                await c.bot.send_photo(chat_id=chat_id, photo=image_file, caption=f"⚠️ خطای خواندن جدول در دور {r_num}. ظاهر صفحه را چک کنید.")
+                await c.bot.send_photo(chat_id=chat_id, photo=image_file, caption=f"⚠️ خطا در خواندن جدول دور {r_num}.")
             os.remove(screenshot_path)
         except: pass
         return None
@@ -118,7 +115,6 @@ async def ar(p, r_num, c, chat_id):
 
     sorted_horses = sorted(horses.values(), key=lambda y: y['final_sc'], reverse=True)
     
-    # منطق انتخاب بدون تکرار
     w = sorted_horses[0]
     p_horse = sorted_horses[1] if len(sorted_horses) > 1 else w
     s_horse = sorted_horses[2] if len(sorted_horses) > 2 else p_horse
@@ -148,7 +144,7 @@ async def co(u: Update, c: C):
     
     cst = await g()
     if cst == "false":
-        await c.bot.send_message(chat_id, "🛑 ربات خاموش است. /on را بزنید.")
+        await c.bot.send_message(chat_id, "🛑 ربات خاموش است.")
         return
         
     tg = int(c.args[0]) if c.args and c.args[0].isdigit() else None
@@ -157,8 +153,7 @@ async def co(u: Update, c: C):
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
-            
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
             context = await browser.new_context(
                 viewport={'width': 1440, 'height': 900},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -175,7 +170,7 @@ async def co(u: Update, c: C):
             await pg.wait_for_timeout(10000) 
 
             if "ورود" in await pg.locator('body').inner_text() and "شماره موبایل" in await pg.locator('body').inner_text():
-                await c.bot.send_message(chat_id, "⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند. لطفا توکن‌ها را آپدیت کنید.")
+                await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.")
                 return
                 
             rp = "📊 <b>تحلیل جامع مسابقات</b> 📊\n"
@@ -204,19 +199,20 @@ async def co(u: Update, c: C):
     finally:
         if browser: await browser.close()
 
-# --- راه‌اندازی ربات ---
+# راه‌اندازی ربات
 app = AB().token(T).build()
 app.add_handler(CH('start', st))
 app.add_handler(CH('on', on))
 app.add_handler(CH('off', off))
 app.add_handler(CH('check_odds', co))
 
-print("Bot started. Waiting for commands...")
+print("Bot started.")
 
-# اجرای ربات برای مدت محدود (مثلاً 5 دقیقه) تا گیت‌هاب هنگ نکند
-import asyncio
-try:
-    asyncio.run(asyncio.wait_for(app.run_polling(bootstrap_retries=-1, drop_pending_updates=True), timeout=300))
-except asyncio.TimeoutError:
-    print("Bot stopped automatically after 5 minutes to save GitHub Action minutes.")
-    sys.exit(0)
+# تایمر 5 دقیقه‌ای برای جلوگیری از هنگ کردن گیت‌هاب
+async def run_bot():
+    try:
+        await asyncio.wait_for(app.run_polling(bootstrap_retries=-1, drop_pending_updates=True), timeout=300)
+    except asyncio.TimeoutError:
+        print("Bot stopped after 5 minutes.")
+
+asyncio.run(run_bot())
