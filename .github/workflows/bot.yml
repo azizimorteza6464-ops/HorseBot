@@ -1,14 +1,12 @@
 name: Run HorseBot
 
 on:
-  workflow_dispatch: # اجازه اجرای دستی از تب Actions
-  # schedule:
-  #   - cron: '0 */5 * * *' # اختیاری: اجرای خودکار هر ۵ ساعت (چون محدودیت گیت‌هاب ۶ ساعت است)
+  workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 350 # جلوگیری از خطای تایم‌اوت ۶ ساعته گیت‌هاب
+    timeout-minutes: 350
 
     steps:
       - name: Checkout repository
@@ -35,5 +33,4 @@ jobs:
           USER_DEVICE_ID: ${{ secrets.USER_DEVICE_ID }}
           USER_UDI: ${{ secrets.USER_UDI }}
           GH_PAT: ${{ secrets.GH_PAT }}
-          # متغیر GITHUB_REPOSITORY به صورت خودکار توسط گیت‌هاب ست می‌شود
         run: python bot.py
