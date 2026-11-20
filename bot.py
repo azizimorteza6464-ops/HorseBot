@@ -96,7 +96,7 @@ async def ar(p, r_num, c, chat_id):
         for m in matches:
             name = m.group(1).strip()
             if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "جایزه"]): continue
-                        num = int(m.group(2))
+            num = int(m.group(2))
             ior = int(m.group(4))
             perf_str = m.group(5)
             jockey = m.group(6).strip()
