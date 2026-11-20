@@ -258,7 +258,7 @@ async def co(u: Update, c: C):
             
     except Exception as e:
         await c.bot.send_message(chat_id, f"❌ خطای غیرمنتظره: {str(e)}")
-        app = AB().token(T).build()
+app = AB().token(T).build()
 app.add_handler(CH('start', st))
 app.add_handler(CH('on', on))
 app.add_handler(CH('off', off))
