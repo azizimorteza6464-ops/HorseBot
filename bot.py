@@ -116,12 +116,11 @@ async def ar(p, r_num, c, chat_id):
         print(f"Error in round {r_num}: {e}")
         
     if not horses:
-        # اگر جدول خوانده نشد، عکس صفحه را برای دیباگ می‌فرستیم
         try:
             screenshot_path = f"debug_{r_num}.png"
             await p.screenshot(path=screenshot_path, full_page=False)
             with open(screenshot_path, "rb") as image_file:
-                await c.bot.send_photo(chat_id=chat_id, photo=image_file, caption=f"⚠️ خطای خواندن جدول در دور {r_num}. احتمالا کوکی‌ها منقضی شده‌اند.")
+                await c.bot.send_photo(chat_id=chat_id, photo=image_file, caption=f"⚠️ خطای خواندن جدول در دور {r_num}. ظاهر صفحه را چک کنید.")
             os.remove(screenshot_path)
         except: pass
         return None
@@ -134,12 +133,9 @@ async def ar(p, r_num, c, chat_id):
 
     sorted_horses = sorted(horses.values(), key=lambda y: y['final_sc'], reverse=True)
     
-    # --- منطق انتخاب بدون تکرار ---
     w = sorted_horses[0]
-    
     remaining_2 = [h for h in sorted_horses if h['num'] != w['num']]
     p_horse = remaining_2[0] if remaining_2 else w
-    
     remaining_3 = [h for h in remaining_2 if h['num'] != p_horse['num']]
     s_horse = remaining_3[0] if remaining_3 else p_horse
     
@@ -179,14 +175,14 @@ async def co(u: Update, c: C):
         async with ap() as p:
             browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
             
-            context = await browser.new_context(
-                viewport={'width': 1920, 'height': 1080},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                  )
+            # 🔴 این بخش بسیار مهم است: شبیه‌سازی دقیق گوشی آیفون
+            iphone_12 = p.devices['iPhone 12']
+            context = await browser.new_context(**iphone_12)
+            
             await context.add_cookies([
                 {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
                 {'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},
-                {'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}
+            {'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}
             ])
             pg = await context.new_page()
             pg.set_default_timeout(60000)
@@ -224,12 +220,12 @@ async def co(u: Update, c: C):
     finally:
         if browser: await browser.close()
 
-if __name__ == '__main__':
-    app = AB().token(T).build()
-    app.add_handler(CH('start', st))
-    app.add_handler(CH('on', on))
-    app.add_handler(CH('off', off))
-    app.add_handler(CH('check_odds', co))
+# --- اجرای مستقیم ربات (بدون نیاز به if name) ---
+app = AB().token(T).build()
+app.add_handler(CH('start', st))
+app.add_handler(CH('on', on))
+app.add_handler(CH('off', off))
+app.add_handler(CH('check_odds', co))
 
-    print("Bot is running...")
-    app.run_polling(bootstrap_retries=-1, drop_pending_updates=True)
+print("Bot is running...")
+app.run_polling(bootstrap_retries=-1, drop_pending_updates=True)
