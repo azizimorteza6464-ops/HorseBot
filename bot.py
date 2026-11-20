@@ -221,7 +221,7 @@ async def main():
     await app.shutdown()
     print("Bot stopped successfully. GitHub Action will now finish.")
 
-if name == 'main':
+if __name__ == '__main__':
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
