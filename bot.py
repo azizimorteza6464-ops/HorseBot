@@ -185,7 +185,7 @@ async def co(u: Update, c: C):
         
     tg = int(c.args[0]) if c.args and c.args[0].isdigit() else None
     await c.bot.send_message(chat_id, "⏳ در حال تحلیل (حالت دیباگ)...")
-            browser = None
+    browser = None
     try:
         async with ap() as p:
             browser = await p.chromium.launch(
