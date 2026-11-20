@@ -259,7 +259,7 @@ async def co(u: Update, c: C):
                 else:
                     rp += f"🔹 ۶ پره (دور ۱ تا ۶): {get_pick([1,2,3,4,5,6])}\n"
                     rp += f"🔹 ۵ پره (دور ۲ تا ۶): {get_pick([2,3,4,5,6])}\n"
-                            rp += f"🔹 ۳ پره اول (دور ۱ تا ۳): {get_pick([1,2,3])}\n"
+                    rp += f"🔹 ۳ پره اول (دور ۱ تا ۳): {get_pick([1,2,3])}\n"
                     rp += f"🔹 ۳ پره دوم (دور ۴ تا ۶): {get_pick([4,5,6])}\n"
                 
             await send_long_message(c, chat_id, rp)
