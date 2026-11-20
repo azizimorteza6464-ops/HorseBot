@@ -43,51 +43,45 @@ async def off(u: Update, c: C):
     r = await s("false")
     await c.bot.send_message(u.effective_chat.id, "🛑 ربات خاموش شد" if r == "OK" else r)
 
-# تابع دیباگ برای ارسال متن خام
-async def send_debug(c, chat_id, round_num, text):
-    if not text: text = "متن خالی است."
-    # فقط 500 کاراکتر اول را می فرستیم تا پیام طولانی نشود
-    debug_msg = f"⚠️ خطای خواندن دور {round_num}\nمتن دریافتی از سایت:\n\n{text[:800]}..."
-    await c.bot.send_message(chat_id, debug_msg)
-
 async def ar(p, r_num, c, chat_id):
     horses = {}
     try:
-        # 1. رفتن به تب "جدول مسابقات"
-        await p.evaluate("let a=document.querySelectorAll('a,div,span,button');let o=Array.from(a).find(e=>e.textContent.includes('جدول مسا'));if(o)o.click();")
+        # رفتن به تب جدول مسابقات (استفاده از تابع برای جلوگیری از خطای return)
+        await p.evaluate("""() => {
+            let a=document.querySelectorAll('a,div,span,button');
+            let o=Array.from(a).find(e=>e.textContent.includes('جدول مسا'));
+            if(o)o.click();
+        }""")
         await p.wait_for_timeout(4000)
         
-        # 2. کلیک روی "نمایش دورها"
         try:
-            await p.evaluate("let a=document.querySelectorAll('a,div,span,button');let o=Array.from(a).find(e=>e.textContent.includes('نمایش دورها'));if(o)o.click();")
+            await p.evaluate("""() => {
+                let a=document.querySelectorAll('a,div,span,button');
+                let o=Array.from(a).find(e=>e.textContent.includes('نمایش دورها'));
+                if(o)o.click();
+            }""")
             await p.wait_for_timeout(3000)
         except: pass
         
-        # 3. کلیک روی دور مورد نظر (R1, R2, ...)
-        clicked = await p.evaluate(f"""
+        # کلیک روی دور مورد نظر (اصلاح خطای return)
+        clicked = await p.evaluate(f"""() => {{
             let elements = Array.from(document.querySelectorAll('div,span,button,a'));
             let btn = elements.find(e => e.textContent.trim() === 'R {r_num}' || e.textContent.trim() === '{r_num}');
             if(btn) {{ btn.click(); return true; }}
             return false;
-        """)
+        }}""")
         
-        if not clicked: 
-            await c.bot.send_message(chat_id, f"❌ دکمه دور {r_num} پیدا نشد.")
-            return None
+        if not clicked: return None
             
-        # صبر بیشتر برای لود کامل جدول
         await p.wait_for_timeout(6000) 
         
         x = await p.locator('body').inner_text()
-        
-        # الگوی خواندن اطلاعات
         pattern = r'([^\n]+)\n[^\n]+\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
         
-        found = False
         for m in re.finditer(pattern, x):
             name = m.group(1).strip()
             if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "جایزه", "دور"]): continue
-            found = True
+            
             num = int(m.group(2))
             ior = int(m.group(4))
             perf_str = m.group(5)
@@ -102,22 +96,20 @@ async def ar(p, r_num, c, chat_id):
                 "n": name, "num": num, "ior": ior, "j": jockey,
                 "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0
             }
-
-        if not found:
-            # اگر الگو پیدا نشد، متن خام را برای دیباگ می فرستیم
-            await send_debug(c, chat_id, r_num, x)
-            return None
-
-        # 4. رفتن به تب "دورهای" برای خواندن ضرایب
-        await p.evaluate("let a=document.querySelectorAll('a,div,span,button');let o=Array.from(a).find(e=>e.textContent.includes('دورهای'));if(o)o.click();")
+            # رفتن به تب دورهای برای ضرایب
+        await p.evaluate("""() => {
+            let a=document.querySelectorAll('a,div,span,button');
+            let o=Array.from(a).find(e=>e.textContent.includes('دورهای'));
+            if(o)o.click();
+        }""")
         await p.wait_for_timeout(3000)
         
-        clicked_odds = await p.evaluate(f"""
+        clicked_odds = await p.evaluate(f"""() => {{
             let elements = Array.from(document.querySelectorAll('div,span,button,a'));
             let btn = elements.find(e => e.textContent.trim() === 'R {r_num}' || e.textContent.trim() === '{r_num}');
             if(btn) {{ btn.click(); return true; }}
             return false;
-        """)
+        }}""")
         
         if clicked_odds:
             await p.wait_for_timeout(4000)
@@ -132,11 +124,13 @@ async def ar(p, r_num, c, chat_id):
                         break
 
     except Exception as e:
-        await c.bot.send_message(chat_id, f"❌ خطای داخلی در دور {r_num}: {str(e)}")
+        # اگر خطایی رخ داد، به جای کرش کردن، در کنسول چاپ می شود
+        print(f"Error: {e}")
         
     if not horses: return None
     
     good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
+    
     for num, h in horses.items():
         market_score = 100 / (h['w_odd'] + 1) if h['w_odd'] > 0 else 0
         jockey_bonus = 15 if any(gj in h['j'] for gj in good_jockeys) else 0
@@ -177,7 +171,8 @@ async def co(u: Update, c: C):
         return
         
     tg = int(c.args[0]) if c.args and c.args[0].isdigit() else None
-    await c.bot.send_message(chat_id, "⏳ در حال تحلیل فنی و بررسی ضرایب...")
+    await c.bot.send_message(chat_id, "⏳ در حال تحلیل...")
+    
     try:
         async with ap() as p:
             b = await p.chromium.launch(headless=True)
@@ -191,7 +186,6 @@ async def co(u: Update, c: C):
             pg.set_default_timeout(60000)
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
             await pg.wait_for_timeout(6000)
-            
             if "ورود" in await pg.locator('body').inner_text():
                 await c.bot.send_message(chat_id, "⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند.")
                 return
@@ -201,8 +195,7 @@ async def co(u: Update, c: C):
             
             max_r = tg if tg else 7
             for r in ([tg] if tg else range(1, max_r + 1)):
-                # ارسال پیام وضعیت برای اینکه بدانید کدام دور گیر کرده
-                await c.bot.send_message(chat_id, f"🔎 در حال بررسی دور R{r}...")
+                # برای اینکه تلگرام بلاک نشود، فقط یک پیام کلی می فرستیم
                 res = await ar(pg, r, c, chat_id)
                 
                 if res:
