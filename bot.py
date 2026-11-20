@@ -257,7 +257,7 @@ async def co(u: Update, c: C):
             await browser.close()
 
 # --- راه‌اندازی ربات ---
-if name == 'main':
+if__name__ == '__main__':
     app = AB().token(T).build()
     app.add_handler(CH('start', st))
     app.add_handler(CH('on', on))
