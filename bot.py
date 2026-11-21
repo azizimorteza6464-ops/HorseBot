@@ -58,21 +58,36 @@ async def ar(p, r_num, c, chat_id):
     horses = {}
     table_text = ""
     try:
-        try:
-            await p.get_by_text("دورهای", exact=False).first.click(timeout=10000, force=True)
-            await p.wait_for_timeout(3000)
-        except: pass
-
-        try:
-            await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=5000, force=True)
-        except:
-            try:
-                await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
-            except: return None 
+        print(f"--> Analyzing Round {r_num}")
         
+        # 1. تلاش برای کلیک روی شماره دور
+        try:
+            # استفاده از کدهای جاوااسکریپت برای پیدا کردن دقیق تر
+            found = await p.evaluate(f'''
+                (num) => {{
+                    let els = Array.from(document.querySelectorAll('button, div, span, a'));
+                    let target = els.find(e => e.innerText && (e.innerText.trim() === 'R ' + num || e.innerText.trim() === 'R' + num || e.innerText.trim() === num.toString()));
+                    if (target) {{ target.click(); return true; }}
+                    return false;
+                }}
+            ''', r_num)
+            
+            if not found:
+                # اگر پیدا نشد، از روش قبلی استفاده کن
+                try:
+                    await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=3000, force=True)
+                except:
+                    await p.get_by_text(str(r_num), exact=True).first.click(timeout=3000, force=True)
+                    
+            await p.wait_for_timeout(3000)
+        except Exception as e:
+            print(f"Could not click round {r_num}: {e}")
+
         await p.wait_for_timeout(7000)
         table_text = await p.locator('body').inner_text()
         
+        # 2. الگوی جدید (Regex) برای پیدا کردن نام، IOR، سابقه و چابک‌سوار
+        # این الگو تلاش می‌کند حتی اگر فاصله‌ها به هم ریخته باشند، داده را پیدا کند
         pattern = r'([^\n]+)\n[^\n]*\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
         
         matches = re.finditer(pattern, table_text)
@@ -99,15 +114,9 @@ async def ar(p, r_num, c, chat_id):
         print(f"Error in round {r_num}: {e}")
         
     if not horses:
-        try:
-            screenshot_path = f"debug_{r_num}.png"
-            await p.screenshot(path=screenshot_path, full_page=False)
-            with open(screenshot_path, "rb") as image_file:
-                await c.bot.send_photo(chat_id=chat_id, photo=image_file, caption=f"⚠️ خطا در خواندن جدول دور {r_num}.")
-            os.remove(screenshot_path)
-        except: pass
         return None
     
+    # محاسبات و امتیازدهی
     good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
     for num, h in horses.items():
         market_score = 100 / (h['w_odd'] + 1) if h['w_odd'] > 0 else 0
@@ -170,6 +179,12 @@ async def co(u: Update, c: C):
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
             await pg.wait_for_timeout(10000) 
 
+            # بررسی لاگین بودن
+            body_text = await pg.locator('body').inner_text()
+            if "ورود" in body_text and "شماره موبایل" in body_text:
+                await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.")
+                return
+                
             rp = "📊 <b>تحلیل جامع مسابقات</b> 📊\n"
             res_all = []
             
@@ -196,9 +211,6 @@ async def co(u: Update, c: C):
     finally:
         if browser: await browser.close()
 
-# ==========================================
-# اجرای مستقیم ربات
-# ==========================================
 async def main():
     app = AB().token(T).build()
     app.add_handler(CH('start', st))
@@ -212,7 +224,6 @@ async def main():
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
 
-    # ربات 300 ثانیه (5 دقیقه) منتظر می‌ماند تا به پیام‌ها جواب دهد
     await asyncio.sleep(300)
 
     print("Stopping bot safely...")
