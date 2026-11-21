@@ -1,12 +1,14 @@
 name: Run HorseBot
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # این گزینه اجازه می‌دهد دستی هم اجرا کنید
+  schedule:
+    - cron: '0 */5 * * *' # اجرای خودکار هر ۵ ساعت (ساعت ۰، ۵، ۱۰، ۱۵، ۲۰)
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 350 # حداکثر زمان اجرا
 
     steps:
       - name: Checkout repository
@@ -20,8 +22,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install python-telegram-bot httpx playwright
-          playwright install chromium
+          pip install -r requirements.txt
+          pip install playwright httpx
+          playwright install --with-deps chromium
 
       - name: Run Bot Script
         env:
@@ -30,5 +33,4 @@ jobs:
           USER_DEVICE_ID: ${{ secrets.USER_DEVICE_ID }}
           USER_UDI: ${{ secrets.USER_UDI }}
           GH_PAT: ${{ secrets.GH_PAT }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
         run: python bot.py
