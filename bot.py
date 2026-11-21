@@ -1,6 +1,6 @@
 import os, re, httpx, sys, asyncio
-from telegram import Update
-from telegram.ext import ApplicationBuilder as AB, ContextTypes as C, CommandHandler as CH
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder as AB, ContextTypes as C, CommandHandler as CH, CallbackQueryHandler
 from playwright.async_api import async_playwright as ap
 
 # --- تنظیمات اولیه ---
@@ -14,7 +14,7 @@ R = os.environ.get("GITHUB_REPOSITORY")
 # 🔴 آیدی عددی شما (مدیر اصلی ربات)
 MY_ID = "184149177" 
 
-# --- توابع ارتباط با گیت‌هاب (برای ذخیره لیست کاربران) ---
+# --- توابع ارتباط با گیت‌هاب (برای ذخیره تنظیمات و لیست کاربران) ---
 async def get_github_var(var_name, default_val=""):
     if not R or not G: return default_val
     try:
@@ -25,8 +25,7 @@ async def get_github_var(var_name, default_val=""):
             if res.status_code == 200:
                 return res.json().get("value", default_val)
         return default_val
-    except:
-        return default_val
+    except: return default_val
 
 async def set_github_var(var_name, val):
     if not R or not G: return False
@@ -40,80 +39,71 @@ async def set_github_var(var_name, val):
             else:
                 await client.patch(url, headers=headers, json={"name": var_name, "value": val})
         return True
-    except:
-        return False
+    except: return False
 
-# --- توابع مدیریت دسترسی ---
+# --- توابع مدیریت دسترسی (لیست سفید) ---
 async def get_allowed_users():
-    # لیست کاربران را از گیت‌هاب می‌خواند. اگر خالی بود، فقط آیدی شما را برمی‌گرداند.
     users_str = await get_github_var("ALLOWED_USERS", MY_ID)
     return [u.strip() for u in users_str.split(",") if u.strip()]
 
 async def is_authorized(u: Update, c: C) -> bool:
-    if str(u.effective_chat.id) == MY_ID:
-        return True # مدیر همیشه دسترسی دارد
+    if not u.effective_chat: return False
+    chat_id = str(u.effective_chat.id)
+    if chat_id == MY_ID: return True
     
     allowed = await get_allowed_users()
-    if str(u.effective_chat.id) not in allowed:
+    if chat_id not in allowed:
         await c.bot.send_message(u.effective_chat.id, "⛔ شما اجازه استفاده از این ربات را ندارید.")
         return False
     return True
 
+# --- ساخت دکمه‌های شیشه‌ای ---
+def get_main_menu():
+    keyboard = [
+        [InlineKeyboardButton("🟢 روشن کردن ربات", callback_data='on'), InlineKeyboardButton("🔴 خاموش کردن ربات", callback_data='off')],
+        [InlineKeyboardButton("🏁 دور ۱", callback_data='r1'), InlineKeyboardButton("🏁 دور ۲", callback_data='r2'), InlineKeyboardButton("🏁 دور ۳", callback_data='r3')],
+        [InlineKeyboardButton("🏁 دور ۴", callback_data='r4'), InlineKeyboardButton("🏁 دور ۵", callback_data='r5'), InlineKeyboardButton("🏁 دور ۶", callback_data='r6')],
+        [InlineKeyboardButton("🏁 دور ۷", callback_data='r7'), InlineKeyboardButton("📊 تحلیل کل (۱ تا ۶)", callback_data='rall')]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 # --- دستورات ربات ---
 async def st(u: Update, c: C): 
     if not await is_authorized(u, c): return
-    msg = "دستورات کاربری:\n/on روشن\n/off خاموش\n/check_odds [دور]\n\n"
+    msg = "👋 سلام!\nاز دکمه‌های زیر برای تحلیل استفاده کنید:"
     if str(u.effective_chat.id) == MY_ID:
-        msg += "👑 دستورات مدیریت:\n/allow [آیدی]\n/deny [آیدی]\n/list"
-    await c.bot.send_message(u.effective_chat.id, msg)
+        msg += "\n\n👑 دستورات مدیریت:\n`/allow [آیدی]`\n`/deny [آیدی]`\n`/list`"
+        await c.bot.send_message(u.effective_chat.id, msg, reply_markup=get_main_menu(), parse_mode='Markdown')
+    else:
+        await c.bot.send_message(u.effective_chat.id, msg, reply_markup=get_main_menu())
 
 async def allow_user(u: Update, c: C):
-    if str(u.effective_chat.id) != MY_ID:
-        await c.bot.send_message(u.effective_chat.id, "⛔ این دستور فقط برای مدیر است.")
-        return
-    
+    if str(u.effective_chat.id) != MY_ID: return
     if not c.args:
-        await c.bot.send_message(u.effective_chat.id, "لطفاً آیدی عددی را وارد کنید. مثال:\n/allow 12345678")
+        await c.bot.send_message(u.effective_chat.id, "لطفاً آیدی عددی را وارد کنید. مثال:\n`/allow 12345678`", parse_mode='Markdown')
         return
-    
     new_id = c.args[0]
     allowed = await get_allowed_users()
-    
     if new_id in allowed:
         await c.bot.send_message(u.effective_chat.id, "این شخص از قبل دسترسی دارد.")
         return
-        
     allowed.append(new_id)
     success = await set_github_var("ALLOWED_USERS", ",".join(allowed))
-    
-    if success:
-        await c.bot.send_message(u.effective_chat.id, f"✅ دسترسی به آیدی {new_id} داده شد.")
-    else:
-        await c.bot.send_message(u.effective_chat.id, "❌ خطا در ذخیره در گیت‌هاب.")
+    await c.bot.send_message(u.effective_chat.id, f"✅ دسترسی به آیدی {new_id} داده شد." if success else "❌ خطا در ذخیره.")
 
 async def deny_user(u: Update, c: C):
-    if str(u.effective_chat.id) != MY_ID:
-        await c.bot.send_message(u.effective_chat.id, "⛔ این دستور فقط برای مدیر است.")
-        return
-    
+    if str(u.effective_chat.id) != MY_ID: return
     if not c.args:
-        await c.bot.send_message(u.effective_chat.id, "لطفاً آیدی عددی را وارد کنید. مثال:\n/deny 12345678")
+        await c.bot.send_message(u.effective_chat.id, "لطفاً آیدی عددی را وارد کنید. مثال:\n`/deny 12345678`", parse_mode='Markdown')
         return
-    
     del_id = c.args[0]
     allowed = await get_allowed_users()
-    
     if del_id not in allowed:
         await c.bot.send_message(u.effective_chat.id, "این شخص در لیست نیست.")
         return
-        
     allowed.remove(del_id)
     success = await set_github_var("ALLOWED_USERS", ",".join(allowed))
-    
-    if success:
-        await c.bot.send_message(u.effective_chat.id, f"⛔ دسترسی آیدی {del_id} قطع شد.")
-    else:
-        await c.bot.send_message(u.effective_chat.id, "❌ خطا در ذخیره در گیت‌هاب.")
+    await c.bot.send_message(u.effective_chat.id, f"⛔ دسترسی آیدی {del_id} قطع شد." if success else "❌ خطا در ذخیره.")
 
 async def list_users(u: Update, c: C):
     if str(u.effective_chat.id) != MY_ID: return
@@ -123,16 +113,6 @@ async def list_users(u: Update, c: C):
         txt += f"{i+1}. `{a}`\n"
     await c.bot.send_message(u.effective_chat.id, txt, parse_mode='Markdown')
 
-async def on(u: Update, c: C):
-    if not await is_authorized(u, c): return
-    r = await set_github_var("AUTO_UPDATE", "true")
-    await c.bot.send_message(u.effective_chat.id, "✅ ربات روشن شد" if r else "❌ خطا")
-
-async def off(u: Update, c: C):
-    if not await is_authorized(u, c): return
-    r = await set_github_var("AUTO_UPDATE", "false")
-    await c.bot.send_message(u.effective_chat.id, "🛑 ربات خاموش شد" if r else "❌ خطا")
-
 async def send_long_message(c, chat_id, text):
     if len(text) > 4000:
         for i in range(0, len(text), 4000):
@@ -140,18 +120,19 @@ async def send_long_message(c, chat_id, text):
     else:
         await c.bot.send_message(chat_id, text, parse_mode='HTML')
 
+# --- تابع اصلی اسکرپ و تحلیل ---
 async def ar(p, r_num, c, chat_id):
     horses = {}
     table_text = ""
     try:
         try:
             await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=5000, force=True)
-            await p.wait_for_timeout(3000)
+            await p.wait_for_timeout(2000)
         except: pass
 
         try:
             await p.get_by_text("نمایش دورها", exact=False).first.click(timeout=5000, force=True)
-            await p.wait_for_timeout(3000)
+            await p.wait_for_timeout(2000)
         except: pass
 
         try:
@@ -161,7 +142,7 @@ async def ar(p, r_num, c, chat_id):
                 await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
             except: return None 
         
-        await p.wait_for_timeout(7000)
+        await p.wait_for_timeout(6000)
         table_text = await p.locator('body').inner_text()
         
         pattern = r'([^\n]+)\n[^\n]*\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
@@ -228,21 +209,18 @@ async def ar(p, r_num, c, chat_id):
 
     return {"w": w, "p": p_horse, "s": s_horse, "q": q, "qs": qs, "su": su}
 
-async def co(u: Update, c: C):
-    if not await is_authorized(u, c): return
-    
-    chat_id = u.effective_chat.id
+# --- پردازش اصلی ---
+async def process_odds(chat_id, c, specific_round=None, all_rounds=False):
     if not A or not U:
         await c.bot.send_message(chat_id, "⚠️ خطا: توکن‌های ورود یافت نشد.")
         return
     
     cst = await get_github_var("AUTO_UPDATE", "true")
     if cst == "false":
-        await c.bot.send_message(chat_id, "🛑 ربات خاموش است. /on را بزنید.")
+        await c.bot.send_message(chat_id, "🛑 ربات خاموش است. ابتدا روشن کنید.")
         return
         
-    tg = int(c.args[0]) if c.args and c.args[0].isdigit() else None
-    await c.bot.send_message(chat_id, "⏳ در حال تحلیل...")
+    await c.bot.send_message(chat_id, f"⏳ در حال تحلیل...")
     
     browser = None
     try:
@@ -261,7 +239,7 @@ async def co(u: Update, c: C):
             pg.set_default_timeout(60000)
             
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
-            await pg.wait_for_timeout(10000) 
+            await pg.wait_for_timeout(8000) 
 
             body_text = await pg.locator('body').inner_text()
             if len(body_text.strip()) < 100:
@@ -271,8 +249,9 @@ async def co(u: Update, c: C):
             rp = "📊 <b>تحلیل جامع مسابقات</b> 📊\n"
             res_all = []
             
-            max_r = tg if tg else 4 
-            for r in ([tg] if tg else range(1, max_r + 1)):
+            rounds_to_check = range(1, 7) if all_rounds else ([specific_round] if specific_round else [])
+            
+            for r in rounds_to_check:
                 res = await ar(pg, r, c, chat_id)
                 
                 if res:
@@ -297,20 +276,60 @@ async def co(u: Update, c: C):
     finally:
         if browser: await browser.close()
 
+# --- هندلر دکمه‌های شیشه‌ای ---
+async def button_callback(u: Update, c: C):
+    query = u.callback_query
+    await query.answer() 
+    
+    chat_id = query.message.chat_id
+    data = query.data
+    
+    if str(chat_id) != MY_ID and str(chat_id) not in await get_allowed_users():
+        await query.message.reply_text("⛔ شما اجازه استفاده ندارید.")
+        return
+
+    if data == 'on':
+        await set_github_var("AUTO_UPDATE", "true")
+        await query.message.reply_text("✅ ربات روشن شد.")
+    elif data == 'off':
+        await set_github_var("AUTO_UPDATE", "false")
+        await query.message.reply_text("🛑 ربات خاموش شد.")
+    elif data.startswith('r'):
+        if data == 'rall':
+            await process_odds(chat_id, c, all_rounds=True)
+        else:
+            r_num = int(data[1:])
+            await process_odds(chat_id, c, specific_round=r_num)
+
+# --- دستور دستی چک کردن ضرایب ---
+async def co(u: Update, c: C):
+    if not await is_authorized(u, c): return
+    tg = int(c.args[0]) if c.args and c.args[0].isdigit() else None
+    await process_odds(u.effective_chat.id, c, specific_round=tg, all_rounds=(tg is None))
+
+# --- راه‌اندازی و مدیریت ---
 async def main():
     app = AB().token(T).build()
+    
+    # هندلرها
     app.add_handler(CH('start', st))
-    app.add_handler(CH('on', on))
-    app.add_handler(CH('off', off))
+    app.add_handler(CH('on', lambda u, c: set_github_var("AUTO_UPDATE", "true") and c.bot.send_message(u.effective_chat.id, "✅ ربات روشن شد")))
+    app.add_handler(CH('off', lambda u, c: set_github_var("AUTO_UPDATE", "false") and c.bot.send_message(u.effective_chat.id, "🛑 ربات خاموش شد")))
     app.add_handler(CH('check_odds', co))
     app.add_handler(CH('allow', allow_user))
     app.add_handler(CH('deny', deny_user))
     app.add_handler(CH('list', list_users))
+    app.add_handler(CallbackQueryHandler(button_callback)) 
 
+    print("Bot started successfully...")
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
+    
+    # گیت‌هاب 5 دقیقه روشن می‌ماند و سپس بسته می‌شود (برای جلوگیری از مصرف بی‌رویه)
     await asyncio.sleep(300)
+    
+    print("Stopping bot...")
     await app.updater.stop()
     await app.stop()
     await app.shutdown()
