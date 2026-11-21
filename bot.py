@@ -76,15 +76,22 @@ def calculate_stakes(total_amount, selections):
     for i, s in enumerate(selections):
         if s['odd'] <= 0: continue
         stake = total_amount * ((1/s['odd']) / sum_implied)
-        # گرد کردن به نزدیکترین 100 تومان
-        stake = round(stake, -2)
+        # گرد کردن به نزدیکترین 1000 تومان برای راحتی
+        stake = round(stake, -3)
         stakes.append({'name': s['name'], 'stake': stake})
     return stakes
 
 # --- دستورات ربات ---
 async def cmd_start(u: Update, c: C): 
     if not await is_authorized(u, c): return
-    msg = "👋 <b>سلام مدیر عزیز!</b>\n\nبه ربات تحلیل مسابقات خوش آمدید.\nاز دکمه‌های زیر استفاده کنید یا دستور <code>/bet [مبلغ] [دور]</code> را بزنید."
+    msg = (
+        "👋 <b>سلام مدیر عزیز!</b>\n\n"
+        "به ربات تحلیل مسابقات خوش آمدید.\n"
+        "🔹 برای تحلیل ساده از دکمه‌ها استفاده کنید.\n"
+        "🔹 برای محاسبه مبلغ شرط، دستور زیر را بزنید:\n"
+        "<code>/bet [مبلغ] [شماره دور]</code>\n"
+        "مثال: <code>/bet 100000 1</code>"
+    )
     await c.bot.send_message(u.effective_chat.id, msg, reply_markup=get_main_menu(), parse_mode='HTML')
 
 async def cmd_on(u: Update, c: C):
@@ -258,16 +265,22 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     
                     # --- بخش محاسبه شرط (اگر مبلغ وارد شده باشد) ---
                     if bet_amount and specific_round and r == specific_round:
-                        rp += "\n💰 <b>توزیع سرمایه (Dutching):</b>\n"
-                        # انتخاب اسب‌های پیشنهادی برای شرط
+                        rp += "\n💰 <b>استراتژی توزیع سرمایه (Dutching):</b>\n"
+                        rp += f"<i>برای سرمایه {bet_amount:,} تومانی شما پیشنهاد می‌شود:</i>\n"
+                        
+                        # محاسبه برای دو اسب اول (پیش‌بر و میان‌بر)
                         selections = [
-                            {'name': f"{res['w']['num']}-{res['w']['n']}", 'odd': res['w']['w_odd']},
-                            {'name': f"{res['p']['num']}-{res['p']['n']}", 'odd': res['p']['w_odd']}
+                            {'name': f"{res['w']['num']}-{res['w']['n']} (پیش‌بر)", 'odd': res['w']['w_odd']},
+                            {'name': f"{res['p']['num']}-{res['p']['n']} (میان‌بر)", 'odd': res['p']['w_odd']}
                         ]
                         stakes = calculate_stakes(bet_amount, selections)
                         for st in stakes:
                             rp += f"🔸 روی <b>{st['name']}</b> ببند: <code>{st['stake']:,}</code> تومان\n"
-                        rp += f"💵 <i>(کل مبلغ: {bet_amount:,} تومان)</i>\n"
+                        
+                        # محاسبه تقریبی برای دوقلو (چون ضریب دوقلو مستقیما خوانده نمی‌شود، ضرب ضرایب دو اسب را تخمین می‌زنیم)
+                        exacta_odd = res['w']['w_odd'] * res['p']['w_odd']
+                        exacta_stake = round(bet_amount * 0.2, -3) # اختصاص 20% بودجه به دوقلو
+                        rp += f"👥 روی <b>دوقلو ({res['q']})</b> ببند: <code>{exacta_stake:,}</code> تومان <i>(ضریب تقریبی {exacta_odd:.1f})</i>\n"
                         
                     rp += "➖➖➖➖➖➖➖➖➖➖\n"
                 else:
@@ -304,7 +317,7 @@ async def button_callback(u: Update, c: C):
         await query.message.reply_text("🛑 ربات خاموش شد.")
     elif data == 'admin_help':
         if str(chat_id) == MY_ID:
-            help_txt = "👑 <b>پنل مدیریت</b>\n\n🔹 <code>/allow [آیدی]</code>\n🔹 <code>/deny [آیدی]</code>\n🔹 <code>/list</code>\n\n💡 برای شرط‌بندی: <code>/bet [مبلغ] [دور]</code>"
+            help_txt = "👑 <b>پنل مدیریت</b>\n\n🔹 <code>/allow [آیدی]</code>\n🔹 <code>/deny [آیدی]</code>\n🔹 <code>/list</code>\n\n💡 برای محاسبه شرط: <code>/bet [مبلغ] [دور]</code>"
             await query.message.reply_text(help_txt, parse_mode='HTML')
         else:
             await query.message.reply_text("⛔ این بخش فقط برای مدیر است.")
