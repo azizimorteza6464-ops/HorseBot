@@ -11,10 +11,6 @@ U = os.environ.get("USER_UDI")
 G = os.environ.get("GH_PAT")
 R = os.environ.get("GITHUB_REPOSITORY")
 
-# 🔴 اگر پروکسی دارید، اینجا وارد کنید. (مثلا یک سرور ایران)
-# فرمت: "http://username:password@ip:port" یا "socks5://ip:port"
-PROXY_URL = None  # <--- اینجا آدرس پروکسی خود را بگذارید
-
 async def s(v):
     if not R or not G: return "E"
     try:
@@ -64,24 +60,32 @@ async def ar(p, r_num, c, chat_id):
     try:
         print(f"--> Analyzing Round {r_num}")
         
-        # کلیک روی تب "دورهای"
+        # 1. کلیک روی جدول مسابقات (طبق کد اولیه شما)
         try:
-            await p.locator("text=دورهای").first.click(timeout=5000, force=True)
-        except: pass
-        await p.wait_for_timeout(3000)
-
-        # کلیک روی شماره دور
-        try:
-            await p.locator(f"text='R {r_num}'").first.click(timeout=5000, force=True)
+            await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=5000, force=True)
+            await p.wait_for_timeout(3000)
         except: pass
 
+        # 2. کلیک روی نمایش دورها (طبق کد اولیه شما)
+        try:
+            await p.get_by_text("نمایش دورها", exact=False).first.click(timeout=5000, force=True)
+            await p.wait_for_timeout(3000)
+        except: pass
+
+        # 3. کلیک روی شماره دور
+        try:
+            await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=5000, force=True)
+        except:
+            try:
+                await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
+            except: 
+                print(f"Round {r_num} button not found!")
+                return None 
+        
         await p.wait_for_timeout(7000)
         table_text = await p.locator('body').inner_text()
         
-        # اگر صفحه سفید بود
-        if len(table_text.strip()) < 50:
-            return None
-
+        # 4. الگوی استخراج داده
         pattern = r'([^\n]+)\n[^\n]*\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
         
         matches = re.finditer(pattern, table_text)
@@ -108,6 +112,20 @@ async def ar(p, r_num, c, chat_id):
         print(f"Error in round {r_num}: {e}")
         
     if not horses:
+        # اگر جدول خوانده نشد، هم عکس و هم متن صفحه را برای دیباگ می‌فرستیم
+        try:
+            screenshot_path = f"debug_{r_num}.png"
+            await p.screenshot(path=screenshot_path, full_page=False)
+            page_snippet = table_text[:500] if table_text else "متن صفحه خالی است."
+            with open(screenshot_path, "rb") as image_file:
+                await c.bot.send_photo(
+                    chat_id=chat_id, 
+                    photo=image_file, 
+                    caption=f"⚠️ خطا در خواندن جدول دور {r_num}.\n\nمتن صفحه:\n{page_snippet}"
+                )
+            os.remove(screenshot_path)
+        except Exception as img_e:
+            print(f"Could not send screenshot: {img_e}")
         return None
     
     good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
@@ -118,12 +136,14 @@ async def ar(p, r_num, c, chat_id):
 
     sorted_horses = sorted(horses.values(), key=lambda y: y['final_sc'], reverse=True)
     
+    # منطق انتخاب بدون تکرار
     w = sorted_horses[0]
     p_horse = sorted_horses[1] if len(sorted_horses) > 1 else w
     s_horse = sorted_horses[2] if len(sorted_horses) > 2 else p_horse
     
     q = f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}"
     
+    # محاسبه شگفتی‌ها
     surprise_candidates = [h for h in horses.values() if h['w_odd'] >= 8.0 and h['ior'] > 0]
     surprise_candidates = sorted(surprise_candidates, key=lambda y: y['final_sc'], reverse=True)
     
@@ -147,7 +167,7 @@ async def co(u: Update, c: C):
     
     cst = await g()
     if cst == "false":
-        await c.bot.send_message(chat_id, "🛑 ربات خاموش است. /on را بزنید.")
+        await c.bot.send_message(chat_id, "🛑 ربات خاموش است.")
         return
         
     tg = int(c.args[0]) if c.args and c.args[0].isdigit() else None
@@ -156,11 +176,7 @@ async def co(u: Update, c: C):
     browser = None
     try:
         async with ap() as p:
-            launch_args = ['--no-sandbox']
-            if PROXY_URL:
-                launch_args.append(f'--proxy-server={PROXY_URL}')
-
-            browser = await p.chromium.launch(headless=True, args=launch_args)
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
             context = await browser.new_context(
                 viewport={'width': 1440, 'height': 900},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -176,12 +192,6 @@ async def co(u: Update, c: C):
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
             await pg.wait_for_timeout(10000) 
 
-            body_text = await pg.locator('body').inner_text()
-            
-            if len(body_text.strip()) < 100:
-                await c.bot.send_message(chat_id, "⚠️ صفحه سایت برای گیت‌هاب کاملاً سفید است (IP مسدود است). لطفا کد را روی کامپیوتر خودتان اجرا کنید یا از پروکسی استفاده کنید.")
-                return
-                
             rp = "📊 <b>تحلیل جامع مسابقات</b> 📊\n"
             res_all = []
             
@@ -202,7 +212,7 @@ async def co(u: Update, c: C):
                     res_all.append(None)
                     
             if not any(res_all):
-                await c.bot.send_message(chat_id, "⚠️ هیچ دوری خوانده نشد.")
+                await c.bot.send_message(chat_id, "⚠️ هیچ دوری خوانده نشد. به گیت‌هاب (Actions) بروید و لاگ‌ها را بررسی کنید.")
             else:
                 await send_long_message(c, chat_id, rp)
             
@@ -211,6 +221,9 @@ async def co(u: Update, c: C):
     finally:
         if browser: await browser.close()
 
+# ==========================================
+# اجرای مستقیم ربات
+# ==========================================
 async def main():
     app = AB().token(T).build()
     app.add_handler(CH('start', st))
@@ -218,18 +231,20 @@ async def main():
     app.add_handler(CH('off', off))
     app.add_handler(CH('check_odds', co))
 
-    print("Bot started. Waiting for commands...")
+    print("Bot started. Waiting for commands (runs for 5 minutes)...")
 
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-    
-    # ربات 5 دقیقه روشن می ماند (برای گیت هاب)
-    await asyncio.sleep(300) 
-    
+
+    # ربات 300 ثانیه (5 دقیقه) منتظر می‌ماند تا به پیام‌ها جواب دهد
+    await asyncio.sleep(300)
+
+    print("Stopping bot safely...")
     await app.updater.stop()
     await app.stop()
     await app.shutdown()
+    print("Bot stopped successfully. GitHub Action will now finish.")
 
 try:
     asyncio.run(main())
