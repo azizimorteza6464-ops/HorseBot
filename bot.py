@@ -355,7 +355,10 @@ async def main():
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-    await asyncio.sleep(21500) 
+    
+    # 17400 ثانیه = 4 ساعت و 50 دقیقه (برای جلوگیری از تداخل با زمان‌بندی 5 ساعته گیت‌هاب)
+    await asyncio.sleep(17400) 
+    
     await app.updater.stop()
     await app.stop()
     await app.shutdown()
