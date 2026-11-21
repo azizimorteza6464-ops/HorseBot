@@ -37,7 +37,7 @@ async def g():
     except: return "true"
 
 async def st(u: Update, c: C): 
-    await c.bot.send_message(u.effective_chat.id, "دستورات:\n/on روشن کردن\n/off خاموش کردن\n/check_odds [شماره دور]")
+    await c.bot.send_message(u.effective_chat.id, "دستورات:\n/on روشن\n/off خاموش\n/check_odds [دور]")
 
 async def on(u: Update, c: C):
     r = await s("true")
@@ -60,7 +60,20 @@ async def ar(p, r_num, c, chat_id):
     try:
         print(f"--> Analyzing Round {r_num}")
         
-        # تلاش برای کلیک روی دکمه دور
+        # 1. کلیک روی تب «دورهای» با استفاده از جاوااسکریپت
+        try:
+            await p.evaluate('''
+                () => {
+                    let els = Array.from(document.querySelectorAll('div, span, a, button'));
+                    let target = els.find(e => e.innerText && e.innerText.trim() === 'دورهای');
+                    if (target) { target.click(); return true; }
+                    return false;
+                }
+            ''')
+            await p.wait_for_timeout(4000)
+        except: pass
+
+        # 2. کلیک روی شماره دور
         try:
             found = await p.evaluate(f'''
                 (num) => {{
@@ -81,10 +94,11 @@ async def ar(p, r_num, c, chat_id):
         except Exception as e:
             print(f"Could not click round {r_num}: {e}")
 
-        await p.wait_for_timeout(7000)
+        # 3. صبر برای لود شدن جدول
+        await p.wait_for_timeout(8000)
         table_text = await p.locator('body').inner_text()
         
-        # الگوی استخراج داده
+        # 4. الگوی استخراج داده‌ها
         pattern = r'([^\n]+)\n[^\n]*\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
         
         matches = re.finditer(pattern, table_text)
@@ -111,18 +125,16 @@ async def ar(p, r_num, c, chat_id):
         print(f"Error in round {r_num}: {e}")
         
     if not horses:
-        # اگر جدول خوانده نشد، عکس صفحه را می‌فرستیم تا علت را ببینیم
+        # اگر جدول خوانده نشد، عکس صفحه را برای دیباگ می‌فرستیم
         try:
             screenshot_path = f"debug_{r_num}.png"
             await p.screenshot(path=screenshot_path, full_page=False)
             with open(screenshot_path, "rb") as image_file:
                 await c.bot.send_photo(chat_id=chat_id, photo=image_file, caption=f"⚠️ خطای خواندن جدول در دور {r_num}. این عکسی است که ربات می‌بیند.")
             os.remove(screenshot_path)
-        except Exception as img_e:
-            print(f"Could not send screenshot: {img_e}")
+        except: pass
         return None
     
-    # --- محاسبات و امتیازدهی ---
     good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
     for num, h in horses.items():
         market_score = 100 / (h['w_odd'] + 1) if h['w_odd'] > 0 else 0
@@ -131,14 +143,13 @@ async def ar(p, r_num, c, chat_id):
 
     sorted_horses = sorted(horses.values(), key=lambda y: y['final_sc'], reverse=True)
     
-    # انتخاب‌ها بدون تکرار
+    # --- منطق انتخاب بدون تکرار ---
     w = sorted_horses[0]
     p_horse = sorted_horses[1] if len(sorted_horses) > 1 else w
     s_horse = sorted_horses[2] if len(sorted_horses) > 2 else p_horse
     
     q = f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}"
     
-    # شگفتی‌سازها
     surprise_candidates = [h for h in horses.values() if h['w_odd'] >= 8.0 and h['ior'] > 0]
     surprise_candidates = sorted(surprise_candidates, key=lambda y: y['final_sc'], reverse=True)
     
@@ -171,8 +182,7 @@ async def co(u: Update, c: C):
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
-            
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
             context = await browser.new_context(
                 viewport={'width': 1440, 'height': 900},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -213,7 +223,7 @@ async def co(u: Update, c: C):
                     res_all.append(None)
                     
             if not any(res_all):
-                await c.bot.send_message(chat_id, "⚠️ هیچ دوری خوانده نشد. به گیت‌هاب (Actions) بروید و لاگ‌ها را بررسی کنید.")
+                await c.bot.send_message(chat_id, "⚠️ هیچ دوری خوانده نشد. لاگ‌ها را چک کنید.")
             else:
                 await send_long_message(c, chat_id, rp)
             
@@ -238,7 +248,6 @@ async def main():
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
 
-    # ربات 300 ثانیه (5 دقیقه) منتظر می‌ماند تا به پیام‌ها جواب دهد
     await asyncio.sleep(300)
 
     print("Stopping bot safely...")
