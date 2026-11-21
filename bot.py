@@ -37,7 +37,7 @@ async def g():
     except: return "true"
 
 async def st(u: Update, c: C): 
-    await c.bot.send_message(u.effective_chat.id, "دستورات:\n/on روشن\n/off خاموش\n/check_odds [دور]")
+    await c.bot.send_message(u.effective_chat.id, "دستورات:\n/on روشن کردن\n/off خاموش کردن\n/check_odds [شماره دور]")
 
 async def on(u: Update, c: C):
     r = await s("true")
@@ -60,9 +60,8 @@ async def ar(p, r_num, c, chat_id):
     try:
         print(f"--> Analyzing Round {r_num}")
         
-        # 1. تلاش برای کلیک روی شماره دور
+        # تلاش برای کلیک روی دکمه دور
         try:
-            # استفاده از کدهای جاوااسکریپت برای پیدا کردن دقیق تر
             found = await p.evaluate(f'''
                 (num) => {{
                     let els = Array.from(document.querySelectorAll('button, div, span, a'));
@@ -73,21 +72,19 @@ async def ar(p, r_num, c, chat_id):
             ''', r_num)
             
             if not found:
-                # اگر پیدا نشد، از روش قبلی استفاده کن
                 try:
                     await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=3000, force=True)
                 except:
                     await p.get_by_text(str(r_num), exact=True).first.click(timeout=3000, force=True)
                     
-            await p.wait_for_timeout(3000)
+            await p.wait_for_timeout(4000)
         except Exception as e:
             print(f"Could not click round {r_num}: {e}")
 
         await p.wait_for_timeout(7000)
         table_text = await p.locator('body').inner_text()
         
-        # 2. الگوی جدید (Regex) برای پیدا کردن نام، IOR، سابقه و چابک‌سوار
-        # این الگو تلاش می‌کند حتی اگر فاصله‌ها به هم ریخته باشند، داده را پیدا کند
+        # الگوی استخراج داده
         pattern = r'([^\n]+)\n[^\n]*\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
         
         matches = re.finditer(pattern, table_text)
@@ -114,9 +111,18 @@ async def ar(p, r_num, c, chat_id):
         print(f"Error in round {r_num}: {e}")
         
     if not horses:
+        # اگر جدول خوانده نشد، عکس صفحه را می‌فرستیم تا علت را ببینیم
+        try:
+            screenshot_path = f"debug_{r_num}.png"
+            await p.screenshot(path=screenshot_path, full_page=False)
+            with open(screenshot_path, "rb") as image_file:
+                await c.bot.send_photo(chat_id=chat_id, photo=image_file, caption=f"⚠️ خطای خواندن جدول در دور {r_num}. این عکسی است که ربات می‌بیند.")
+            os.remove(screenshot_path)
+        except Exception as img_e:
+            print(f"Could not send screenshot: {img_e}")
         return None
     
-    # محاسبات و امتیازدهی
+    # --- محاسبات و امتیازدهی ---
     good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
     for num, h in horses.items():
         market_score = 100 / (h['w_odd'] + 1) if h['w_odd'] > 0 else 0
@@ -125,12 +131,14 @@ async def ar(p, r_num, c, chat_id):
 
     sorted_horses = sorted(horses.values(), key=lambda y: y['final_sc'], reverse=True)
     
+    # انتخاب‌ها بدون تکرار
     w = sorted_horses[0]
     p_horse = sorted_horses[1] if len(sorted_horses) > 1 else w
     s_horse = sorted_horses[2] if len(sorted_horses) > 2 else p_horse
     
     q = f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}"
     
+    # شگفتی‌سازها
     surprise_candidates = [h for h in horses.values() if h['w_odd'] >= 8.0 and h['ior'] > 0]
     surprise_candidates = sorted(surprise_candidates, key=lambda y: y['final_sc'], reverse=True)
     
@@ -154,7 +162,7 @@ async def co(u: Update, c: C):
     
     cst = await g()
     if cst == "false":
-        await c.bot.send_message(chat_id, "🛑 ربات خاموش است.")
+        await c.bot.send_message(chat_id, "🛑 ربات خاموش است. /on را بزنید.")
         return
         
     tg = int(c.args[0]) if c.args and c.args[0].isdigit() else None
@@ -163,7 +171,8 @@ async def co(u: Update, c: C):
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-blink-features=AutomationControlled'])
+            
             context = await browser.new_context(
                 viewport={'width': 1440, 'height': 900},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -179,10 +188,9 @@ async def co(u: Update, c: C):
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
             await pg.wait_for_timeout(10000) 
 
-            # بررسی لاگین بودن
             body_text = await pg.locator('body').inner_text()
             if "ورود" in body_text and "شماره موبایل" in body_text:
-                await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.")
+                await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند. لطفا توکن‌ها را آپدیت کنید.")
                 return
                 
             rp = "📊 <b>تحلیل جامع مسابقات</b> 📊\n"
@@ -204,13 +212,19 @@ async def co(u: Update, c: C):
                 else:
                     res_all.append(None)
                     
-            await send_long_message(c, chat_id, rp)
+            if not any(res_all):
+                await c.bot.send_message(chat_id, "⚠️ هیچ دوری خوانده نشد. به گیت‌هاب (Actions) بروید و لاگ‌ها را بررسی کنید.")
+            else:
+                await send_long_message(c, chat_id, rp)
             
     except Exception as e:
         await c.bot.send_message(chat_id, f"❌ خطای غیرمنتظره: {str(e)}")
     finally:
         if browser: await browser.close()
 
+# ==========================================
+# اجرای مستقیم ربات
+# ==========================================
 async def main():
     app = AB().token(T).build()
     app.add_handler(CH('start', st))
@@ -224,6 +238,7 @@ async def main():
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
 
+    # ربات 300 ثانیه (5 دقیقه) منتظر می‌ماند تا به پیام‌ها جواب دهد
     await asyncio.sleep(300)
 
     print("Stopping bot safely...")
