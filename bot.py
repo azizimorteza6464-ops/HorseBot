@@ -179,7 +179,7 @@ async def co(u, c, tg=None):
                 
             rp = "📊 *تحلیل حرفه‌ای* 📊\n"
 
-res_all = []
+            res_all = []
             
             max_r = tg if tg else 7
             for r in ([tg] if tg else range(1, max_r + 1)):
