@@ -61,19 +61,17 @@ async def off(u: Update, c: C):
 async def ar(p, r_num, c, chat_id):
     horses = {}
     try:
-        # 1. کلیک روی جدول مسابقات
+        # کاهش زمان انتظارها برای سرعت بیشتر
         try:
-            await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=5000)
-            await p.wait_for_timeout(3000)
+            await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=3000)
+            await p.wait_for_timeout(1500)
         except: pass
 
-        # 2. کلیک روی نمایش دورها
         try:
-            await p.get_by_text("نمایش دورها", exact=False).first.click(timeout=5000)
-            await p.wait_for_timeout(3000)
+            await p.get_by_text("نمایش دورها", exact=False).first.click(timeout=3000)
+            await p.wait_for_timeout(1500)
         except: pass
 
-        # 3. کلیک روی شماره دور (هوشمندتر)
         clicked = False
         for text in [f"R{r_num}", f"R {r_num}", str(r_num)]:
             try:
@@ -83,14 +81,9 @@ async def ar(p, r_num, c, chat_id):
             except: pass
         
         if not clicked:
-            # اگر دکمه پیدا نشد، یک عکس می‌فرستیم
-            await p.screenshot(path=f"debug_click_{r_num}.png")
-            with open(f"debug_click_{r_num}.png", "rb") as photo:
-                await c.bot.send_photo(chat_id=chat_id, photo=photo, caption=f"⚠️ دکمه دور {r_num} پیدا نشد! این عکسی است که ربات می‌بیند.")
-            os.remove(f"debug_click_{r_num}.png")
             return None 
         
-        await p.wait_for_timeout(6000) # زمان بیشتر برای لود
+        await p.wait_for_timeout(3000) # زمان کمتر برای لود جدول
         x = await p.locator('body').inner_text()
         
         pattern = r'([^\n]+)\n[^\n]+\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
@@ -114,12 +107,11 @@ async def ar(p, r_num, c, chat_id):
                 "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0
             }
 
-        # گرفتن ضرایب
         try:
-            await p.get_by_text("دورهای", exact=False).first.click(timeout=5000)
-            await p.wait_for_timeout(3000)
-            await p.get_by_text(str(r_num), exact=True).first.click(timeout=3000)
-            await p.wait_for_timeout(3000)
+            await p.get_by_text("دورهای", exact=False).first.click(timeout=3000)
+            await p.wait_for_timeout(1500)
+            await p.get_by_text(str(r_num), exact=True).first.click(timeout=2000)
+            await p.wait_for_timeout(2000)
             x_odds = await p.locator('body').inner_text()
             
             odds_pattern = r'([^\n]+)\n(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)'
@@ -135,15 +127,7 @@ async def ar(p, r_num, c, chat_id):
     except Exception as e:
         print(f"Error: {e}")
         
-    # اگر جدول خوانده نشد، عکس صفحه را می‌فرستیم
-    if not horses:
-        try:
-            await p.screenshot(path=f"debug_data_{r_num}.png", full_page=True)
-            with open(f"debug_data_{r_num}.png", "rb") as photo:
-                await c.bot.send_photo(chat_id=chat_id, photo=photo, caption=f"⚠️ داده‌ای در دور {r_num} خوانده نشد. این عکسی است که ربات می‌بیند.")
-            os.remove(f"debug_data_{r_num}.png")
-        except: pass
-        return None
+    if not horses: return None
     
     good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
     for num, h in horses.items():
@@ -178,7 +162,7 @@ async def co(u, c, tg=None):
         await c.bot.send_message(chat_id, "🛑 ربات خاموش است. /on را بزنید.")
         return
         
-    await c.bot.send_message(chat_id, "⏳ در حال تحلیل...")
+    await c.bot.send_message(chat_id, "⏳ در حال شروع تحلیل (لطفاً صبر کنید)...")
     
     try:
         async with ap() as p:
@@ -192,7 +176,7 @@ async def co(u, c, tg=None):
             pg = await ct.new_page()
             pg.set_default_timeout(60000)
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
-            await pg.wait_for_timeout(6000)
+            await pg.wait_for_timeout(4000) # کاهش زمان لود اولیه
             
             if "ورود" in await pg.locator('body').inner_text():
                 await c.bot.send_message(chat_id, "⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند.")
@@ -203,6 +187,10 @@ async def co(u, c, tg=None):
             
             max_r = tg if tg else 7
             for r in ([tg] if tg else range(1, max_r + 1)):
+                # ارسال پیام وضعیت برای اینکه بدانید ربات بیکار نیست
+                if not tg:
+                    await c.bot.send_message(chat_id, f"🔎 در حال بررسی دور R{r}...")
+                
                 res = await ar(pg, r, c, chat_id)
                 
                 if res:
