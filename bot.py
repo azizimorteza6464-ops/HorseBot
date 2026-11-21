@@ -11,54 +11,127 @@ U = os.environ.get("USER_UDI")
 G = os.environ.get("GH_PAT")
 R = os.environ.get("GITHUB_REPOSITORY")
 
-# 🔴 آیدی عددی شما (فقط شما اجازه دسترسی دارید)
+# 🔴 آیدی عددی شما (مدیر اصلی ربات)
 MY_ID = "184149177" 
 
-# تابع بررسی دسترسی
+# --- توابع ارتباط با گیت‌هاب (برای ذخیره لیست کاربران) ---
+async def get_github_var(var_name, default_val=""):
+    if not R or not G: return default_val
+    try:
+        url = f"https://api.github.com/repos/{R}/actions/variables/{var_name}"
+        headers = {"Authorization": f"Bearer {G}", "Accept": "application/vnd.github+json"}
+        async with httpx.AsyncClient() as client:
+            res = await client.get(url, headers=headers)
+            if res.status_code == 200:
+                return res.json().get("value", default_val)
+        return default_val
+    except:
+        return default_val
+
+async def set_github_var(var_name, val):
+    if not R or not G: return False
+    try:
+        url = f"https://api.github.com/repos/{R}/actions/variables/{var_name}"
+        headers = {"Authorization": f"Bearer {G}", "Accept": "application/vnd.github+json"}
+        async with httpx.AsyncClient() as client:
+            res = await client.get(url, headers=headers)
+            if res.status_code == 404:
+                await client.post(f"https://api.github.com/repos/{R}/actions/variables", headers=headers, json={"name": var_name, "value": val})
+            else:
+                await client.patch(url, headers=headers, json={"name": var_name, "value": val})
+        return True
+    except:
+        return False
+
+# --- توابع مدیریت دسترسی ---
+async def get_allowed_users():
+    # لیست کاربران را از گیت‌هاب می‌خواند. اگر خالی بود، فقط آیدی شما را برمی‌گرداند.
+    users_str = await get_github_var("ALLOWED_USERS", MY_ID)
+    return [u.strip() for u in users_str.split(",") if u.strip()]
+
 async def is_authorized(u: Update, c: C) -> bool:
-    if str(u.effective_chat.id) != str(MY_ID):
+    if str(u.effective_chat.id) == MY_ID:
+        return True # مدیر همیشه دسترسی دارد
+    
+    allowed = await get_allowed_users()
+    if str(u.effective_chat.id) not in allowed:
         await c.bot.send_message(u.effective_chat.id, "⛔ شما اجازه استفاده از این ربات را ندارید.")
         return False
     return True
 
-async def s(v):
-    if not R or not G: return "E"
-    try:
-        u = f"https://api.github.com/repos/{R}/actions/variables/AUTO_UPDATE"
-        h = {"Authorization": f"Bearer {G}", "Accept": "application/vnd.github+json"}
-        async with httpx.AsyncClient() as c:
-            q = await c.get(u, headers=h)
-            if q.status_code == 404:
-                await c.post(f"https://api.github.com/repos/{R}/actions/variables", headers=h, json={"name": "AUTO_UPDATE", "value": v})
-            else:
-                await c.patch(u, headers=h, json={"name": "AUTO_UPDATE", "value": v})
-        return "OK"
-    except: return "E"
-
-async def g():
-    if not R or not G: return "true"
-    try:
-        u = f"https://api.github.com/repos/{R}/actions/variables/AUTO_UPDATE"
-        h = {"Authorization": f"Bearer {G}", "Accept": "application/vnd.github+json"}
-        async with httpx.AsyncClient() as c:
-            q = await c.get(u, headers=h)
-            if q.status_code == 200: return q.json().get("value", "true")
-        return "true"
-    except: return "true"
-
+# --- دستورات ربات ---
 async def st(u: Update, c: C): 
     if not await is_authorized(u, c): return
-    await c.bot.send_message(u.effective_chat.id, "دستورات:\n/on روشن\n/off خاموش\n/check_odds [دور]")
+    msg = "دستورات کاربری:\n/on روشن\n/off خاموش\n/check_odds [دور]\n\n"
+    if str(u.effective_chat.id) == MY_ID:
+        msg += "👑 دستورات مدیریت:\n/allow [آیدی]\n/deny [آیدی]\n/list"
+    await c.bot.send_message(u.effective_chat.id, msg)
+
+async def allow_user(u: Update, c: C):
+    if str(u.effective_chat.id) != MY_ID:
+        await c.bot.send_message(u.effective_chat.id, "⛔ این دستور فقط برای مدیر است.")
+        return
+    
+    if not c.args:
+        await c.bot.send_message(u.effective_chat.id, "لطفاً آیدی عددی را وارد کنید. مثال:\n/allow 12345678")
+        return
+    
+    new_id = c.args[0]
+    allowed = await get_allowed_users()
+    
+    if new_id in allowed:
+        await c.bot.send_message(u.effective_chat.id, "این شخص از قبل دسترسی دارد.")
+        return
+        
+    allowed.append(new_id)
+    success = await set_github_var("ALLOWED_USERS", ",".join(allowed))
+    
+    if success:
+        await c.bot.send_message(u.effective_chat.id, f"✅ دسترسی به آیدی {new_id} داده شد.")
+    else:
+        await c.bot.send_message(u.effective_chat.id, "❌ خطا در ذخیره در گیت‌هاب.")
+
+async def deny_user(u: Update, c: C):
+    if str(u.effective_chat.id) != MY_ID:
+        await c.bot.send_message(u.effective_chat.id, "⛔ این دستور فقط برای مدیر است.")
+        return
+    
+    if not c.args:
+        await c.bot.send_message(u.effective_chat.id, "لطفاً آیدی عددی را وارد کنید. مثال:\n/deny 12345678")
+        return
+    
+    del_id = c.args[0]
+    allowed = await get_allowed_users()
+    
+    if del_id not in allowed:
+        await c.bot.send_message(u.effective_chat.id, "این شخص در لیست نیست.")
+        return
+        
+    allowed.remove(del_id)
+    success = await set_github_var("ALLOWED_USERS", ",".join(allowed))
+    
+    if success:
+        await c.bot.send_message(u.effective_chat.id, f"⛔ دسترسی آیدی {del_id} قطع شد.")
+    else:
+        await c.bot.send_message(u.effective_chat.id, "❌ خطا در ذخیره در گیت‌هاب.")
+
+async def list_users(u: Update, c: C):
+    if str(u.effective_chat.id) != MY_ID: return
+    allowed = await get_allowed_users()
+    txt = "👥 لیست افراد مجاز:\n"
+    for i, a in enumerate(allowed):
+        txt += f"{i+1}. `{a}`\n"
+    await c.bot.send_message(u.effective_chat.id, txt, parse_mode='Markdown')
 
 async def on(u: Update, c: C):
     if not await is_authorized(u, c): return
-    r = await s("true")
-    await c.bot.send_message(u.effective_chat.id, "✅ ربات روشن شد" if r == "OK" else r)
+    r = await set_github_var("AUTO_UPDATE", "true")
+    await c.bot.send_message(u.effective_chat.id, "✅ ربات روشن شد" if r else "❌ خطا")
 
 async def off(u: Update, c: C):
     if not await is_authorized(u, c): return
-    r = await s("false")
-    await c.bot.send_message(u.effective_chat.id, "🛑 ربات خاموش شد" if r == "OK" else r)
+    r = await set_github_var("AUTO_UPDATE", "false")
+    await c.bot.send_message(u.effective_chat.id, "🛑 ربات خاموش شد" if r else "❌ خطا")
 
 async def send_long_message(c, chat_id, text):
     if len(text) > 4000:
@@ -163,7 +236,7 @@ async def co(u: Update, c: C):
         await c.bot.send_message(chat_id, "⚠️ خطا: توکن‌های ورود یافت نشد.")
         return
     
-    cst = await g()
+    cst = await get_github_var("AUTO_UPDATE", "true")
     if cst == "false":
         await c.bot.send_message(chat_id, "🛑 ربات خاموش است. /on را بزنید.")
         return
@@ -230,6 +303,9 @@ async def main():
     app.add_handler(CH('on', on))
     app.add_handler(CH('off', off))
     app.add_handler(CH('check_odds', co))
+    app.add_handler(CH('allow', allow_user))
+    app.add_handler(CH('deny', deny_user))
+    app.add_handler(CH('list', list_users))
 
     await app.initialize()
     await app.start()
