@@ -1,3 +1,4 @@
+Azizi Morteza:
 import os, re, httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder as AB, ContextTypes as C, CommandHandler as CH, CallbackQueryHandler
@@ -61,19 +62,16 @@ async def off(u: Update, c: C):
 async def ar(p, r_num, c, chat_id):
     horses = {}
     try:
-        # 1. رفتن به تب جدول مسابقات
         try:
             await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=5000)
             await p.wait_for_timeout(3000)
         except: pass
 
-        # 2. کلیک روی نمایش دورها
         try:
             await p.get_by_text("نمایش دورها", exact=False).first.click(timeout=5000)
             await p.wait_for_timeout(3000)
         except: pass
 
-        # 3. کلیک روی شماره دور
         try:
             await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=3000)
         except:
@@ -84,7 +82,6 @@ async def ar(p, r_num, c, chat_id):
         await p.wait_for_timeout(5000)
         x = await p.locator('body').inner_text()
         
-        # استخراج IOR و سابقه
         pattern = r'([^\n]+)\n[^\n]+\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
         
         for m in re.finditer(pattern, x):
@@ -92,12 +89,11 @@ async def ar(p, r_num, c, chat_id):
             if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "جایزه"]): continue
             
             num = int(m.group(2))
-
             ior = int(m.group(4))
             perf_str = m.group(5)
             jockey = m.group(6).strip()
-            
-            perf_score = 0
+
+perf_score = 0
             s_map = {'1': 25, '2': 15, '3': 5}
             for rank in perf_str.split('-'):
                 perf_score += s_map.get(rank.strip(), 0)
@@ -107,7 +103,6 @@ async def ar(p, r_num, c, chat_id):
                 "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0
             }
 
-        # 4. رفتن به تب دورهای برای ضرایب
         try:
             await p.get_by_text("دورهای", exact=False).first.click(timeout=5000)
             await p.wait_for_timeout(3000)
@@ -126,11 +121,10 @@ async def ar(p, r_num, c, chat_id):
         except: pass
 
     except Exception as e:
-        print(f"Error: {e}")
+        await c.bot.send_message(chat_id, f"⚠️ خطا در خواندن دور {r_num}:\n{str(e)}")
         
     if not horses: return None
     
-    # محاسبه امتیاز نهایی
     good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
     for num, h in horses.items():
         market_score = 100 / (h['w_odd'] + 1) if h['w_odd'] > 0 else 0
@@ -142,7 +136,6 @@ async def ar(p, r_num, c, chat_id):
     w = sorted_horses[0]
     p_horse = sorted_horses[1] if len(sorted_horses) > 1 else w
     s_horse = max(horses.values(), key=lambda y: y['perf_sc'])
-    
     q = f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}"
     
     surprise_candidates = [h for h in horses.values() if h['w_odd'] >= 8.0 and h['ior'] > 0]
@@ -156,7 +149,6 @@ async def ar(p, r_num, c, chat_id):
 async def co(u, c, tg=None):
     chat_id = u.effective_chat.id
     
-    # اصلاح ساختار if (بدون return await)
     if not A or not U:
         await c.bot.send_message(chat_id, "⚠️ خطا: توکن‌های ورود یافت نشد.")
         return
@@ -183,12 +175,12 @@ async def co(u, c, tg=None):
             await pg.wait_for_timeout(6000)
             
             if "ورود" in await pg.locator('body').inner_text():
-
                 await c.bot.send_message(chat_id, "⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند.")
                 return
                 
             rp = "📊 *تحلیل حرفه‌ای* 📊\n"
-            res_all = []
+
+res_all = []
             
             max_r = tg if tg else 7
             for r in ([tg] if tg else range(1, max_r + 1)):
@@ -237,7 +229,7 @@ async def co(u, c, tg=None):
             await b.close()
             
     except Exception as e:
-        await c.bot.send_message(chat_id, f"❌ خطای غیرمنتظره: {str(e)}")
+        await c.bot.send_message(chat_id, f"❌ خطای غیرمنتظره در تابع co:\n{str(e)}")
 
 async def cmd_co(u: Update, c: C):
     tg = None
@@ -249,6 +241,10 @@ async def btn_handler(u: Update, c: C):
     q = u.callback_query
     await q.answer()
     data = q.data
+    
+    # ارسال پیام برای اطمینان از کلیک
+    await c.bot.send_message(u.effective_chat.id, f"✅ دکمه دریافت شد: {data}")
+    
     if data == "all": 
         await co(q, c, None)
     else: 
