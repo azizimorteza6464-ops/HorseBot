@@ -61,7 +61,9 @@ def get_main_menu():
         [InlineKeyboardButton("🟢 روشن کردن ربات", callback_data='on'), InlineKeyboardButton("🔴 خاموش کردن ربات", callback_data='off')],
         [InlineKeyboardButton("🏁 دور ۱", callback_data='r1'), InlineKeyboardButton("🏁 دور ۲", callback_data='r2'), InlineKeyboardButton("🏁 دور ۳", callback_data='r3')],
         [InlineKeyboardButton("🏁 دور ۴", callback_data='r4'), InlineKeyboardButton("🏁 دور ۵", callback_data='r5'), InlineKeyboardButton("🏁 دور ۶", callback_data='r6')],
-        [InlineKeyboardButton("🏁 دور ۷", callback_data='r7'), InlineKeyboardButton("📊 تحلیل کل (۱ تا ۶)", callback_data='rall')],
+        [InlineKeyboardButton("🏁 دور ۷", callback_data='r7'), InlineKeyboardButton("📊 تحلیل کل", callback_data='rall')],
+        [InlineKeyboardButton("🎯 ترکیب ۶ پره", callback_data='ml_6'), InlineKeyboardButton("🎯 ترکیب ۵ پره", callback_data='ml_5')],
+        [InlineKeyboardButton("🎯 ۳ پره اول", callback_data='ml_3a'), InlineKeyboardButton("🎯 ۳ پره دوم", callback_data='ml_3b')],
         [InlineKeyboardButton("👑 پنل مدیریت", callback_data='admin_help')]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -75,7 +77,7 @@ def calculate_stakes(total_amount, selections):
     for i, s in enumerate(selections):
         if s['odd'] <= 0: continue
         stake = total_amount * ((1/s['odd']) / sum_implied)
-        stake = round(stake, -3) # گرد کردن به نزدیکترین 1000 تومان
+        stake = round(stake, -3) 
         stakes.append({'name': s['name'], 'stake': stake})
     return stakes
 
@@ -92,9 +94,8 @@ async def cmd_start(u: Update, c: C):
     msg = (
         "👋 <b>سلام مدیر عزیز!</b>\n\n"
         "به ربات تحلیل جامع مسابقات خوش آمدید. 🐎\n\n"
-        "🔹 <b>تحلیل ساده:</b> از دکمه‌های زیر استفاده کنید.\n"
-        "🔹 <b>محاسبه مبلغ شرط:</b> دستور <code>/bet [مبلغ] [دور]</code> را بزنید.\n"
-        "مثال: <code>/bet 100000 1</code>"
+        "🔹 <b>ترکیب‌ها:</b> ربات به صورت هوشمند تشخیص می‌دهد مسابقه ۶ یا ۷ دوره است و ترکیب‌ها را بر اساس آن می‌چیند.\n"
+        "🔹 <b>محاسبه شرط:</b> <code>/bet [مبلغ] [دور]</code>"
     )
     await c.bot.send_message(u.effective_chat.id, msg, reply_markup=get_main_menu(), parse_mode='HTML')
 
@@ -117,7 +118,7 @@ async def cmd_check_odds(u: Update, c: C):
 async def cmd_bet(u: Update, c: C):
     if not await is_authorized(u, c): return
     if len(c.args) < 2 or not c.args[0].isdigit() or not c.args[1].isdigit():
-        await c.bot.send_message(u.effective_chat.id, "⚠️ فرمت صحیح:\n<code>/bet [مبلغ] [شماره دور]</code>\nمثال: <code>/bet 100000 1</code>", parse_mode='HTML')
+        await c.bot.send_message(u.effective_chat.id, "⚠️ فرمت صحیح:\n<code>/bet [مبلغ] [شماره دور]</code>", parse_mode='HTML')
         return
     amount = int(c.args[0])
     r_num = int(c.args[1])
@@ -125,17 +126,13 @@ async def cmd_bet(u: Update, c: C):
 
 async def cmd_allow(u: Update, c: C):
     if str(u.effective_chat.id) != MY_ID: return
-    if not c.args:
-        await c.bot.send_message(u.effective_chat.id, "لطفاً آیدی را وارد کنید. مثال:\n<code>/allow 12345678</code>", parse_mode='HTML')
-        return
+    if not c.args: return
     new_id = c.args[0]
     allowed = await get_allowed_users()
-    if new_id in allowed:
-        await c.bot.send_message(u.effective_chat.id, "این شخص از قبل دسترسی دارد.")
-        return
-    allowed.append(new_id)
-    await set_github_var("ALLOWED_USERS", ",".join(allowed))
-    await c.bot.send_message(u.effective_chat.id, f"✅ دسترسی به <code>{new_id}</code> داده شد.", parse_mode='HTML')
+    if new_id not in allowed:
+        allowed.append(new_id)
+        await set_github_var("ALLOWED_USERS", ",".join(allowed))
+        await c.bot.send_message(u.effective_chat.id, f"✅ دسترسی به <code>{new_id}</code> داده شد.", parse_mode='HTML')
 
 async def cmd_deny(u: Update, c: C):
     if str(u.effective_chat.id) != MY_ID: return
@@ -175,7 +172,7 @@ async def ar(p, r_num, c, chat_id):
             try: await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
             except: return "NO_ROUND" 
         
-        await p.wait_for_timeout(6000)
+        await p.wait_for_timeout(5000) 
         table_text = await p.locator('body').inner_text()
         if "Kg" not in table_text: return "NO_DATA"
 
@@ -228,6 +225,100 @@ async def ar(p, r_num, c, chat_id):
         "conf": confidence
     }
 
+# --- پردازش هوشمند ترکیب‌های چند پره ---
+async def process_multileg(chat_id, c, leg_type):
+    if not A or not U: return
+    
+    await c.bot.send_message(chat_id, "⏳ <b>در حال بررسی تعداد دورها و محاسبه ترکیب...</b> (ممکن است ۱ دقیقه طول بکشد)", parse_mode='HTML')
+    
+    browser = None
+    try:
+        async with ap() as p:
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
+            context = await browser.new_context(
+                viewport={'width': 1440, 'height': 900},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            await context.add_cookies([
+                {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
+                {'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},
+                {'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}
+            ])
+            pg = await context.new_page()
+            pg.set_default_timeout(60000)
+            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
+            await pg.wait_for_timeout(8000) 
+
+            if len((await pg.locator('body').inner_text()).strip()) < 100:
+                await c.bot.send_message(chat_id, "⚠️ صفحه سایت سفید است (IP مسدود شده).")
+                return
+                
+            # 1. بررسی اینکه آیا دور ۷ وجود دارد یا نه (تشخیص مسابقه ۶ یا ۷ دوره)
+            res_7 = await ar(pg, 7, c, chat_id)
+            is_7_rounds = isinstance(res_7, dict) # اگر دیکشنری برگرداند یعنی دور ۷ وجود دارد
+            
+            # 2. تعیین لیست دورها بر اساس نوع مسابقه
+            if leg_type == 'ml_6':
+                if is_7_rounds:
+                    target_rounds = [2, 3, 4, 5, 6, 7]
+                    title = "۶ پره (دور ۲ تا ۷)"
+                else:
+                    target_rounds = [1, 2, 3, 4, 5, 6]
+                    title = "۶ پره (دور ۱ تا ۶)"
+                    
+            elif leg_type == 'ml_5':
+                if is_7_rounds:
+                    target_rounds = [3, 4, 5, 6, 7]
+                    title = "۵ پره (دور ۳ تا ۷)"
+                else:
+                    target_rounds = [2, 3, 4, 5, 6]
+                    title = "۵ پره (دور ۲ تا ۶)"
+                    
+            elif leg_type == 'ml_3a':
+                target_rounds = [1, 2, 3]
+                title = "۳ پره اول (دور ۱ تا ۳)"
+                
+            elif leg_type == 'ml_3b':
+                if is_7_rounds:
+                    target_rounds = [5, 6, 7]
+                    title = "۳ پره دوم (دور ۵ تا ۷)"
+                else:
+                    target_rounds = [4, 5, 6]
+                    title = "۳ پره دوم (دور ۴ تا ۶)"
+            else:
+                return
+
+            # 3. جمع‌آوری اطلاعات دوره‌های هدف
+            picks = []
+            for r in target_rounds:
+                if r == 7 and isinstance(res_7, dict):
+                    res = res_7 # اگر قبلا دور ۷ رو چک کردیم، دوباره چک نکنیم
+                else:
+                    res = await ar(pg, r, c, chat_id)
+                    
+                if isinstance(res, dict):
+                    picks.append(f"{res['w']['num']}-{res['w']['n']}")
+                else:
+                    picks.append("نامشخص")
+            
+            final_str = " + ".join(picks)
+            r_type_str = "۷ دوره" if is_7_rounds else "۶ دوره"
+            
+            msg = (
+                f"🎯 <b>ترکیب پیشنهادی {title}</b> 🎯\n"
+                f"<i>(تشخیص خودکار: مسابقه {r_type_str} است)</i>\n\n"
+                f"🏇 <b>انتخاب‌ها:</b>\n"
+                f"<code>{final_str}</code>\n\n"
+                f"<i>⚠️ توجه: برای شرط‌بندی این ترکیب، ضرایب هر دور در هم ضرب می‌شوند.</i>"
+            )
+            await c.bot.send_message(chat_id, msg, parse_mode='HTML')
+            
+    except Exception as e:
+        await c.bot.send_message(chat_id, f"❌ خطا: {str(e)}")
+    finally:
+        if browser: await browser.close()
+
+# --- پردازش تحلیل عادی ---
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None):
     if not A or not U:
         await c.bot.send_message(chat_id, "⚠️ توکن‌های ورود یافت نشد.")
@@ -271,33 +362,25 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     res_all.append(res)
                     rp += f"\n🏁 <b>دور R{r}</b>\n"
                     
-                    # --- خروجی پیش‌بر ---
                     rp += f"🥇 <b>پیش‌بر:</b> {res['w']['num']}-{res['w']['n']}\n"
                     rp += f"   ↳ ضریب: <code>{res['w']['w_odd']}</code> | IOR: <code>{res['w']['ior']}</code>\n"
                     rp += f"   ↳ چابک: {res['w']['j']} | سابقه: {res['w']['perf']}\n"
                     
-                    # --- خروجی میان‌بر ---
                     rp += f"🥈 <b>میان‌بر:</b> {res['p']['num']}-{res['p']['n']}\n"
                     rp += f"   ↳ ضریب: <code>{res['p']['w_odd']}</code> | IOR: <code>{res['p']['ior']}</code>\n"
                     rp += f"   ↳ چابک: {res['p']['j']} | سابقه: {res['p']['perf']}\n"
                     
-                    # --- خروجی پی‌بر ---
                     rp += f"🥉 <b>پی‌بر:</b> {res['s']['num']}-{res['s']['n']}\n"
                     rp += f"   ↳ ضریب: <code>{res['s']['w_odd']}</code> | IOR: <code>{res['s']['ior']}</code>\n"
                     
-                    # --- شگفتی‌ها ---
                     rp += f"👥 <b>دوقلو:</b> {res['q']}\n"
                     rp += f"🎲 <b>اسب شگفتی:</b> {res['su']['num']}-{res['su']['n']}\n"
                     rp += f"🔥 <b>دوقلوی شگفتی:</b> {res['qs']}\n"
-                    
-                    # --- سطح اطمینان ---
                     rp += f"🎯 <b>سطح اطمینان:</b> {res['conf']}\n"
                     
-                    # --- تشخیص Value Bet ---
                     if res['w']['w_odd'] > 3.0 and res['w']['ior'] > 100:
                         rp += f"💎 <b>نکته:</b> اسب پیش‌بر دارای <b>Value (ارزش)</b> بالایی است!\n"
 
-                    # --- بخش محاسبه شرط (Dutching) ---
                     if bet_amount and specific_round and r == specific_round:
                         rp += "\n💰 <b>استراتژی توزیع سرمایه (Dutching):</b>\n"
                         rp += f"<i>برای سرمایه {bet_amount:,} تومانی شما پیشنهاد می‌شود:</i>\n"
@@ -317,10 +400,10 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     rp += "➖➖➖➖➖➖➖➖➖➖\n"
                 else:
                     res_all.append(None)
-                    
+
             if not any(res_all):
                 if all_rounds:
-                    await c.bot.send_message(chat_id, "⚠️ <b>اطلاعات مسابقه هنوز کامل نیست!</b> سایت ضرایب را منتشر نکرده است.", parse_mode='HTML')
+                    await c.bot.send_message(chat_id, "⚠️ <b>اطلاعات مسابقه هنوز کامل نیست!</b>", parse_mode='HTML')
                 else:
                     await c.bot.send_message(chat_id, f"⚠️ <b>اطلاعات دور {specific_round} هنوز کامل نیست!</b>", parse_mode='HTML')
             else:
@@ -356,6 +439,8 @@ async def button_callback(u: Update, c: C):
     elif data.startswith('r'):
         if data == 'rall': await process_odds(chat_id, c, all_rounds=True)
         else: await process_odds(chat_id, c, specific_round=int(data[1:]))
+    elif data.startswith('ml_'):
+        await process_multileg(chat_id, c, data)
 
 # --- راه‌اندازی ---
 async def main():
@@ -370,7 +455,7 @@ async def main():
     app.add_handler(CH('list', cmd_list))
     app.add_handler(CallbackQueryHandler(button_callback)) 
 
-    print("Bot started with Deep Analysis...")
+    print("Bot started with Dynamic Multi-Leg...")
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
