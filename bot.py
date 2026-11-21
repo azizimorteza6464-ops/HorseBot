@@ -11,9 +11,9 @@ U = os.environ.get("USER_UDI")
 G = os.environ.get("GH_PAT")
 R = os.environ.get("GITHUB_REPOSITORY")
 
-# اگر پروکسی دارید (مثلا برای دور زدن محدودیت IP گیت‌هاب)، اینجا وارد کنید. 
-# فرمت: "http://user:pass@ip:port" یا "socks5://ip:port"
-PROXY_URL = None # مثال: "http://127.0.0.1:8080"
+# 🔴 اگر پروکسی دارید، اینجا وارد کنید. (مثلا یک سرور ایران)
+# فرمت: "http://username:password@ip:port" یا "socks5://ip:port"
+PROXY_URL = None  # <--- اینجا آدرس پروکسی خود را بگذارید
 
 async def s(v):
     if not R or not G: return "E"
@@ -64,32 +64,22 @@ async def ar(p, r_num, c, chat_id):
     try:
         print(f"--> Analyzing Round {r_num}")
         
-        # تلاش‌های متعدد برای کلیک روی تب "دورهای"
+        # کلیک روی تب "دورهای"
         try:
             await p.locator("text=دورهای").first.click(timeout=5000, force=True)
-        except: 
-            try:
-                await p.get_by_text("دورهای", exact=False).first.click(timeout=5000, force=True)
-            except:
-                pass
-            
-        await p.wait_for_timeout(4000)
+        except: pass
+        await p.wait_for_timeout(3000)
 
         # کلیک روی شماره دور
         try:
             await p.locator(f"text='R {r_num}'").first.click(timeout=5000, force=True)
-        except: 
-            try:
-                await p.get_by_text(f"R {r_num}", exact=False).first.click(timeout=5000, force=True)
-            except:
-                pass
+        except: pass
 
-        await p.wait_for_timeout(8000)
+        await p.wait_for_timeout(7000)
         table_text = await p.locator('body').inner_text()
         
-        # بررسی اینکه آیا صفحه اصلا لود شده است؟
+        # اگر صفحه سفید بود
         if len(table_text.strip()) < 50:
-            print(f"Page seems empty for Round {r_num}")
             return None
 
         pattern = r'([^\n]+)\n[^\n]*\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
@@ -120,7 +110,6 @@ async def ar(p, r_num, c, chat_id):
     if not horses:
         return None
     
-    # محاسبات و امتیازدهی
     good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
     for num, h in horses.items():
         market_score = 100 / (h['w_odd'] + 1) if h['w_odd'] > 0 else 0
@@ -129,7 +118,6 @@ async def ar(p, r_num, c, chat_id):
 
     sorted_horses = sorted(horses.values(), key=lambda y: y['final_sc'], reverse=True)
     
-    # انتخاب بدون تکرار
     w = sorted_horses[0]
     p_horse = sorted_horses[1] if len(sorted_horses) > 1 else w
     s_horse = sorted_horses[2] if len(sorted_horses) > 2 else p_horse
@@ -159,7 +147,7 @@ async def co(u: Update, c: C):
     
     cst = await g()
     if cst == "false":
-        await c.bot.send_message(chat_id, "🛑 ربات خاموش است.")
+        await c.bot.send_message(chat_id, "🛑 ربات خاموش است. /on را بزنید.")
         return
         
     tg = int(c.args[0]) if c.args and c.args[0].isdigit() else None
@@ -168,19 +156,14 @@ async def co(u: Update, c: C):
     browser = None
     try:
         async with ap() as p:
-            launch_args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
-            
-            # اگر پروکسی تنظیم شده باشد
+            launch_args = ['--no-sandbox']
             if PROXY_URL:
                 launch_args.append(f'--proxy-server={PROXY_URL}')
-                print(f"Using Proxy: {PROXY_URL}")
 
             browser = await p.chromium.launch(headless=True, args=launch_args)
-            
             context = await browser.new_context(
                 viewport={'width': 1440, 'height': 900},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                locale='fa-IR'
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
             await context.add_cookies([
                 {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
@@ -190,20 +173,13 @@ async def co(u: Update, c: C):
             pg = await context.new_page()
             pg.set_default_timeout(60000)
             
-            print("Navigating to site...")
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
-            
-            # صبر بیشتر برای لود کامل
-            await pg.wait_for_timeout(15000) 
-            
+            await pg.wait_for_timeout(10000) 
+
             body_text = await pg.locator('body').inner_text()
             
             if len(body_text.strip()) < 100:
-                await c.bot.send_message(chat_id, "⚠️ صفحه سایت برای گیت‌هاب کاملاً سفید (خالی) است. احتمالا IP سرورهای گیت‌هاب توسط سایت اسپیدوانی مسدود شده است. لطفا این کد را روی کامپیوتر خودتان اجرا کنید.")
-                return
-                
-            if "ورود" in body_text and "شماره موبایل" in body_text:
-                await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.")
+                await c.bot.send_message(chat_id, "⚠️ صفحه سایت برای گیت‌هاب کاملاً سفید است (IP مسدود است). لطفا کد را روی کامپیوتر خودتان اجرا کنید یا از پروکسی استفاده کنید.")
                 return
                 
             rp = "📊 <b>تحلیل جامع مسابقات</b> 📊\n"
@@ -226,7 +202,7 @@ async def co(u: Update, c: C):
                     res_all.append(None)
                     
             if not any(res_all):
-                await c.bot.send_message(chat_id, "⚠️ هیچ دوری خوانده نشد (صفحه سفید بود یا ساختار تغییر کرده).")
+                await c.bot.send_message(chat_id, "⚠️ هیچ دوری خوانده نشد.")
             else:
                 await send_long_message(c, chat_id, rp)
             
@@ -247,7 +223,10 @@ async def main():
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-    await asyncio.sleep(300) # 5 minutes
+    
+    # ربات 5 دقیقه روشن می ماند (برای گیت هاب)
+    await asyncio.sleep(300) 
+    
     await app.updater.stop()
     await app.stop()
     await app.shutdown()
