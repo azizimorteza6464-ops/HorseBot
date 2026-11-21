@@ -200,7 +200,7 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
             context = await browser.new_context(viewport={'width': 1440, 'height': 900})
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
@@ -244,7 +244,7 @@ async def process_multileg(chat_id, c, leg_type):
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
             context = await browser.new_context()
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
@@ -284,7 +284,7 @@ async def process_surprises(chat_id, c, mode):
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
             context = await browser.new_context()
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
@@ -355,11 +355,13 @@ async def main():
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-    await asyncio.sleep(21500) # این عدد باعث می‌شود ربات حدود 6 ساعت روشن بماند
+    await asyncio.sleep(21500) 
     await app.updater.stop()
     await app.stop()
     await app.shutdown()
 
 if __name__ == "__main__":
     try: asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit): pass
+    except Exception as e:
+        print(f"CRITICAL ERROR: {e}")
+        sys.exit(1)
