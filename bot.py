@@ -80,7 +80,6 @@ async def ar(p, r_num, c, chat_id):
             except: pass
         
         if not clicked:
-            await c.bot.send_message(chat_id, f"⚠️ دکمه دور {r_num} در صفحه پیدا نشد (نه با R{r_num} نه با {r_num}).")
             return None 
         
         await p.wait_for_timeout(3000) 
@@ -97,7 +96,7 @@ async def ar(p, r_num, c, chat_id):
             perf_str = m.group(5)
             jockey = m.group(6).strip()
 
-            perf_score = 0
+perf_score = 0
             s_map = {'1': 25, '2': 15, '3': 5}
             for rank in perf_str.split('-'):
                 perf_score += s_map.get(rank.strip(), 0)
@@ -125,11 +124,13 @@ async def ar(p, r_num, c, chat_id):
         except: pass
 
     except Exception as e:
-        await c.bot.send_message(chat_id, f"⚠️ خطای داخلی در خواندن دور {r_num}:\n{str(e)}")
+        await c.bot.send_message(chat_id, f"⚠️ خطا در خواندن دور {r_num}:\n{str(e)}")
         return None
         
     if not horses: 
-        await c.bot.send_message(chat_id, f"⚠️ صفحه دور {r_num} باز شد اما هیچ اسبی در متن پیدا نشد (خطای Regex).")
+        # ارسال متن خام برای دیباگ
+        debug_text = x[:800] if x else "متن خالی"
+        await c.bot.send_message(chat_id, f"⚠️ خطای Regex در دور {r_num}.\n\nمتن دریافتی از سایت:\n{debug_text}", parse_mode='Markdown')
         return None
     
     good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
@@ -180,8 +181,8 @@ async def co(u, c, tg=None):
             pg.set_default_timeout(60000)
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
             await pg.wait_for_timeout(4000)
-            
-            if "ورود" in await pg.locator('body').inner_text():
+
+if "ورود" in await pg.locator('body').inner_text():
                 await c.bot.send_message(chat_id, "⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند.")
                 return
                 
@@ -206,7 +207,6 @@ async def co(u, c, tg=None):
                     rp += f"🎲 شگفتی: {res['su']['num']}-{res['su']['n']}\n"
                     rp += f"🔥 دوقلو شگفتی: {res['qs']}\n"
                 else:
-                    rp += f"\n🏁 *دور R{r}*: ❌ خطا در خواندن اطلاعات.\n"
                     res_all.append(None)
                     
             if not tg and len(res_all) > 0:
