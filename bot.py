@@ -1,8 +1,9 @@
-import os, re, httpx
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder as AB, ContextTypes as C, CommandHandler as CH, CallbackQueryHandler
+import os, re, httpx, sys, asyncio
+from telegram import Update
+from telegram.ext import ApplicationBuilder as AB, ContextTypes as C, CommandHandler as CH
 from playwright.async_api import async_playwright as ap
 
+# --- تنظیمات اولیه ---
 T = os.environ.get("BOT_TOKEN")
 A = os.environ.get("USER_TOKEN")
 D = os.environ.get("USER_DEVICE_ID")
@@ -17,13 +18,12 @@ async def s(v):
         h = {"Authorization": f"Bearer {G}", "Accept": "application/vnd.github+json"}
         async with httpx.AsyncClient() as c:
             q = await c.get(u, headers=h)
-            if q.status_code == 404: 
+            if q.status_code == 404:
                 await c.post(f"https://api.github.com/repos/{R}/actions/variables", headers=h, json={"name": "AUTO_UPDATE", "value": v})
-            else: 
+            else:
                 await c.patch(u, headers=h, json={"name": "AUTO_UPDATE", "value": v})
         return "OK"
-    except: 
-        return "E"
+    except: return "E"
 
 async def g():
     if not R or not G: return "true"
@@ -32,23 +32,12 @@ async def g():
         h = {"Authorization": f"Bearer {G}", "Accept": "application/vnd.github+json"}
         async with httpx.AsyncClient() as c:
             q = await c.get(u, headers=h)
-            if q.status_code == 200: 
-                return q.json().get("value", "true")
+            if q.status_code == 200: return q.json().get("value", "true")
         return "true"
-    except: 
-        return "true"
+    except: return "true"
 
-async def st(u: Update, c: C):
-    keyboard = [
-        [InlineKeyboardButton("تحلیل کل (۱ تا ۷)", callback_data="all")],
-        [InlineKeyboardButton("R1", callback_data="1"), InlineKeyboardButton("R2", callback_data="2"), InlineKeyboardButton("R3", callback_data="3")],
-        [InlineKeyboardButton("R4", callback_data="4"), InlineKeyboardButton("R5", callback_data="5"), InlineKeyboardButton("R6", callback_data="6"), InlineKeyboardButton("R7", callback_data="7")]
-    ]
-    msg = "منوی ربات اسب‌دوانی (یک گزینه را لمس کنید):"
-    if u.message:
-        await u.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        await c.bot.send_message(u.effective_chat.id, msg, reply_markup=InlineKeyboardMarkup(keyboard))
+async def st(u: Update, c: C): 
+    await c.bot.send_message(u.effective_chat.id, "دستورات:\n/on روشن\n/off خاموش\n/check_odds [دور]")
 
 async def on(u: Update, c: C):
     r = await s("true")
@@ -58,44 +47,44 @@ async def off(u: Update, c: C):
     r = await s("false")
     await c.bot.send_message(u.effective_chat.id, "🛑 ربات خاموش شد" if r == "OK" else r)
 
+async def send_long_message(c, chat_id, text):
+    if len(text) > 4000:
+        for i in range(0, len(text), 4000):
+            await c.bot.send_message(chat_id, text[i:i+4000], parse_mode='HTML')
+    else:
+        await c.bot.send_message(chat_id, text, parse_mode='HTML')
+
 async def ar(p, r_num, c, chat_id):
     horses = {}
+    table_text = ""
     try:
         try:
-            await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=3000)
-            await p.wait_for_timeout(1500)
+            await p.get_by_text("دورهای", exact=False).first.click(timeout=10000, force=True)
+            await p.wait_for_timeout(3000)
         except: pass
 
         try:
-            await p.get_by_text("نمایش دورها", exact=False).first.click(timeout=3000)
-            await p.wait_for_timeout(1500)
-        except: pass
-
-        clicked = False
-        for text in [f"R{r_num}", f"R {r_num}", str(r_num)]:
+            await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=5000, force=True)
+        except:
             try:
-                await p.get_by_text(text, exact=True).first.click(timeout=2000)
-                clicked = True
-                break
-            except: pass
+                await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
+            except: return None 
         
-        if not clicked:
-            return None 
+        await p.wait_for_timeout(7000)
+        table_text = await p.locator('body').inner_text()
         
-        await p.wait_for_timeout(3000) 
-        x = await p.locator('body').inner_text()
+        pattern = r'([^\n]+)\n[^\n]*\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
         
-        pattern = r'([^\n]+)\n[^\n]+\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
-        
-        for m in re.finditer(pattern, x):
+        matches = re.finditer(pattern, table_text)
+        for m in matches:
             name = m.group(1).strip()
-            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "جایزه"]): continue
+            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "جایزه", "اسبدوانی", "پخش زنده"]): continue
             
             num = int(m.group(2))
             ior = int(m.group(4))
             perf_str = m.group(5)
             jockey = m.group(6).strip()
-
+            
             perf_score = 0
             s_map = {'1': 25, '2': 15, '3': 5}
             for rank in perf_str.split('-'):
@@ -106,165 +95,133 @@ async def ar(p, r_num, c, chat_id):
                 "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0
             }
 
-        try:
-            await p.get_by_text("دورهای", exact=False).first.click(timeout=3000)
-            await p.wait_for_timeout(1500)
-            await p.get_by_text(str(r_num), exact=True).first.click(timeout=2000)
-            await p.wait_for_timeout(2000)
-            x_odds = await p.locator('body').inner_text()
-            
-            odds_pattern = r'([^\n]+)\n(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)'
-            for m in re.finditer(odds_pattern, x_odds):
-                name = m.group(1).strip()
-                w_odd = float(m.group(2))
-                for num, h in horses.items():
-                    if name in h['n'] or h['n'] in name:
-                        horses[num]['w_odd'] = w_odd
-                        break
-        except: pass
-
     except Exception as e:
-        await c.bot.send_message(chat_id, f"⚠️ خطا در خواندن دور {r_num}:\n{str(e)}")
-        return None
+        print(f"Error in round {r_num}: {e}")
         
-    if not horses: 
-        # ارسال متن خام برای دیباگ
-        debug_text = x[:800] if x else "متن خالی"
-        await c.bot.send_message(chat_id, f"⚠️ خطای Regex در دور {r_num}.\n\nمتن دریافتی از سایت:\n{debug_text}", parse_mode='Markdown')
+    if not horses:
+        try:
+            screenshot_path = f"debug_{r_num}.png"
+            await p.screenshot(path=screenshot_path, full_page=False)
+            with open(screenshot_path, "rb") as image_file:
+                await c.bot.send_photo(chat_id=chat_id, photo=image_file, caption=f"⚠️ خطا در خواندن جدول دور {r_num}.")
+            os.remove(screenshot_path)
+        except: pass
         return None
     
     good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
     for num, h in horses.items():
         market_score = 100 / (h['w_odd'] + 1) if h['w_odd'] > 0 else 0
-        jockey_bonus = 15 if any(gj in h['j'] for gj in good_jockeys) else 0
-        h['final_sc'] = (h['ior'] * 0.4) + (h['perf_sc'] * 0.25) + (market_score * 0.2) + (jockey_bonus * 0.15)
+        jockey_bonus = 20 if any(gj in h['j'] for gj in good_jockeys) else 0
+        h['final_sc'] = (h['ior'] * 0.35) + (h['perf_sc'] * 0.30) + (market_score * 0.20) + (jockey_bonus * 0.15)
 
     sorted_horses = sorted(horses.values(), key=lambda y: y['final_sc'], reverse=True)
     
     w = sorted_horses[0]
     p_horse = sorted_horses[1] if len(sorted_horses) > 1 else w
-    s_horse = max(horses.values(), key=lambda y: y['perf_sc'])
+    s_horse = sorted_horses[2] if len(sorted_horses) > 2 else p_horse
+    
     q = f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}"
     
     surprise_candidates = [h for h in horses.values() if h['w_odd'] >= 8.0 and h['ior'] > 0]
     surprise_candidates = sorted(surprise_candidates, key=lambda y: y['final_sc'], reverse=True)
-    su = surprise_candidates[0] if surprise_candidates else sorted_horses[-1]
-    su2 = surprise_candidates[1] if len(surprise_candidates) >= 2 else (sorted_horses[-2] if len(sorted_horses) > 1 else w)
+    
+    if surprise_candidates:
+        su = surprise_candidates[0]
+        remaining_su = [h for h in surprise_candidates if h['num'] != su['num']]
+        su2 = remaining_su[0] if remaining_su else (sorted_horses[-1] if sorted_horses[-1]['num'] != su['num'] else sorted_horses[0])
+    else:
+        su = sorted_horses[-1]
+        su2 = sorted_horses[-2] if len(sorted_horses) > 1 else sorted_horses[0]
+        
     qs = f"{su['num']}-{su['n']} + {su2['num']}-{su2['n']}"
 
     return {"w": w, "p": p_horse, "s": s_horse, "q": q, "qs": qs, "su": su}
 
-async def co(u, c, tg=None):
+async def co(u: Update, c: C):
     chat_id = u.effective_chat.id
-    
     if not A or not U:
         await c.bot.send_message(chat_id, "⚠️ خطا: توکن‌های ورود یافت نشد.")
         return
     
     cst = await g()
     if cst == "false":
-        await c.bot.send_message(chat_id, "🛑 ربات خاموش است. /on را بزنید.")
+        await c.bot.send_message(chat_id, "🛑 ربات خاموش است.")
         return
         
-    await c.bot.send_message(chat_id, "⏳ در حال شروع تحلیل (لطفاً صبر کنید)...")
+    tg = int(c.args[0]) if c.args and c.args[0].isdigit() else None
+    await c.bot.send_message(chat_id, "⏳ در حال تحلیل...")
     
+    browser = None
     try:
         async with ap() as p:
-            b = await p.chromium.launch(headless=True)
-            ct = await b.new_context()
-            await ct.add_cookies([
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
+            context = await browser.new_context(
+                viewport={'width': 1440, 'height': 900},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            await context.add_cookies([
                 {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
                 {'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},
                 {'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}
             ])
-            pg = await ct.new_page()
+            pg = await context.new_page()
             pg.set_default_timeout(60000)
-            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
-            await pg.wait_for_timeout(4000)
+            
+            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
+            await pg.wait_for_timeout(10000) 
 
-if "ورود" in await pg.locator('body').inner_text():
-                await c.bot.send_message(chat_id, "⚠️ خطای ورود: کوکی‌ها منقضی شده‌اند.")
-                return
-                
-            rp = "📊 *تحلیل حرفه‌ای* 📊\n"
+            rp = "📊 <b>تحلیل جامع مسابقات</b> 📊\n"
             res_all = []
             
-            max_r = tg if tg else 7
+            max_r = tg if tg else 4 
             for r in ([tg] if tg else range(1, max_r + 1)):
-                if not tg:
-                    await c.bot.send_message(chat_id, f"🔎 در حال بررسی دور R{r}...")
-                
                 res = await ar(pg, r, c, chat_id)
                 
                 if res:
                     res_all.append(res)
-                    rp += f"\n🏁 *دور R{r}*\n"
+                    rp += f"\n🏁 <b>دور R{r}</b>\n"
                     rp += f"🥇 پیش‌بر: {res['w']['num']}-{res['w']['n']} (ضریب {res['w']['w_odd']})\n"
-                    rp += f"└ ⭐ IOR: {res['w']['ior']} | 👤 چابک: {res['w']['j']}\n"
                     rp += f"🥈 میان‌بر: {res['p']['num']}-{res['p']['n']} (ضریب {res['p']['w_odd']})\n"
-                    rp += f"🥉 پی‌بر: {res['s']['num']}-{res['s']['n']} (سابقه: {res['s']['perf']})\n"
+                    rp += f"🥉 پی‌بر: {res['s']['num']}-{res['s']['n']} (ضریب {res['s']['w_odd']})\n"
                     rp += f"👥 دوقلو: {res['q']}\n"
-                    rp += f"🎲 شگفتی: {res['su']['num']}-{res['su']['n']}\n"
-                    rp += f"🔥 دوقلو شگفتی: {res['qs']}\n"
+                    rp += f"🎲 اسب شگفتی: {res['su']['num']}-{res['su']['n']}\n"
+                    rp += f"🔥 دوقلوی شگفتی: {res['qs']}\n"
                 else:
                     res_all.append(None)
                     
-            if not tg and len(res_all) > 0:
-                valid_rounds = [i+1 for i, res in enumerate(res_all) if res is not None]
-                mr = max(valid_rounds) if valid_rounds else 6 
-                
-                rp += "\n➖➖➖➖➖➖➖➖\n"
-                rp += f"🎯 *ترکیب‌های پیشنهادی (مسابقه {mr} دوره)* 🎯\n"
-                
-                def get_pick(round_list):
-                    names = []
-                    for r_num in round_list:
-                        if r_num <= len(res_all) and res_all[r_num-1]:
-                            res = res_all[r_num-1]
-                            names.append(f"{res['w']['num']}-{res['w']['n']}")
-                    return " + ".join(names) if names else "نامشخص"
-                
-                if mr >= 7:
-                    rp += f"🔹 ۶ پره (دور ۲ تا ۷): {get_pick([2,3,4,5,6,7])}\n"
-                    rp += f"🔹 ۵ پره (دور ۳ تا ۷): {get_pick([3,4,5,6,7])}\n"
-                    rp += f"🔹 ۳ پره اول (دور ۱ تا ۳): {get_pick([1,2,3])}\n"
-                    rp += f"🔹 ۳ پره دوم (دور ۵ تا ۷): {get_pick([5,6,7])}\n"
-                else:
-                    rp += f"🔹 ۶ پره (دور ۱ تا ۶): {get_pick([1,2,3,4,5,6])}\n"
-                    rp += f"🔹 ۵ پره (دور ۲ تا ۶): {get_pick([2,3,4,5,6])}\n"
-                    rp += f"🔹 ۳ پره اول (دور ۱ تا ۳): {get_pick([1,2,3])}\n"
-                    rp += f"🔹 ۳ پره دوم (دور ۴ تا ۶): {get_pick([4,5,6])}\n"
-                
-            await c.bot.send_message(chat_id, rp, parse_mode='HTML')
-            await b.close()
+            await send_long_message(c, chat_id, rp)
             
     except Exception as e:
-        await c.bot.send_message(chat_id, f"❌ خطای غیرمنتظره در تابع co:\n{str(e)}")
+        await c.bot.send_message(chat_id, f"❌ خطای غیرمنتظره: {str(e)}")
+    finally:
+        if browser: await browser.close()
 
-async def cmd_co(u: Update, c: C):
-    tg = None
-    if c.args and c.args[0].isdigit():
-        tg = int(c.args[0])
-    await co(u, c, tg)
+# ==========================================
+# اجرای مستقیم ربات
+# ==========================================
+async def main():
+    app = AB().token(T).build()
+    app.add_handler(CH('start', st))
+    app.add_handler(CH('on', on))
+    app.add_handler(CH('off', off))
+    app.add_handler(CH('check_odds', co))
 
-async def btn_handler(u: Update, c: C):
-    q = u.callback_query
-    await q.answer()
-    data = q.data
-    
-    await c.bot.send_message(u.effective_chat.id, f"✅ دکمه دریافت شد: {data}")
-    
-    if data == "all": 
-        await co(q, c, None)
-    else: 
-        await co(q, c, int(data))
+    print("Bot started. Waiting for commands (runs for 5 minutes)...")
 
-app = AB().token(T).build()
-app.add_handler(CH('start', st))
-app.add_handler(CH('menu', st))
-app.add_handler(CH('on', on))
-app.add_handler(CH('off', off))
-app.add_handler(CH('check_odds', cmd_co))
-app.add_handler(CallbackQueryHandler(btn_handler))
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(drop_pending_updates=True)
 
-app.run_polling(bootstrap_retries=-1, drop_pending_updates=True)
+    # ربات 300 ثانیه (5 دقیقه) منتظر می‌ماند تا به پیام‌ها جواب دهد
+    await asyncio.sleep(300)
+
+    print("Stopping bot safely...")
+    await app.updater.stop()
+    await app.stop()
+    await app.shutdown()
+    print("Bot stopped successfully. GitHub Action will now finish.")
+
+try:
+    asyncio.run(main())
+except (KeyboardInterrupt, SystemExit):
+    pass
