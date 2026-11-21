@@ -92,7 +92,7 @@ async def ar(p, r_num, c, chat_id):
             perf_str = m.group(5)
             jockey = m.group(6).strip()
 
-perf_score = 0
+            perf_score = 0
             s_map = {'1': 25, '2': 15, '3': 5}
             for rank in perf_str.split('-'):
                 perf_score += s_map.get(rank.strip(), 0)
