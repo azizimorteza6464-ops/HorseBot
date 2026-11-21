@@ -61,24 +61,36 @@ async def off(u: Update, c: C):
 async def ar(p, r_num, c, chat_id):
     horses = {}
     try:
+        # 1. کلیک روی جدول مسابقات
         try:
             await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=5000)
             await p.wait_for_timeout(3000)
         except: pass
 
+        # 2. کلیک روی نمایش دورها
         try:
             await p.get_by_text("نمایش دورها", exact=False).first.click(timeout=5000)
             await p.wait_for_timeout(3000)
         except: pass
 
-        try:
-            await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=3000)
-        except:
+        # 3. کلیک روی شماره دور (هوشمندتر)
+        clicked = False
+        for text in [f"R{r_num}", f"R {r_num}", str(r_num)]:
             try:
-                await p.get_by_text(str(r_num), exact=True).first.click(timeout=3000)
-            except: return None 
+                await p.get_by_text(text, exact=True).first.click(timeout=2000)
+                clicked = True
+                break
+            except: pass
         
-        await p.wait_for_timeout(5000)
+        if not clicked:
+            # اگر دکمه پیدا نشد، یک عکس می‌فرستیم
+            await p.screenshot(path=f"debug_click_{r_num}.png")
+            with open(f"debug_click_{r_num}.png", "rb") as photo:
+                await c.bot.send_photo(chat_id=chat_id, photo=photo, caption=f"⚠️ دکمه دور {r_num} پیدا نشد! این عکسی است که ربات می‌بیند.")
+            os.remove(f"debug_click_{r_num}.png")
+            return None 
+        
+        await p.wait_for_timeout(6000) # زمان بیشتر برای لود
         x = await p.locator('body').inner_text()
         
         pattern = r'([^\n]+)\n[^\n]+\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
@@ -102,6 +114,7 @@ async def ar(p, r_num, c, chat_id):
                 "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0
             }
 
+        # گرفتن ضرایب
         try:
             await p.get_by_text("دورهای", exact=False).first.click(timeout=5000)
             await p.wait_for_timeout(3000)
@@ -120,9 +133,17 @@ async def ar(p, r_num, c, chat_id):
         except: pass
 
     except Exception as e:
-        await c.bot.send_message(chat_id, f"⚠️ خطا در خواندن دور {r_num}:\n{str(e)}")
+        print(f"Error: {e}")
         
-    if not horses: return None
+    # اگر جدول خوانده نشد، عکس صفحه را می‌فرستیم
+    if not horses:
+        try:
+            await p.screenshot(path=f"debug_data_{r_num}.png", full_page=True)
+            with open(f"debug_data_{r_num}.png", "rb") as photo:
+                await c.bot.send_photo(chat_id=chat_id, photo=photo, caption=f"⚠️ داده‌ای در دور {r_num} خوانده نشد. این عکسی است که ربات می‌بیند.")
+            os.remove(f"debug_data_{r_num}.png")
+        except: pass
+        return None
     
     good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
     for num, h in horses.items():
@@ -178,7 +199,6 @@ async def co(u, c, tg=None):
                 return
                 
             rp = "📊 *تحلیل حرفه‌ای* 📊\n"
-
             res_all = []
             
             max_r = tg if tg else 7
@@ -241,7 +261,6 @@ async def btn_handler(u: Update, c: C):
     await q.answer()
     data = q.data
     
-    # ارسال پیام برای اطمینان از کلیک
     await c.bot.send_message(u.effective_chat.id, f"✅ دکمه دریافت شد: {data}")
     
     if data == "all": 
