@@ -11,6 +11,10 @@ U = os.environ.get("USER_UDI")
 G = os.environ.get("GH_PAT")
 R = os.environ.get("GITHUB_REPOSITORY")
 
+# اگر پروکسی دارید (مثلا برای دور زدن محدودیت IP گیت‌هاب)، اینجا وارد کنید. 
+# فرمت: "http://user:pass@ip:port" یا "socks5://ip:port"
+PROXY_URL = None # مثال: "http://127.0.0.1:8080"
+
 async def s(v):
     if not R or not G: return "E"
     try:
@@ -60,56 +64,34 @@ async def ar(p, r_num, c, chat_id):
     try:
         print(f"--> Analyzing Round {r_num}")
         
-        # 1. تلاش‌های متعدد برای کلیک روی تب "دورهای"
-        clicked_tab = False
+        # تلاش‌های متعدد برای کلیک روی تب "دورهای"
         try:
             await p.locator("text=دورهای").first.click(timeout=5000, force=True)
-            clicked_tab = True
-        except: pass
-        
-        if not clicked_tab:
+        except: 
             try:
                 await p.get_by_text("دورهای", exact=False).first.click(timeout=5000, force=True)
-                clicked_tab = True
-            except: pass
-
-        if not clicked_tab:
-            try:
-                # تلاش با جاوا اسکریپت
-                await p.evaluate('''
-                    () => {
-                        let els = Array.from(document.querySelectorAll('div, span, a, button, li'));
-                        let target = els.find(e => e.innerText && e.innerText.includes('دورهای'));
-                        if (target) { target.click(); return true; }
-                        return false;
-                    }
-                ''')
-            except: pass
+            except:
+                pass
             
-        await p.wait_for_timeout(4000) # صبر بعد از کلیک روی تب
+        await p.wait_for_timeout(4000)
 
-        # 2. کلیک روی شماره دور (R1, R2...)
-        clicked_round = False
+        # کلیک روی شماره دور
         try:
             await p.locator(f"text='R {r_num}'").first.click(timeout=5000, force=True)
-            clicked_round = True
-        except: pass
-        
-        if not clicked_round:
+        except: 
             try:
                 await p.get_by_text(f"R {r_num}", exact=False).first.click(timeout=5000, force=True)
-                clicked_round = True
-            except: pass
-            
-        if not clicked_round:
-            try:
-                await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
-            except: pass
+            except:
+                pass
 
-        await p.wait_for_timeout(8000) # صبر طولانی برای لود جدول
+        await p.wait_for_timeout(8000)
         table_text = await p.locator('body').inner_text()
         
-        # 3. الگوی استخراج داده‌ها
+        # بررسی اینکه آیا صفحه اصلا لود شده است؟
+        if len(table_text.strip()) < 50:
+            print(f"Page seems empty for Round {r_num}")
+            return None
+
         pattern = r'([^\n]+)\n[^\n]*\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
         
         matches = re.finditer(pattern, table_text)
@@ -136,13 +118,6 @@ async def ar(p, r_num, c, chat_id):
         print(f"Error in round {r_num}: {e}")
         
     if not horses:
-        try:
-            screenshot_path = f"debug_{r_num}.png"
-            await p.screenshot(path=screenshot_path, full_page=False)
-            with open(screenshot_path, "rb") as image_file:
-                await c.bot.send_photo(chat_id=chat_id, photo=image_file, caption=f"⚠️ خطا در خواندن جدول دور {r_num}.")
-            os.remove(screenshot_path)
-        except: pass
         return None
     
     # محاسبات و امتیازدهی
@@ -193,10 +168,19 @@ async def co(u: Update, c: C):
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
+            launch_args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
+            
+            # اگر پروکسی تنظیم شده باشد
+            if PROXY_URL:
+                launch_args.append(f'--proxy-server={PROXY_URL}')
+                print(f"Using Proxy: {PROXY_URL}")
+
+            browser = await p.chromium.launch(headless=True, args=launch_args)
+            
             context = await browser.new_context(
                 viewport={'width': 1440, 'height': 900},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                locale='fa-IR'
             )
             await context.add_cookies([
                 {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
@@ -206,10 +190,18 @@ async def co(u: Update, c: C):
             pg = await context.new_page()
             pg.set_default_timeout(60000)
             
+            print("Navigating to site...")
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
-            await pg.wait_for_timeout(10000) 
-
+            
+            # صبر بیشتر برای لود کامل
+            await pg.wait_for_timeout(15000) 
+            
             body_text = await pg.locator('body').inner_text()
+            
+            if len(body_text.strip()) < 100:
+                await c.bot.send_message(chat_id, "⚠️ صفحه سایت برای گیت‌هاب کاملاً سفید (خالی) است. احتمالا IP سرورهای گیت‌هاب توسط سایت اسپیدوانی مسدود شده است. لطفا این کد را روی کامپیوتر خودتان اجرا کنید.")
+                return
+                
             if "ورود" in body_text and "شماره موبایل" in body_text:
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.")
                 return
@@ -234,7 +226,7 @@ async def co(u: Update, c: C):
                     res_all.append(None)
                     
             if not any(res_all):
-                await c.bot.send_message(chat_id, "⚠️ هیچ دوری خوانده نشد. لاگ‌ها را چک کنید.")
+                await c.bot.send_message(chat_id, "⚠️ هیچ دوری خوانده نشد (صفحه سفید بود یا ساختار تغییر کرده).")
             else:
                 await send_long_message(c, chat_id, rp)
             
@@ -250,19 +242,15 @@ async def main():
     app.add_handler(CH('off', off))
     app.add_handler(CH('check_odds', co))
 
-    print("Bot started. Waiting for commands (runs for 5 minutes)...")
+    print("Bot started. Waiting for commands...")
 
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-
-    await asyncio.sleep(300)
-
-    print("Stopping bot safely...")
+    await asyncio.sleep(300) # 5 minutes
     await app.updater.stop()
     await app.stop()
     await app.shutdown()
-    print("Bot stopped successfully.")
 
 try:
     asyncio.run(main())
