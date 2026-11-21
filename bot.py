@@ -68,7 +68,6 @@ def get_main_menu():
 
 # --- محاسبه توزیع سرمایه (Dutching) ---
 def calculate_stakes(total_amount, selections):
-    # selections: list of dicts with 'odd' and 'name'
     implied_probs = [1 / s['odd'] for s in selections if s['odd'] > 0]
     if not implied_probs: return []
     sum_implied = sum(implied_probs)
@@ -76,20 +75,25 @@ def calculate_stakes(total_amount, selections):
     for i, s in enumerate(selections):
         if s['odd'] <= 0: continue
         stake = total_amount * ((1/s['odd']) / sum_implied)
-        # گرد کردن به نزدیکترین 1000 تومان برای راحتی
-        stake = round(stake, -3)
+        stake = round(stake, -3) # گرد کردن به نزدیکترین 1000 تومان
         stakes.append({'name': s['name'], 'stake': stake})
     return stakes
+
+# --- محاسبه سطح اطمینان ---
+def get_confidence_level(score1, score2):
+    diff = score1 - score2
+    if diff > 20: return "🔥 بالا (انتخاب اول بسیار قوی است)"
+    elif diff > 10: return "⚖️ متوسط (رقابت بین دو اسب اول)"
+    else: return "⚠️ پایین (دور غیرقابل پیش‌بینی، با احتیاط شرط ببندید)"
 
 # --- دستورات ربات ---
 async def cmd_start(u: Update, c: C): 
     if not await is_authorized(u, c): return
     msg = (
         "👋 <b>سلام مدیر عزیز!</b>\n\n"
-        "به ربات تحلیل مسابقات خوش آمدید.\n"
-        "🔹 برای تحلیل ساده از دکمه‌ها استفاده کنید.\n"
-        "🔹 برای محاسبه مبلغ شرط، دستور زیر را بزنید:\n"
-        "<code>/bet [مبلغ] [شماره دور]</code>\n"
+        "به ربات تحلیل جامع مسابقات خوش آمدید. 🐎\n\n"
+        "🔹 <b>تحلیل ساده:</b> از دکمه‌های زیر استفاده کنید.\n"
+        "🔹 <b>محاسبه مبلغ شرط:</b> دستور <code>/bet [مبلغ] [دور]</code> را بزنید.\n"
         "مثال: <code>/bet 100000 1</code>"
     )
     await c.bot.send_message(u.effective_chat.id, msg, reply_markup=get_main_menu(), parse_mode='HTML')
@@ -150,7 +154,7 @@ async def cmd_list(u: Update, c: C):
     for a in allowed: txt += f"🔸 <code>{a}</code>\n"
     await c.bot.send_message(u.effective_chat.id, txt, parse_mode='HTML')
 
-# --- اسکرپ و تحلیل ---
+# --- توابع اسکرپ ---
 async def send_long_message(c, chat_id, text):
     if len(text) > 4000:
         for i in range(0, len(text), 4000):
@@ -184,7 +188,10 @@ async def ar(p, r_num, c, chat_id):
             perf_str = m.group(5)
             jockey = m.group(6).strip()
             perf_score = sum({'1': 25, '2': 15, '3': 5}.get(rank.strip(), 0) for rank in perf_str.split('-'))
-            horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0}
+            horses[num] = {
+                "n": name, "num": num, "ior": ior, "j": jockey, 
+                "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0
+            }
     except: return "ERROR"
         
     if not horses: return "NO_DATA"
@@ -199,10 +206,12 @@ async def ar(p, r_num, c, chat_id):
     w = sorted_horses[0]
     p_horse = sorted_horses[1] if len(sorted_horses) > 1 else w
     s_horse = sorted_horses[2] if len(sorted_horses) > 2 else p_horse
+    
     q = f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}"
     
     surprise_candidates = [h for h in horses.values() if h['w_odd'] >= 8.0 and h['ior'] > 0]
     surprise_candidates = sorted(surprise_candidates, key=lambda y: y['final_sc'], reverse=True)
+    
     if surprise_candidates:
         su = surprise_candidates[0]
         remaining_su = [h for h in surprise_candidates if h['num'] != su['num']]
@@ -212,7 +221,12 @@ async def ar(p, r_num, c, chat_id):
         su2 = sorted_horses[-2] if len(sorted_horses) > 1 else sorted_horses[0]
     qs = f"{su['num']}-{su['n']} + {su2['num']}-{su2['n']}"
 
-    return {"w": w, "p": p_horse, "s": s_horse, "q": q, "qs": qs, "su": su}
+    confidence = get_confidence_level(w['final_sc'], p_horse['final_sc'])
+
+    return {
+        "w": w, "p": p_horse, "s": s_horse, "q": q, "qs": qs, "su": su, 
+        "conf": confidence
+    }
 
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None):
     if not A or not U:
@@ -222,7 +236,7 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
         await c.bot.send_message(chat_id, "🛑 ربات خاموش است. /on را بزنید.")
         return
         
-    await c.bot.send_message(chat_id, "⏳ <b>در حال تحلیل...</b>", parse_mode='HTML')
+    await c.bot.send_message(chat_id, "⏳ <b>در حال تحلیل عمیق...</b>", parse_mode='HTML')
     
     browser = None
     try:
@@ -246,7 +260,7 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                 await c.bot.send_message(chat_id, "⚠️ صفحه سایت سفید است (IP مسدود شده).")
                 return
                 
-            rp = "🏇 <b>تحلیل تخصصی مسابقات</b> 🏇\n➖➖➖➖➖➖➖➖➖➖\n"
+            rp = "🏇 <b>تحلیل جامع و تخصصی</b> 🏇\n➖➖➖➖➖➖➖➖➖➖\n"
             res_all = []
             rounds_to_check = range(1, 7) if all_rounds else ([specific_round] if specific_round else [])
             
@@ -256,19 +270,38 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                 if isinstance(res, dict):
                     res_all.append(res)
                     rp += f"\n🏁 <b>دور R{r}</b>\n"
-                    rp += f"🥇 <b>پیش‌بر:</b> {res['w']['num']}-{res['w']['n']} <i>(ضریب {res['w']['w_odd']})</i>\n"
-                    rp += f"🥈 <b>میان‌بر:</b> {res['p']['num']}-{res['p']['n']} <i>(ضریب {res['p']['w_odd']})</i>\n"
-                    rp += f"🥉 <b>پی‌بر:</b> {res['s']['num']}-{res['s']['n']} <i>(ضریب {res['s']['w_odd']})</i>\n"
+                    
+                    # --- خروجی پیش‌بر ---
+                    rp += f"🥇 <b>پیش‌بر:</b> {res['w']['num']}-{res['w']['n']}\n"
+                    rp += f"   ↳ ضریب: <code>{res['w']['w_odd']}</code> | IOR: <code>{res['w']['ior']}</code>\n"
+                    rp += f"   ↳ چابک: {res['w']['j']} | سابقه: {res['w']['perf']}\n"
+                    
+                    # --- خروجی میان‌بر ---
+                    rp += f"🥈 <b>میان‌بر:</b> {res['p']['num']}-{res['p']['n']}\n"
+                    rp += f"   ↳ ضریب: <code>{res['p']['w_odd']}</code> | IOR: <code>{res['p']['ior']}</code>\n"
+                    rp += f"   ↳ چابک: {res['p']['j']} | سابقه: {res['p']['perf']}\n"
+                    
+                    # --- خروجی پی‌بر ---
+                    rp += f"🥉 <b>پی‌بر:</b> {res['s']['num']}-{res['s']['n']}\n"
+                    rp += f"   ↳ ضریب: <code>{res['s']['w_odd']}</code> | IOR: <code>{res['s']['ior']}</code>\n"
+                    
+                    # --- شگفتی‌ها ---
                     rp += f"👥 <b>دوقلو:</b> {res['q']}\n"
                     rp += f"🎲 <b>اسب شگفتی:</b> {res['su']['num']}-{res['su']['n']}\n"
                     rp += f"🔥 <b>دوقلوی شگفتی:</b> {res['qs']}\n"
                     
-                    # --- بخش محاسبه شرط (اگر مبلغ وارد شده باشد) ---
+                    # --- سطح اطمینان ---
+                    rp += f"🎯 <b>سطح اطمینان:</b> {res['conf']}\n"
+                    
+                    # --- تشخیص Value Bet ---
+                    if res['w']['w_odd'] > 3.0 and res['w']['ior'] > 100:
+                        rp += f"💎 <b>نکته:</b> اسب پیش‌بر دارای <b>Value (ارزش)</b> بالایی است!\n"
+
+                    # --- بخش محاسبه شرط (Dutching) ---
                     if bet_amount and specific_round and r == specific_round:
                         rp += "\n💰 <b>استراتژی توزیع سرمایه (Dutching):</b>\n"
                         rp += f"<i>برای سرمایه {bet_amount:,} تومانی شما پیشنهاد می‌شود:</i>\n"
                         
-                        # محاسبه برای دو اسب اول (پیش‌بر و میان‌بر)
                         selections = [
                             {'name': f"{res['w']['num']}-{res['w']['n']} (پیش‌بر)", 'odd': res['w']['w_odd']},
                             {'name': f"{res['p']['num']}-{res['p']['n']} (میان‌بر)", 'odd': res['p']['w_odd']}
@@ -277,9 +310,8 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                         for st in stakes:
                             rp += f"🔸 روی <b>{st['name']}</b> ببند: <code>{st['stake']:,}</code> تومان\n"
                         
-                        # محاسبه تقریبی برای دوقلو (چون ضریب دوقلو مستقیما خوانده نمی‌شود، ضرب ضرایب دو اسب را تخمین می‌زنیم)
                         exacta_odd = res['w']['w_odd'] * res['p']['w_odd']
-                        exacta_stake = round(bet_amount * 0.2, -3) # اختصاص 20% بودجه به دوقلو
+                        exacta_stake = round(bet_amount * 0.2, -3) 
                         rp += f"👥 روی <b>دوقلو ({res['q']})</b> ببند: <code>{exacta_stake:,}</code> تومان <i>(ضریب تقریبی {exacta_odd:.1f})</i>\n"
                         
                     rp += "➖➖➖➖➖➖➖➖➖➖\n"
@@ -332,13 +364,13 @@ async def main():
     app.add_handler(CH('on', cmd_on))
     app.add_handler(CH('off', cmd_off))
     app.add_handler(CH('check_odds', cmd_check_odds))
-    app.add_handler(CH('bet', cmd_bet)) # دستور جدید شرط‌بندی
+    app.add_handler(CH('bet', cmd_bet)) 
     app.add_handler(CH('allow', cmd_allow))
     app.add_handler(CH('deny', cmd_deny))
     app.add_handler(CH('list', cmd_list))
     app.add_handler(CallbackQueryHandler(button_callback)) 
 
-    print("Bot started...")
+    print("Bot started with Deep Analysis...")
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
