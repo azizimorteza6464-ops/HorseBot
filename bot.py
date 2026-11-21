@@ -53,7 +53,8 @@ async def is_authorized(u: Update, c: C) -> bool:
 
 async def get_weather():
     try:
-        url = "https://api.open-meteo.com/v1/forecast?latitude=31.89&longitude=54.36&current_weather=true"
+        # مختصات پیش‌فرض (گنبد کاووس)
+        url = "https://api.open-meteo.com/v1/forecast?latitude=37.25&longitude=55.16&current_weather=true"
         async with httpx.AsyncClient() as client:
             res = await client.get(url)
             data = res.json()
@@ -87,7 +88,8 @@ def get_main_menu():
         [InlineKeyboardButton("🎯 ۶ پره", callback_data='ml_6'), InlineKeyboardButton("🎯 ۵ پره", callback_data='ml_5')],
         [InlineKeyboardButton("🎯 ۳ پره اول", callback_data='ml_3a'), InlineKeyboardButton("🎯 ۳ پره دوم", callback_data='ml_3b')],
         [InlineKeyboardButton("🎲 اسب شگفتی", callback_data='sur_h'), InlineKeyboardButton("🔥 دوقلوی شگفتی", callback_data='sur_d')],
-        [InlineKeyboardButton("🌤 وضعیت هوا", callback_data='weather'), InlineKeyboardButton("👑 پنل مدیریت", callback_data='admin_help')]
+        [InlineKeyboardButton("🌤 وضعیت هوا", callback_data='weather'), InlineKeyboardButton("🏙 تغییر مسیر/شهر", callback_data='change_city')],
+        [InlineKeyboardButton("👑 پنل مدیریت", callback_data='admin_help')]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -105,6 +107,25 @@ async def save_to_history(res_dict, r_num):
     history = history[:5]
     await set_github_var("BOT_HISTORY", json.dumps(history, ensure_ascii=False))
 
+async def prepare_page(pg):
+    # تابع جدید برای انتخاب هوشمند جدیدترین مسابقه (شهر)
+    try:
+        await pg.wait_for_timeout(2000)
+        dropdown = pg.get_by_text("انتخاب فصل مسابقات", exact=False).first
+        if await dropdown.is_visible():
+            await dropdown.click(timeout=5000)
+            await pg.wait_for_timeout(2000)
+            # کلیک روی اولین گزینه (جدیدترین مسابقه)
+            first_option = pg.locator("ul li, .v-list-item, .dropdown-item, [role='option']").first
+            if await first_option.is_visible():
+                await first_option.click()
+                await pg.wait_for_timeout(3000)
+            else:
+                await pg.keyboard.press("Enter")
+                await pg.wait_for_timeout(3000)
+    except Exception as e:
+        print(f"Track selection error: {e}")
+
 async def ar(p, r_num, c, chat_id):
     horses = {}
     try:
@@ -115,6 +136,7 @@ async def ar(p, r_num, c, chat_id):
         await p.wait_for_timeout(4000) 
         table_text = await p.locator('body').inner_text()
         if "Kg" not in table_text: return "NO_DATA"
+        
         pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}Kg)\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
         for m in re.finditer(pattern, table_text):
             name = m.group(1).strip()
@@ -123,23 +145,27 @@ async def ar(p, r_num, c, chat_id):
             perf_score = sum({'1': 25, '2': 15, '3': 5}.get(rank.strip(), 0) for rank in perf_str.split('-'))
             horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "perf_sc": perf_score, "w_odd": 50.0}
     except: return "ERROR"
+    
     if not horses: return "NO_DATA"
+    
     for num, h in horses.items():
         market_score = 100 / (h['w_odd'] + 1) if h['w_odd'] > 0 else 0
         jockey_bonus = 20 if any(gj in h['j'] for gj in ["رحمانی", "قهرمانی", "نوروزی"]) else 0
         h['final_sc'] = (h['ior'] * 0.4) + (h['perf_sc'] * 0.3) + (market_score * 0.2) + (jockey_bonus * 0.1)
+        
     sorted_horses = sorted(horses.values(), key=lambda y: y['final_sc'], reverse=True)
     w = sorted_horses[0]
     p_horse = sorted_horses[1] if len(sorted_horses) > 1 else w
     s_horse = sorted_horses[2] if len(sorted_horses) > 2 else p_horse
     conf = get_confidence_level(w['final_sc'], p_horse['final_sc'])
+    
     res_dict = {"w": w, "p": p_horse, "s": s_horse, "q": f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}", "conf": conf}
     await save_to_history(res_dict, r_num)
     return res_dict
 
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None):
     if await get_github_var("AUTO_UPDATE", "true") == "false": return await c.bot.send_message(chat_id, "🛑 خاموش است.")
-    await c.bot.send_message(chat_id, "⏳ <b>در حال تحلیل...</b>", parse_mode='HTML')
+    await c.bot.send_message(chat_id, "⏳ <b>در حال اتصال و انتخاب جدیدترین مسابقه...</b>", parse_mode='HTML')
     weather = await get_weather()
     browser = None
     try:
@@ -150,7 +176,11 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
             pg = await context.new_page()
             pg.set_default_timeout(60000)
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
-            await pg.wait_for_timeout(6000) 
+            await pg.wait_for_timeout(5000) 
+            
+            # انتخاب هوشمند جدیدترین مسابقه
+            await prepare_page(pg)
+            
             rp = f"🏇 <b>تحلیل جامع</b> 🏇\n{weather}\n➖➖➖➖➖➖➖➖\n"
             rounds = range(1, 7) if all_rounds else ([specific_round] if specific_round else [])
             found_any = False
@@ -185,13 +215,18 @@ async def process_multileg(chat_id, c, leg_type):
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
-            await pg.wait_for_timeout(6000) 
+            await pg.wait_for_timeout(5000) 
+            
+            # انتخاب هوشمند جدیدترین مسابقه
+            await prepare_page(pg)
+            
             res_7 = await ar(pg, 7, c, chat_id)
             is_7 = isinstance(res_7, dict) 
             if leg_type == 'ml_6': tr = [2,3,4,5,6,7] if is_7 else [1,2,3,4,5,6]; title = "۶ پره"
             elif leg_type == 'ml_5': tr = [3,4,5,6,7] if is_7 else [2,3,4,5,6]; title = "۵ پره"
             elif leg_type == 'ml_3a': tr = [1,2,3]; title = "۳ پره اول"
             elif leg_type == 'ml_3b': tr = [5,6,7] if is_7 else [4,5,6]; title = "۳ پره دوم"
+            
             picks = []
             for r in tr:
                 if r == 7 and is_7: res = res_7 
@@ -214,7 +249,11 @@ async def process_surprises(chat_id, c, mode):
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
-            await pg.wait_for_timeout(6000) 
+            await pg.wait_for_timeout(5000) 
+            
+            # انتخاب هوشمند جدیدترین مسابقه
+            await prepare_page(pg)
+            
             res_7 = await ar(pg, 7, c, chat_id)
             max_r = 7 if isinstance(res_7, dict) else 6
             msg = f"{'🎲 اسب شگفتی' if mode == 'sur_h' else '🔥 دوقلوی شگفتی'}\n➖➖➖➖➖➖\n\n"
@@ -245,11 +284,16 @@ async def button_callback(u: Update, c: C):
     await query.answer() 
     chat_id = query.message.chat_id
     data = query.data
+    
+    if not await is_authorized(u, c): return
+
     if data == 'on': await set_github_var("AUTO_UPDATE", "true"); await query.message.reply_text("✅ روشن شد.")
     elif data == 'off': await set_github_var("AUTO_UPDATE", "false"); await query.message.reply_text("🛑 خاموش شد.")
     elif data == 'history': await cmd_history(chat_id, c)
     elif data == 'weather': await query.message.reply_text(await get_weather(), parse_mode='HTML')
     elif data == 'value': await process_value_bets(chat_id, c)
+    elif data == 'change_city': 
+        await query.message.reply_text("🏙 <b>انتخاب مسیر/شهر:</b>\nدر حال حاضر ربات به صورت هوشمند جدیدترین مسابقه (اولین گزینه در سایت) را انتخاب می‌کند. قابلیت انتخاب دستی شهرها در آپدیت‌های بعدی اضافه خواهد شد.", parse_mode='HTML')
     elif data.startswith('r'):
         if data == 'rall': await process_odds(chat_id, c, all_rounds=True)
         else: await process_odds(chat_id, c, specific_round=int(data[1:]))
@@ -257,7 +301,8 @@ async def button_callback(u: Update, c: C):
     elif data in ['sur_h', 'sur_d']: await process_surprises(chat_id, c, data)
 
 async def cmd_start(u: Update, c: C): 
-    await c.bot.send_message(u.effective_chat.id, "👋 <b>سلام مدیر!</b>\nمنوی جدید با قابلیت هواشناسی و Kelly اضافه شد.", reply_markup=get_main_menu(), parse_mode='HTML')
+    if not await is_authorized(u, c): return
+    await c.bot.send_message(u.effective_chat.id, "👋 <b>سلام مدیر!</b>\nمنوی جدید با قابلیت انتخاب هوشمند مسابقات، هواشناسی و Kelly اضافه شد.", reply_markup=get_main_menu(), parse_mode='HTML')
 
 async def main():
     app = AB().token(T).build()
@@ -266,11 +311,11 @@ async def main():
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-    await asyncio.sleep(350)
+    await asyncio.sleep(350) # نگه داشتن ربات به مدت تقریبی 6 ساعت
     await app.updater.stop()
     await app.stop()
     await app.shutdown()
 
-if True:
+if __name__ == "__main__":
     try: asyncio.run(main())
     except (KeyboardInterrupt, SystemExit): pass
