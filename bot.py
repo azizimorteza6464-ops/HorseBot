@@ -1,4 +1,4 @@
-import os, re, httpx, sys, asyncio, json
+import os, re, httpx, sys, asyncio, json, time
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import (
@@ -15,6 +15,12 @@ U = os.environ.get("USER_UDI")
 G = os.environ.get("GH_PAT")
 R = os.environ.get("GITHUB_REPOSITORY")
 MY_ID = "184149177"
+
+# ============================================================
+# Anti-Spam & Cooldown
+# ============================================================
+_last_call = {}
+COOLDOWN = 60  # ثانیه
 
 # ============================================================
 # GitHub Variables
@@ -60,7 +66,7 @@ async def is_authorized(u: Update, c: C) -> bool:
     return True
 
 # ============================================================
-# Weather
+# Analysis Helpers
 # ============================================================
 async def get_weather():
     try:
@@ -73,9 +79,6 @@ async def get_weather():
             return f"🌡 دما: {temp}°C | 💨 باد: {wind} km/h"
     except: return "⚠️ اطلاعات هواشناسی در دسترس نیست."
 
-# ============================================================
-# Advanced Probability Model
-# ============================================================
 JOCKEY_TIERS = {
     'S': ['رحمانی', 'قهرمانی', 'نوروزی'],
     'A': ['وحدانی', 'مرادی', 'صوفیان', 'خواجوی'],
@@ -86,55 +89,38 @@ JOCKEY_RATINGS = {'S': 0.95, 'A': 0.75, 'B': 0.55, 'C': 0.40, 'D': 0.28}
 
 def jockey_rating(name):
     for tier, names in JOCKEY_TIERS.items():
-        if any(n in name for n in names):
-            return JOCKEY_RATINGS[tier]
+        if any(n in name for n in names): return JOCKEY_RATINGS[tier]
     return JOCKEY_RATINGS['D']
 
 RANK_POINTS = {'1': 10, '2': 6, '3': 3, '4': 1, '5': 0.5}
 def decayed_form(perf_str, decay=0.85):
-    """Decay نمایی: مسابقه آخر (سمت چپ) بیشترین وزن."""
     if not perf_str: return 0
     ranks = perf_str.split('-')
     score = 0
     for i, r in enumerate(ranks):
         r = r.strip()
-        if r in ['0', '-', 'D', 'W', '']:
-            continue
-        try:
-            rank = int(r)
-            score += RANK_POINTS.get(str(rank), 0) * (decay ** i)
+        if r in ['0', '-', 'D', 'W', '']: continue
+        try: score += RANK_POINTS.get(str(int(r)), 0) * (decay ** i)
         except: continue
     return score
 
 def power_probs(scores, power=1.8):
-    """Bradley-Terry/Power: تبدیل امتیاز به احتمال واقعی."""
     min_s = min(scores)
-    if min_s <= 0:
-        scores = [s - min_s + 0.01 for s in scores]
+    if min_s <= 0: scores = [s - min_s + 0.01 for s in scores]
     powered = [s ** power for s in scores]
     total = sum(powered) or 1
     return [p / total for p in powered]
 
 def normalize_market(odds_list):
-    """
-    حذف Overround از ضریب بازار.
-    بازار شرط‌بندی معمولاً 15-25% overround دارد.
-    خروجی: احتمالات بازار که جمعشان 1 می‌شود.
-    """
     implied = [1.0 / o if o > 0 else 0 for o in odds_list]
     total = sum(implied) or 1
     return [i / total for i in implied]
 
 def place_probability(probs, i, num_places=3):
-    """
-    Harville: احتمال اینکه اسب i در سه رتبه اول تمام کند.
-    probs: list احتمالات برد (جمع = 1)
-    """
     n = len(probs)
     p_i = probs[i]
     if p_i <= 0: return 0
-    
-    p1 = p_i  # اول
+    p1 = p_i
     p2 = sum(probs[j] * p_i / (1 - probs[j]) for j in range(n) if j != i and probs[j] < 1)
     p3 = 0
     if num_places >= 3:
@@ -146,69 +132,42 @@ def place_probability(probs, i, num_places=3):
     return p1 + p2 + (p3 if num_places >= 3 else 0)
 
 def quinella_prob(probs, i, j):
-    """احتمال اینکه {i,j} به هر ترتیبی اول و دوم شوند."""
     p_i, p_j = probs[i], probs[j]
     if p_i + p_j >= 1 or p_i <= 0 or p_j <= 0: return 0
     return p_i * p_j / (1 - p_i) + p_j * p_i / (1 - p_j)
 
 def exacta_prob(probs, i, j):
-    """احتمال i اول و j دوم (به ترتیب)."""
     if probs[i] >= 1: return 0
     return probs[i] * probs[j] / (1 - probs[i])
 
-def correlation_adjust(parlay_prob, n_legs, rho=0.05):
-    """همبستگی مثبت مسابقات هم‌روز → احتمال joint بالاتر → ضریب منصفانه پایین‌تر."""
+def correlation_adjust(parlay_prob, n_legs, rho=0.06):
     if n_legs <= 1: return parlay_prob
     return min(parlay_prob * (1 + rho * (n_legs - 1)), 0.95)
 
-# ============================================================
-# Kelly with Bayesian Shrinkage
-# ============================================================
-def calculate_kelly(bankroll, model_prob, decimal_odds, fraction=0.25,
-                    min_bet=1000, max_pct=0.05, confidence=0.55):
-    """
-    Kelly واقعی با Shrinkage.
-    - confidence=0.55: 55% مدل + 45% بازار (بازار شرط‌بندی خیلی کارآمد است)
-    - fraction=0.25: ¼ Kelly (استاندارد صنعت)
-    - max_pct: سقف 5٪ از سرمایه
-    """
+def calculate_kelly(bankroll, model_prob, decimal_odds, fraction=0.25, min_bet=1000, max_pct=0.05, confidence=0.55):
     if decimal_odds <= 1 or bankroll <= 0: return 0
-    
-    # بازار با حذف overround (تقریبی)
     market_prob = 100 / decimal_odds
-    
-    # Shrinkage: مدل را به سمت بازار می‌بریم
     p_true = model_prob * confidence + market_prob * (1 - confidence)
-    
     b = decimal_odds - 1
     p = p_true / 100
     q = 1 - p
     if p <= 0 or p >= 1: return 0
     f = (b * p - q) / b
     if f <= 0: return 0
-    
     raw = min(bankroll * f * fraction, bankroll * max_pct)
     if raw < min_bet: return 0
     return int(raw // 1000) * 1000
 
-# Fraction واقعی هر نوع شرط (ریسک متفاوت)
-FRACTIONS = {'win': 0.25, 'place': 0.20, 'quinella': 0.15, 'exacta': 0.10,
-             'trifecta': 0.05, 'parlay': 0.08}
+FRACTIONS = {'win': 0.25, 'place': 0.20, 'quinella': 0.15, 'exacta': 0.10, 'trifecta': 0.05, 'parlay': 0.08}
 
-# ============================================================
-# Confidence (بهبودیافته)
-# ============================================================
 def get_confidence_level(res_dict):
-    """اطمینان بر اساس توافق مدل با بازار + فاصله احتمالات."""
     w, p = res_dict['w'], res_dict['p']
     model_gap = w['model_prob'] - p['model_prob']
     market_gap = w['market_prob'] - p['market_prob']
-    
     agree = 0
     if w['edge'] > 0: agree += 1
     if abs(w['model_prob'] - w['market_prob']) < 10: agree += 1
     if market_gap > 5: agree += 1
-    
     if model_gap > 12 and agree >= 2: return "🔥 بالا"
     elif model_gap > 6: return "⚖️ متوسط"
     else: return "⚠️ پایین"
@@ -306,7 +265,7 @@ async def prepare_page(pg):
     except Exception as e: print(f"Track selection: {e}")
 
 # ============================================================
-# Round Analysis (CORE - بازنویسی‌شده)
+# CORE: Round Analysis (با تشخیص دقیق آپلود نشدن)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     horses = {}
@@ -326,7 +285,15 @@ async def ar(p, r_num, c, chat_id, save_history=True):
 
         await p.wait_for_timeout(4000)
         table_text = await p.locator('body').inner_text()
-        if "Kg" not in table_text: return "NO_DATA"
+        
+        # --- PATCH 1: تشخیص دقیق‌تر NO_DATA ---
+        has_table = "Kg" in table_text
+        has_race_keywords = any(kw in table_text for kw in ["دور", "اسب", "مسابقه", "سوارکار"])
+        has_upload_warning = any(kw in table_text for kw in ["آپلود نشده", "در دسترس نیست", "مسابقه‌ای وجود ندارد", "برگزار نشده"])
+        
+        if not has_table or not has_race_keywords or has_upload_warning:
+            return "NOT_UPLOADED"
+        # ---------------------------------------
 
         pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}Kg)\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
         for m in re.finditer(pattern, table_text):
@@ -334,8 +301,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
             if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک"]): continue
             num = int(m.group(2)); ior = int(m.group(4))
             perf_str = m.group(5); jockey = m.group(6).strip()
-            horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey,
-                           "perf": perf_str, "w_odd": 50.0}
+            horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "w_odd": 50.0}
 
         try:
             await p.get_by_text("دورهای", exact=False).first.click(timeout=3000, force=True)
@@ -358,53 +324,35 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     horse_list = list(horses.values())
     n = len(horse_list)
 
-    # ====== 1. نرمال‌سازی فاکتورها ======
     iors = [h['ior'] for h in horse_list]
     ior_min, ior_max = min(iors), max(iors)
     ior_range = max(ior_max - ior_min, 1)
-
     forms = [decayed_form(h['perf']) for h in horse_list]
     form_max = max(forms) if forms and max(forms) > 0 else 1
-
-    # ====== 2. احتمال بازار با حذف Overround ======
     market_probs = normalize_market([h['w_odd'] for h in horse_list])
 
-    # ====== 3. امتیاز ترکیبی با وزن‌های توجیه‌شده ======
     for idx, h in enumerate(horse_list):
         ior_norm = (h['ior'] - ior_min) / ior_range
         form_norm = decayed_form(h['perf']) / form_max
         jockey_norm = jockey_rating(h['j'])
         market_norm = market_probs[idx]
-        
-        # وزن‌ها: بازار ۴۰٪ (کارآمدترین)، IOR ۲۵٪، فرم ۲۰٪، سوارکار ۱۰٪، شرایط ۵٪
-        h['combined'] = (
-            0.40 * market_norm +
-            0.25 * ior_norm +
-            0.20 * form_norm +
-            0.10 * jockey_norm +
-            0.05 * 0.5  # placeholder شرایط مسیر
-        )
+        h['combined'] = (0.40 * market_norm + 0.25 * ior_norm + 0.20 * form_norm + 0.10 * jockey_norm + 0.05 * 0.5)
         h['market_prob'] = market_probs[idx] * 100
 
-    # ====== 4. تبدیل به احتمال با Power Method ======
     model_raw = power_probs([h['combined'] for h in horse_list], power=1.8)
-
-    # ====== 5. Blending نهایی (مدل + بازار) ======
-    ALPHA = 0.35  # وزن مدل (بازار 65%)
+    ALPHA = 0.35
     for idx, h in enumerate(horse_list):
         blended = ALPHA * model_raw[idx] + (1 - ALPHA) * market_probs[idx]
         h['model_prob'] = blended * 100
         h['edge'] = h['model_prob'] - h['market_prob']
         h['final_sc'] = h['model_prob']
 
-    # نرمال‌سازی نهایی
     total_p = sum(h['model_prob'] for h in horse_list) or 1
     for h in horse_list: h['model_prob'] = (h['model_prob'] / total_p) * 100
 
     sorted_horses = sorted(horse_list, key=lambda y: y['model_prob'], reverse=True)
     probs_norm = [h['model_prob'] / 100 for h in sorted_horses]
 
-    # ====== 6. Harville: احتمال Place برای هر اسب ======
     for idx, h in enumerate(sorted_horses):
         h['place_prob'] = place_probability(probs_norm, idx, num_places=3) * 100
         h['place_fair_odd'] = round(100 / h['place_prob'], 2) if h['place_prob'] > 0 else 0
@@ -413,15 +361,10 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     p_horse = sorted_horses[1] if n > 1 else w
     s_horse = sorted_horses[2] if n > 2 else p_horse
 
-    # ====== 7. دوقلو دقیق ======
     q_prob = quinella_prob(probs_norm, 0, 1)
     q_fair = round(1 / q_prob, 2) if q_prob > 0 else 0
-
-    # ====== 8. Exacta (اول-دوم ترتیبی) ======
     ex_prob = exacta_prob(probs_norm, 0, 1)
     ex_fair = round(1 / ex_prob, 2) if ex_prob > 0 else 0
-
-    # ====== 9. Trifecta (سه تای اول ترتیبی) ======
     trif_prob = 0
     if n >= 3 and probs_norm[0] < 1 and probs_norm[0] + probs_norm[1] < 1:
         trif_prob = probs_norm[0] * (probs_norm[1] / (1 - probs_norm[0])) * (probs_norm[2] / (1 - probs_norm[0] - probs_norm[1]))
@@ -434,26 +377,19 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     }
     res_dict['conf'] = get_confidence_level(res_dict)
 
-    # شگفتی: Long-shot با بهترین مدل‌پروب نسبی
     long_shots = [h for h in sorted_horses if h['w_odd'] >= 12]
-    if long_shots:
-        top_ls = sorted(long_shots, key=lambda x: x['model_prob'], reverse=True)
-    else:
-        top_ls = sorted_horses[-2:]
+    if long_shots: top_ls = sorted(long_shots, key=lambda x: x['model_prob'], reverse=True)
+    else: top_ls = sorted_horses[-2:]
     res_dict['su'] = top_ls[0] if top_ls else sorted_horses[-1]
-    if len(top_ls) >= 2:
-        res_dict['qs'] = f"{top_ls[0]['num']}-{top_ls[0]['n']} + {top_ls[1]['num']}-{top_ls[1]['n']}"
-    else:
-        res_dict['qs'] = "N/A"
+    res_dict['qs'] = f"{top_ls[0]['num']}-{top_ls[0]['n']} + {top_ls[1]['num']}-{top_ls[1]['n']}" if len(top_ls) >= 2 else "N/A"
 
     if save_history: await save_to_history(res_dict, r_num)
     return res_dict
 
 # ============================================================
-# Format round result
+# Format Round
 # ============================================================
 def format_round_result(res, r, bet_amount=None, show_details=True):
-    """خروجی HTML برای یک دور با تمام بازارها."""
     rp = f"\n🏁 <b>دور R{r}</b>\n"
     w = res['w']
     rp += f"🥇 <b>پیش‌بر:</b> {w['num']}-{w['n']} (ضریب {w['w_odd']})\n"
@@ -464,67 +400,51 @@ def format_round_result(res, r, bet_amount=None, show_details=True):
 
     if show_details and bet_amount:
         rp += f"\n💰 <b>مدیریت سرمایه ({bet_amount:,} ت)</b>\n"
-        
-        # Win
-        k_win = calculate_kelly(bet_amount, w['model_prob'], w['w_odd'],
-                                fraction=FRACTIONS['win'])
-        if k_win > 0:
-            rp += f"🥇 برد {w['n']}: <code>{k_win:,}</code> ت\n"
-        
-        # Place (اول-سوم)
-        w_place_odd = round((w['w_odd'] - 1) / 4 + 1, 2)  # تخمین ¼
+        k_win = calculate_kelly(bet_amount, w['model_prob'], w['w_odd'], fraction=FRACTIONS['win'])
+        if k_win > 0: rp += f"🥇 برد {w['n']}: <code>{k_win:,}</code> ت\n"
+        w_place_odd = round((w['w_odd'] - 1) / 4 + 1, 2)
         if w['place_prob'] > 0 and w_place_odd > 1:
-            k_place = calculate_kelly(bet_amount, w['place_prob'], w_place_odd,
-                                      fraction=FRACTIONS['place'], confidence=0.60)
-            if k_place > 0:
-                rp += f"🥈 جایگاه {w['n']} (ضریب تخمین {w_place_odd}): <code>{k_place:,}</code> ت\n"
-        
-        # دوقلو
+            k_place = calculate_kelly(bet_amount, w['place_prob'], w_place_odd, fraction=FRACTIONS['place'], confidence=0.60)
+            if k_place > 0: rp += f"🥈 جایگاه {w['n']} (ضریب تخمین {w_place_odd}): <code>{k_place:,}</code> ت\n"
         if res['q_fair'] > 0:
-            k_q = calculate_kelly(bet_amount, 100/res['q_fair'], res['q_fair'],
-                                  fraction=FRACTIONS['quinella'], confidence=0.45)
-            if k_q > 0:
-                rp += f"👥 دوقلو (منصفانه {res['q_fair']}): <code>{k_q:,}</code> ت\n"
-        
-        # Exacta
-        if res['ex_fair'] > 0 and res['ex_fair'] < 500:
-            k_ex = calculate_kelly(bet_amount, 100/res['ex_fair'], res['ex_fair'],
-                                   fraction=FRACTIONS['exacta'], confidence=0.40)
-            if k_ex > 0:
-                rp += f"🎯 Exacta (منصفانه {res['ex_fair']}): <code>{k_ex:,}</code> ت\n"
-        
-        # بقیه اسب‌های دارای ارزش
+            k_q = calculate_kelly(bet_amount, 100/res['q_fair'], res['q_fair'], fraction=FRACTIONS['quinella'], confidence=0.45)
+            if k_q > 0: rp += f"👥 دوقلو (منصفانه {res['q_fair']}): <code>{k_q:,}</code> ت\n"
         extras = [h for h in res['horses'][1:] if h['edge'] >= 5 and h['w_odd'] >= 3][:2]
         for h in extras:
             k = calculate_kelly(bet_amount, h['model_prob'], h['w_odd'], fraction=FRACTIONS['win'])
-            if k > 0:
-                rp += f"💎 {h['n']} (Edge {h['edge']:+.1f}%): <code>{k:,}</code> ت\n"
-        
-        if k_win == 0 and not extras:
-            rp += "⚠️ شرط ارزشمند پیدا نشد.\n"
+            if k > 0: rp += f"💎 {h['n']} (Edge {h['edge']:+.1f}%): <code>{k:,}</code> ت\n"
+        if k_win == 0 and not extras: rp += "⚠️ شرط ارزشمند پیدا نشد.\n"
     
-    # بهترین اسب‌ها با Place odds
     if show_details:
         rp += "\n📈 <b>سه اسب برتر (Place):</b>\n"
         for h in res['horses'][:3]:
-            rp += f"  {h['num']}-{h['n']}: برد {h['model_prob']:.1f}% | جایگاه {h['place_prob']:.1f}% (ضریب منصفانه {h['place_fair_odd']})\n"
+            rp += f"  {h['num']}-{h['n']}: برد {h['model_prob']:.1f}% | جایگاه {h['place_prob']:.1f}% (منصفانه {h['place_fair_odd']})\n"
 
     rp += "➖➖➖➖➖➖➖➖\n"
     return rp
 
 # ============================================================
-# Odds Processing
+# Reminder Task (Asyncio Background)
 # ============================================================
-async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None):
-    if await get_github_var("AUTO_UPDATE", "true") == "false":
+async def run_reminder(chat_id, c, r_num, delay_minutes):
+    await asyncio.sleep(delay_minutes * 60)
+    await c.bot.send_message(chat_id, f"⏰ <b>زمان یادآوری!</b>\nدر حال تلاش برای تحلیل خودکار دور {r_num}...", parse_mode='HTML')
+    await process_odds(chat_id, c, specific_round=r_num, bet_amount=c.user_data.get('bet_amount'), is_reminder=True)
+
+# ============================================================
+# Process Odds
+# ============================================================
+async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
+    if await get_github_var("AUTO_UPDATE", "true") == "false" and not is_reminder:
         return await c.bot.send_message(chat_id, "🛑 خاموش است.")
-    await c.bot.send_message(chat_id, "⏳ <b>در حال تحلیل...</b>", parse_mode='HTML')
+    if not is_reminder:
+        await c.bot.send_message(chat_id, "⏳ <b>در حال تحلیل...</b>", parse_mode='HTML')
+    
     weather = await get_weather()
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True,
-                args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
             context = await browser.new_context(viewport={'width': 1440, 'height': 900})
             await context.add_cookies([
                 {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
@@ -535,44 +455,58 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
             pg.set_default_timeout(60000)
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
             await pg.wait_for_timeout(5000)
+            
             if "ورود" in await pg.locator('body').inner_text():
-                await c.bot.send_message(chat_id,
-                    "⚠️ <b>کوکی‌ها منقضی شده‌اند.</b>", parse_mode='HTML')
+                await c.bot.send_message(chat_id, "⚠️ <b>کوکی‌ها منقضی شده‌اند.</b>", parse_mode='HTML')
                 return
+            
             await prepare_page(pg)
-
             header = f"🏇 <b>تحلیل جامع</b>\n{weather}\n"
-            if bet_amount:
-                header += f"💰 سرمایه: <code>{bet_amount:,}</code> ت | Shrinkage Kelly\n"
+            if bet_amount: header += f"💰 سرمایه: <code>{bet_amount:,}</code> ت | Shrinkage Kelly\n"
             rp = header + "➖➖➖➖➖➖➖➖\n"
 
             rounds = range(1, 8) if all_rounds else ([specific_round] if specific_round else [])
             save_h = specific_round is not None
             found_any = False
+            
             for r in rounds:
                 res = await ar(pg, r, c, chat_id, save_history=save_h)
                 if isinstance(res, dict):
                     found_any = True
-                    rp += format_round_result(res, r, bet_amount,
-                                              show_details=(specific_round is not None))
+                    rp += format_round_result(res, r, bet_amount, show_details=(specific_round is not None))
+            
+            # --- PATCH 2: پیام هوشمند برای عدم آپلود ---
             if not found_any:
-                rp += "\n⚠️ <b>جدول آپلود نشده یا خطا در خواندن داده‌ها.</b>"
+                rp += (
+                    "\n⚠️ <b>جدول مسابقات هنوز آپلود نشده است.</b>\n\n"
+                    "📅 معمولاً جدول <b>۲۴ ساعت قبل</b> از شروع مسابقه در سایت قرار می‌گیرد.\n"
+                    "🔄 لطفاً کمی بعد دوباره تلاش کنید.\n\n"
+                    "💡 <i>می‌توانید از دکمه زیر برای یادآوری خودکار استفاده کنید.</i>"
+                )
+            # -------------------------------------------
+            
+            markup = None
+            if not found_any:
+                markup = InlineKeyboardMarkup([[InlineKeyboardButton("⏰ یادآوری خودکار", callback_data=f"rem_set_{specific_round or 1}")]])
+            
             await send_long_message(c, chat_id, rp)
+            if markup:
+                await c.bot.send_message(chat_id, "می‌خواهید ربات چه زمانی دوباره چک کند؟", reply_markup=markup)
+
     except Exception as e:
         await c.bot.send_message(chat_id, f"❌ خطا:\n<code>{str(e)}</code>", parse_mode='HTML')
     finally:
         if browser: await browser.close()
 
 # ============================================================
-# Multileg با همبستگی
+# Multileg
 # ============================================================
 async def process_multileg(chat_id, c, leg_type, bet_amount=None):
     await c.bot.send_message(chat_id, "⏳ <b>در حال بررسی...</b>", parse_mode='HTML')
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True,
-                args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
             context = await browser.new_context()
             await context.add_cookies([
                 {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
@@ -606,34 +540,24 @@ async def process_multileg(chat_id, c, leg_type, bet_amount=None):
             msg = f"🎯 <b>ترکیب {title}</b>\n\n🏇 <b>انتخاب‌ها:</b>\n<code>{' + '.join(picks)}</code>\n"
 
             if len(details) == len(tr) and all(h['model_prob'] > 0 for h in details):
-                # احتمال مشترک مستقل
                 prob_product = 1.0
                 for h in details: prob_product *= h['model_prob'] / 100
-                
-                # تصحیح همبستگی
                 prob_adj = correlation_adjust(prob_product, len(details), rho=0.06)
                 fair_odd = round(1 / prob_adj, 1) if prob_adj > 0 else 0
-                
-                # ضریب واقعی سایت
                 actual_odd = 1.0
                 for h in details: actual_odd *= h['w_odd']
                 actual_odd = round(actual_odd, 1)
                 
                 msg += f"\n📊 <b>احتمال مدل:</b> {prob_product*100:.3f}% (با همبستگی: {prob_adj*100:.3f}%)\n"
-                msg += f"📊 <b>ضریب منصفانه (با تصحیح همبستگی):</b> <code>{fair_odd:,.1f}</code>\n"
+                msg += f"📊 <b>ضریب منصفانه:</b> <code>{fair_odd:,.1f}</code>\n"
                 msg += f"📊 <b>ضریب سایت:</b> <code>{actual_odd:,.1f}</code>\n"
                 
                 if fair_odd > 0 and actual_odd > fair_odd:
                     edge_pct = (actual_odd / fair_odd - 1) * 100
                     msg += f"✅ <b>ارزشمند</b> (Edge: +{edge_pct:.1f}%)\n"
                     if bet_amount:
-                        k = calculate_kelly(bet_amount, 100/fair_odd, actual_odd,
-                                            fraction=FRACTIONS['parlay'],
-                                            max_pct=0.02, confidence=0.40)
-                        if k > 0:
-                            msg += f"💰 پیشنهاد (8% Kelly، سقف ۲٪): <code>{k:,}</code> ت\n"
-                        else:
-                            msg += "💡 ریسک خیلی بالا → مبلغ ناچیز\n"
+                        k = calculate_kelly(bet_amount, 100/fair_odd, actual_odd, fraction=FRACTIONS['parlay'], max_pct=0.02, confidence=0.40)
+                        if k > 0: msg += f"💰 پیشنهاد (8% Kelly): <code>{k:,}</code> ت\n"
                 else:
                     msg += f"⚠️ <b>بدون ارزش</b> (سایت کمتر از منصفانه می‌دهد)\n"
             await c.bot.send_message(chat_id, msg, parse_mode='HTML')
@@ -650,8 +574,7 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True,
-                args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
             context = await browser.new_context()
             await context.add_cookies([
                 {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
@@ -680,8 +603,7 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
                         sh = res['su']
                         line = f"🏁 <b>دور {r}:</b> {sh['num']}-{sh['n']} (ضریب {sh['w_odd']}, احتمال {sh['model_prob']:.1f}%)"
                         if bet_amount and sh['edge'] > 0:
-                            k = calculate_kelly(bet_amount, sh['model_prob'], sh['w_odd'],
-                                                fraction=FRACTIONS['win'])
+                            k = calculate_kelly(bet_amount, sh['model_prob'], sh['w_odd'], fraction=FRACTIONS['win'])
                             if k > 0: line += f" → <code>{k:,}</code> ت"
                         msg += line + "\n"
                     else:
@@ -703,8 +625,7 @@ async def process_value_bets(chat_id, c, bet_amount=None):
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True,
-                args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
             context = await browser.new_context(viewport={'width': 1440, 'height': 900})
             await context.add_cookies([
                 {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
@@ -728,17 +649,14 @@ async def process_value_bets(chat_id, c, bet_amount=None):
             for r in range(1, 8):
                 res = await ar(pg, r, c, chat_id, save_history=False)
                 if isinstance(res, dict):
-                    # Value: Edge ≥ 5٪ + احتمال بازار معقول + ضریب > 3
-                    values = [h for h in res['horses']
-                              if h['edge'] >= 5 and h['w_odd'] > 3 and h['model_prob'] > 5]
+                    values = [h for h in res['horses'] if h['edge'] >= 5 and h['w_odd'] > 3 and h['model_prob'] > 5]
                     if values:
                         found_any = True
                         rp += f"\n🏁 <b>دور R{r}:</b>\n"
                         for v in values[:3]:
                             line = f"💎 {v['num']}-{v['n']} | ضریب {v['w_odd']} | مدل {v['model_prob']:.1f}% vs بازار {v['market_prob']:.1f}% | Edge <b>{v['edge']:+.1f}%</b>"
                             if bet_amount:
-                                k = calculate_kelly(bet_amount, v['model_prob'], v['w_odd'],
-                                                    fraction=FRACTIONS['win'])
+                                k = calculate_kelly(bet_amount, v['model_prob'], v['w_odd'], fraction=FRACTIONS['win'])
                                 if k > 0: line += f" → <code>{k:,}</code> ت"
                             rp += line + "\n"
                         rp += "➖➖➖➖➖➖➖➖\n"
@@ -768,7 +686,17 @@ async def button_callback(u: Update, c: C):
     await query.answer()
     chat_id = query.message.chat_id
     data = query.data
+    
     if not await is_authorized(u, c): return
+
+    # --- PATCH 3: Anti-Spam (Cooldown) ---
+    now = time.time()
+    key = f"{chat_id}:{data}"
+    if now - _last_call.get(key, 0) < COOLDOWN and data != 'bet_set' and not data.startswith('rem_'):
+        remaining = int(COOLDOWN - (now - _last_call.get(key, 0)))
+        return await query.answer(f"⏳ {remaining} ثانیه صبر کنید", show_alert=True)
+    _last_call[key] = now
+    # -------------------------------------
 
     if data == 'on':
         await set_github_var("AUTO_UPDATE", "true"); await query.message.reply_text("✅ روشن شد.")
@@ -786,6 +714,18 @@ async def button_callback(u: Update, c: C):
     elif data == 'change_city':
         await query.message.reply_text("🏙 جدیدترین مسابقه خودکار انتخاب می‌شود.", parse_mode='HTML')
     elif data == 'admin_help': await cmd_admin_panel(chat_id, c)
+    
+    # --- Reminder handlers ---
+    elif data.startswith('rem_set_'):
+        r_num = int(data.split('_')[2])
+        c.user_data['awaiting_rem'] = True
+        c.user_data['rem_round'] = r_num
+        await query.message.reply_text(
+            "⏰ چند دقیقه دیگر یادآوری کنم؟\n(مثلاً عدد <code>30</code> بفرست تا ۳۰ دقیقه دیگر جدول را چک کنم)",
+            parse_mode='HTML', reply_markup=ForceReply(selective=True)
+        )
+    # -------------------------
+
     elif data.startswith('r'):
         bet = c.user_data.get('bet_amount')
         if data == 'rall': await process_odds(chat_id, c, all_rounds=True)
@@ -795,38 +735,53 @@ async def button_callback(u: Update, c: C):
     elif data in ['sur_h', 'sur_d']:
         await process_surprises(chat_id, c, data, bet_amount=c.user_data.get('bet_amount'))
 
-async def handle_bet_input(u: Update, c: C):
-    if not c.user_data.get('awaiting_bet'): return
+# ============================================================
+# Input Handlers
+# ============================================================
+async def handle_inputs(u: Update, c: C):
     if not await is_authorized(u, c): return
-    c.user_data['awaiting_bet'] = False
-    try:
-        amount = int(re.sub(r'[^\d]', '', u.message.text))
-        if amount < 1000: raise ValueError
-        c.user_data['bet_amount'] = amount
-        await u.message.reply_text(f"✅ سرمایه: <code>{amount:,}</code> ت", parse_mode='HTML')
-    except:
-        await u.message.reply_text("❌ عدد معتبر (≥ ۱۰۰۰ تومان) بفرست.")
+    
+    # مبلغ شرط
+    if c.user_data.get('awaiting_bet'):
+        c.user_data['awaiting_bet'] = False
+        try:
+            amount = int(re.sub(r'[^\d]', '', u.message.text))
+            if amount < 1000: raise ValueError
+            c.user_data['bet_amount'] = amount
+            await u.message.reply_text(f"✅ سرمایه: <code>{amount:,}</code> ت", parse_mode='HTML')
+        except:
+            await u.message.reply_text("❌ عدد معتبر (≥ ۱۰۰۰ تومان) بفرست.")
+        return
 
+    # یادآوری
+    if c.user_data.get('awaiting_rem'):
+        c.user_data['awaiting_rem'] = False
+        try:
+            mins = int(re.sub(r'[^\d]', '', u.message.text))
+            if mins < 1: raise ValueError
+            r_num = c.user_data.get('rem_round', 1)
+            asyncio.create_task(run_reminder(u.effective_chat.id, c, r_num, mins))
+            await u.message.reply_text(f"✅ یادآوری برای {mins} دقیقه دیگر تنظیم شد. اگر جدول آپلود شود، خودکار تحلیل می‌شود.", parse_mode='HTML')
+        except:
+            await u.message.reply_text("❌ عدد معتبر بفرست (مثلاً 30).")
+
+# ============================================================
+# Start & Main
+# ============================================================
 async def cmd_start(u: Update, c: C):
     if not await is_authorized(u, c): return
     await c.bot.send_message(
         u.effective_chat.id,
         "👋 <b>سلام مدیر!</b>\n"
-        "نسخه جدید با تحلیل واقعی:\n"
-        "✅ مدل احتمالاتی Power Method\n"
-        "✅ حذف Overround بازار\n"
-        "✅ Kelly با Shrinkage (55% مدل + 45% بازار)\n"
-        "✅ Harville برای جایگاه/دوقلو/Exacta/Trifecta\n"
-        "✅ تصحیح همبستگی پارلی\n"
-        "✅ فرم با Decay نمایی\n"
-        "✅ ۵ سطح سوارکار",
+        "✅ نسخه جدید با ابزارهای ضد اسپم و یادآوری خودکار آماده است.\n"
+        "اگر جدول مسابقات آپلود نشده باشد، می‌توانید از دکمه یادآوری استفاده کنید تا ربات در زمان دلخواه شما به‌صورت خودکار تحلیل را انجام دهد.",
         reply_markup=get_main_menu(), parse_mode='HTML')
 
 async def main():
     app = AB().token(T).build()
     app.add_handler(CH('start', cmd_start))
     app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_bet_input))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_inputs))
     await app.initialize(); await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
     await asyncio.sleep(17400)
