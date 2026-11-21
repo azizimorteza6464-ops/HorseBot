@@ -60,45 +60,56 @@ async def ar(p, r_num, c, chat_id):
     try:
         print(f"--> Analyzing Round {r_num}")
         
-        # 1. کلیک روی تب «دورهای» با استفاده از جاوااسکریپت
+        # 1. تلاش‌های متعدد برای کلیک روی تب "دورهای"
+        clicked_tab = False
         try:
-            await p.evaluate('''
-                () => {
-                    let els = Array.from(document.querySelectorAll('div, span, a, button'));
-                    let target = els.find(e => e.innerText && e.innerText.trim() === 'دورهای');
-                    if (target) { target.click(); return true; }
-                    return false;
-                }
-            ''')
-            await p.wait_for_timeout(4000)
+            await p.locator("text=دورهای").first.click(timeout=5000, force=True)
+            clicked_tab = True
         except: pass
+        
+        if not clicked_tab:
+            try:
+                await p.get_by_text("دورهای", exact=False).first.click(timeout=5000, force=True)
+                clicked_tab = True
+            except: pass
 
-        # 2. کلیک روی شماره دور
-        try:
-            found = await p.evaluate(f'''
-                (num) => {{
-                    let els = Array.from(document.querySelectorAll('button, div, span, a'));
-                    let target = els.find(e => e.innerText && (e.innerText.trim() === 'R ' + num || e.innerText.trim() === 'R' + num || e.innerText.trim() === num.toString()));
-                    if (target) {{ target.click(); return true; }}
-                    return false;
-                }}
-            ''', r_num)
+        if not clicked_tab:
+            try:
+                # تلاش با جاوا اسکریپت
+                await p.evaluate('''
+                    () => {
+                        let els = Array.from(document.querySelectorAll('div, span, a, button, li'));
+                        let target = els.find(e => e.innerText && e.innerText.includes('دورهای'));
+                        if (target) { target.click(); return true; }
+                        return false;
+                    }
+                ''')
+            except: pass
             
-            if not found:
-                try:
-                    await p.get_by_text(f"R {r_num}", exact=True).first.click(timeout=3000, force=True)
-                except:
-                    await p.get_by_text(str(r_num), exact=True).first.click(timeout=3000, force=True)
-                    
-            await p.wait_for_timeout(4000)
-        except Exception as e:
-            print(f"Could not click round {r_num}: {e}")
+        await p.wait_for_timeout(4000) # صبر بعد از کلیک روی تب
 
-        # 3. صبر برای لود شدن جدول
-        await p.wait_for_timeout(8000)
+        # 2. کلیک روی شماره دور (R1, R2...)
+        clicked_round = False
+        try:
+            await p.locator(f"text='R {r_num}'").first.click(timeout=5000, force=True)
+            clicked_round = True
+        except: pass
+        
+        if not clicked_round:
+            try:
+                await p.get_by_text(f"R {r_num}", exact=False).first.click(timeout=5000, force=True)
+                clicked_round = True
+            except: pass
+            
+        if not clicked_round:
+            try:
+                await p.get_by_text(str(r_num), exact=True).first.click(timeout=5000, force=True)
+            except: pass
+
+        await p.wait_for_timeout(8000) # صبر طولانی برای لود جدول
         table_text = await p.locator('body').inner_text()
         
-        # 4. الگوی استخراج داده‌ها
+        # 3. الگوی استخراج داده‌ها
         pattern = r'([^\n]+)\n[^\n]*\n(\d{1,2})\s+(\d{2,3}Kg)\n(\d{1,3})\n([\d\-]+)\n([^\n]+)'
         
         matches = re.finditer(pattern, table_text)
@@ -125,16 +136,16 @@ async def ar(p, r_num, c, chat_id):
         print(f"Error in round {r_num}: {e}")
         
     if not horses:
-        # اگر جدول خوانده نشد، عکس صفحه را برای دیباگ می‌فرستیم
         try:
             screenshot_path = f"debug_{r_num}.png"
             await p.screenshot(path=screenshot_path, full_page=False)
             with open(screenshot_path, "rb") as image_file:
-                await c.bot.send_photo(chat_id=chat_id, photo=image_file, caption=f"⚠️ خطای خواندن جدول در دور {r_num}. این عکسی است که ربات می‌بیند.")
+                await c.bot.send_photo(chat_id=chat_id, photo=image_file, caption=f"⚠️ خطا در خواندن جدول دور {r_num}.")
             os.remove(screenshot_path)
         except: pass
         return None
     
+    # محاسبات و امتیازدهی
     good_jockeys = ["رحمانی", "قهرمانی", "نوروزی", "وحدانی", "مرادی"]
     for num, h in horses.items():
         market_score = 100 / (h['w_odd'] + 1) if h['w_odd'] > 0 else 0
@@ -143,7 +154,7 @@ async def ar(p, r_num, c, chat_id):
 
     sorted_horses = sorted(horses.values(), key=lambda y: y['final_sc'], reverse=True)
     
-    # --- منطق انتخاب بدون تکرار ---
+    # انتخاب بدون تکرار
     w = sorted_horses[0]
     p_horse = sorted_horses[1] if len(sorted_horses) > 1 else w
     s_horse = sorted_horses[2] if len(sorted_horses) > 2 else p_horse
@@ -173,7 +184,7 @@ async def co(u: Update, c: C):
     
     cst = await g()
     if cst == "false":
-        await c.bot.send_message(chat_id, "🛑 ربات خاموش است. /on را بزنید.")
+        await c.bot.send_message(chat_id, "🛑 ربات خاموش است.")
         return
         
     tg = int(c.args[0]) if c.args and c.args[0].isdigit() else None
@@ -200,7 +211,7 @@ async def co(u: Update, c: C):
 
             body_text = await pg.locator('body').inner_text()
             if "ورود" in body_text and "شماره موبایل" in body_text:
-                await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند. لطفا توکن‌ها را آپدیت کنید.")
+                await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.")
                 return
                 
             rp = "📊 <b>تحلیل جامع مسابقات</b> 📊\n"
@@ -232,9 +243,6 @@ async def co(u: Update, c: C):
     finally:
         if browser: await browser.close()
 
-# ==========================================
-# اجرای مستقیم ربات
-# ==========================================
 async def main():
     app = AB().token(T).build()
     app.add_handler(CH('start', st))
@@ -254,7 +262,7 @@ async def main():
     await app.updater.stop()
     await app.stop()
     await app.shutdown()
-    print("Bot stopped successfully. GitHub Action will now finish.")
+    print("Bot stopped successfully.")
 
 try:
     asyncio.run(main())
