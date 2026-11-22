@@ -21,7 +21,8 @@ MY_ID = "184149177"
 # ============================================================
 CARD_NUMBER = "6037-XXXX-XXXX-XXXX"  # <--- شماره کارتت رو اینجا بنویس
 CARD_HOLDER = "نام و نام خانوادگی شما"  # <--- اسمت رو اینجا بنویس
-SUB_PRICE = "50,000"                 # <--- قیمت اشتراک (تومان)
+SUB_PRICE = "250,000"                 # <--- قیمت اشتراک به تومان
+REF_REWARD_DAYS = 3                   # <--- تعداد روز هدیه برای دعوت از دوستان
 # ============================================================
 
 # ============================================================
@@ -85,8 +86,6 @@ async def is_premium(chat_id):
 
 async def is_authorized(u: Update, c: C) -> bool:
     if not u.effective_chat: return False
-    chat_id = str(u.effective_chat.id)
-    if chat_id == MY_ID: return True
     return True 
 
 # ============================================================
@@ -180,6 +179,7 @@ def get_main_menu():
         [InlineKeyboardButton("🎲 اسب شگفتی", callback_data='sur_h'), InlineKeyboardButton("🔥 دوقلوی شگفتی", callback_data='sur_d')],
         [InlineKeyboardButton("💰 تعیین مبلغ شرط", callback_data='bet_set')],
         [InlineKeyboardButton("💳 خرید اشتراک / تمدید", callback_data='buy_sub'), InlineKeyboardButton("👤 وضعیت اشتراک من", callback_data='my_status')],
+        [InlineKeyboardButton("🎁 دعوت از دوستان (هدیه)", callback_data='invite')], # دکمه جدید
         [InlineKeyboardButton("🌤 وضعیت هوا", callback_data='weather'), InlineKeyboardButton("🏙 تغییر مسیر/شهر", callback_data='change_city')],
         [InlineKeyboardButton("👑 پنل مدیریت", callback_data='admin_help')]
     ])
@@ -708,6 +708,30 @@ async def cmd_history(chat_id, c):
     await c.bot.send_message(chat_id, txt, parse_mode='HTML')
 
 # ============================================================
+# Referral System
+# ============================================================
+async def get_referrals():
+    ref_str = await get_github_var("REFERRALS", "{}")
+    try: return json.loads(ref_str)
+    except: return {}
+
+async def add_vip_days(target_id, days):
+    users = await get_allowed_users_dict()
+    now = datetime.now()
+    if str(target_id) in users:
+        try:
+            current_exp = datetime.strptime(users[str(target_id)], "%Y-%m-%d %H:%M:%S")
+            if current_exp < now: current_exp = now
+        except: current_exp = now
+    else:
+        current_exp = now
+    
+    new_exp = (current_exp + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    users[str(target_id)] = new_exp
+    await set_github_var("ALLOWED_USERS", json.dumps(users))
+    return new_exp
+
+# ============================================================
 # Background Reminder & Handlers
 # ============================================================
 async def run_reminder(chat_id, c, r_num, delay_minutes):
@@ -758,6 +782,22 @@ async def button_callback(u: Update, c: C):
             await query.message.reply_text(f"✅ <b>وضعیت شما:</b> فعال\nتاریخ انقضا: <code>{exp_str}</code>", parse_mode='HTML')
         else:
             await query.message.reply_text("❌ <b>وضعیت شما:</b> غیرفعال\nبرای خرید اشتراک روی دکمه «💳 خرید اشتراک» بزنید.", parse_mode='HTML')
+        return
+    elif data == 'invite':
+        bot_info = await c.bot.get_me()
+        link = f"https://t.me/{bot_info.username}?start=ref_{chat_id}"
+        referrals = await get_referrals()
+        invited = len(referrals.get(str(chat_id), []))
+        
+        txt = (
+            "🎁 <b>دعوت از دوستان</b>\n\n"
+            f"با دعوت از دوستان خود، به ازای هر نفر <b>{REF_REWARD_DAYS} روز</b> اشتراک رایگان دریافت کنید!\n\n"
+            f"🔗 <b>لینک اختصاصی شما:</b>\n"
+            f"<code>{link}</code>\n\n"
+            f"👤 <b>تعداد دعوت شدگان:</b> {invited} نفر\n"
+            f"🎁 (معادل {invited * REF_REWARD_DAYS} روز اشتراک هدیه گرفته‌اید)"
+        )
+        await query.message.reply_text(txt, parse_mode='HTML')
         return
 
     # --- دکمه‌های مدیریت ---
@@ -910,15 +950,43 @@ async def cmd_remove(u: Update, c: C):
         await u.message.reply_text("❌ فرمت صحیح:\n<code>/remove 123456789</code>", parse_mode='HTML')
 
 async def cmd_start(u: Update, c: C):
-    await c.bot.send_message(
-        u.effective_chat.id,
+    chat_id = str(u.effective_chat.id)
+    
+    # بررسی دعوت‌نامه (Referral)
+    if c.args and c.args[0].startswith('ref_'):
+        referrer_id = c.args[0].replace('ref_', '')
+        if referrer_id != chat_id:
+            referrals = await get_referrals()
+            if referrer_id not in referrals: referrals[referrer_id] = []
+            
+            # اگر کاربر جدید باشد و قبلاً دعوت نشده باشد
+            users = await get_allowed_users_dict()
+            if chat_id not in referrals[referrer_id] and chat_id not in users:
+                referrals[referrer_id].append(chat_id)
+                await set_github_var("REFERRALS", json.dumps(referrals))
+                
+                # پاداش به دعوت‌کننده
+                new_exp = await add_vip_days(referrer_id, REF_REWARD_DAYS)
+                try:
+                    await c.bot.send_message(
+                        int(referrer_id), 
+                        f"🎉 <b>یک نفر با لینک شما وارد ربات شد!</b>\n\n"
+                        f"🎁 {REF_REWARD_DAYS} روز به اشتراک شما اضافه شد.\n"
+                        f"📅 تاریخ انقضای جدید: <code>{new_exp}</code>", 
+                        parse_mode='HTML'
+                    )
+                except: pass
+
+    # ارسال خوش‌آمدگویی
+    welcome_msg = (
         "👋 <b>سلام مدیر!</b>\n"
         "✅ <b>نسخه 4.0 با دوقلوهای هوشمند:</b>\n"
         "🟢 <b>دوقلوی امن:</b> پیش‌بر + میان‌بر\n"
         "💎 <b>دوقلوی ارزش:</b> یک اسب محبوب + یک اسب با ضریب بالا\n"
         "🍀 <b>دوقلوی شانسی:</b> دو اسب با ضریب بالا\n\n"
-        "همچنین تمام تحلیل‌ها با سرمایه شما (Kelly) محاسبه می‌شوند.",
-        reply_markup=get_main_menu(), parse_mode='HTML')
+        "همچنین تمام تحلیل‌ها با سرمایه شما (Kelly) محاسبه می‌شوند."
+    )
+    await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(), parse_mode='HTML')
 
 async def main():
     app = AB().token(T).build()
