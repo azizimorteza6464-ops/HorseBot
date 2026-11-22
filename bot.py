@@ -1,5 +1,5 @@
 import os, re, httpx, sys, asyncio, json, time
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import (
     ApplicationBuilder as AB, ContextTypes as C,
@@ -19,9 +19,9 @@ MY_ID = "184149177"
 # ============================================================
 # ⚠️ تنظیمات اشتراک (اینجا رو تغییر بده) ⚠️
 # ============================================================
-CARD_NUMBER = "6219-8618-0229-0089"
-CARD_HOLDER = "مرتضی عزیزی"
-SUB_PRICE = "250,000"                 # <--- قیمت اشتراک (تومان)
+CARD_NUMBER = "6037-XXXX-XXXX-XXXX"  # <--- شماره کارتت رو اینجا بنویس
+CARD_HOLDER = "نام و نام خانوادگی شما"  # <--- اسمت رو اینجا بنویس
+SUB_PRICE = "50,000"                 # <--- قیمت اشتراک (تومان)
 # ============================================================
 
 # ============================================================
@@ -59,22 +59,35 @@ async def set_github_var(var_name, val):
         return True
     except: return False
 
-async def get_allowed_users():
-    users_str = await get_github_var("ALLOWED_USERS", MY_ID)
-    return [u.strip() for u in users_str.split(",") if u.strip()]
+async def get_allowed_users_dict():
+    users_str = await get_github_var("ALLOWED_USERS", "{}")
+    try:
+        return json.loads(users_str)
+    except:
+        users_dict = {}
+        if users_str and ("," in users_str or users_str.isdigit()):
+            default_exp = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+            for u in users_str.split(","):
+                if u.strip(): users_dict[u.strip()] = default_exp
+        return users_dict
 
 async def is_premium(chat_id):
     if str(chat_id) == MY_ID: return True
-    allowed = await get_allowed_users()
-    return str(chat_id) in allowed
+    users = await get_allowed_users_dict()
+    if str(chat_id) in users:
+        try:
+            expire_date = datetime.strptime(users[str(chat_id)], "%Y-%m-%d %H:%M:%S")
+            if datetime.now() <= expire_date:
+                return True
+        except:
+            pass
+    return False
 
 async def is_authorized(u: Update, c: C) -> bool:
     if not u.effective_chat: return False
     chat_id = str(u.effective_chat.id)
     if chat_id == MY_ID: return True
-    allowed = await get_allowed_users()
-    if chat_id not in allowed: return True 
-    return True
+    return True 
 
 # ============================================================
 # Weather & Math Helpers
@@ -215,11 +228,37 @@ async def save_to_history(res_dict, r_num):
 async def cmd_admin_panel(chat_id, c):
     auto_update = await get_github_var("AUTO_UPDATE", "true")
     status = "🟢 روشن" if auto_update == "true" else "🔴 خاموش"
-    users = await get_allowed_users()
-    users_str = "\n".join([f"• <code>{u}</code>" for u in users]) if users else "هیچ‌کس"
+    users_dict = await get_allowed_users_dict()
     bet = c.user_data.get('bet_amount', 0)
-    txt = f"👑 <b>پنل مدیریت</b>\n➖➖➖➖➖➖➖➖\n⚙️ <b>وضعیت:</b> {status}\n💰 <b>سرمایه:</b> {f'<code>{bet:,}</code> تومان' if bet else 'تعیین نشده'}\n👥 <b>کاربران VIP ({len(users)}):</b>\n{users_str}\n\n🔐 <b>تغییر توکن‌ها:</b>\n<code>Settings &gt; Secrets and variables</code>\n\n💡 <b>دستور تایید کاربر جدید:</b>\n<code>/approve USER_ID</code>"
-    await c.bot.send_message(chat_id, txt, parse_mode='HTML')
+    
+    txt = f"👑 <b>پنل مدیریت</b>\n➖➖➖➖➖➖➖➖\n⚙️ <b>وضعیت:</b> {status}\n💰 <b>سرمایه:</b> {f'<code>{bet:,}</code> تومان' if bet else 'تعیین نشده'}\n\n👇 <b>لیست کاربران VIP:</b>"
+    
+    keyboard = []
+    keyboard.append([InlineKeyboardButton("🔄 بروزرسانی لیست", callback_data='admin_refresh')])
+    
+    now = datetime.now()
+    if not users_dict:
+        keyboard.append([InlineKeyboardButton("لیست خالی است", callback_data='ignore')])
+    else:
+        for uid, exp_str in users_dict.items():
+            try:
+                exp_date = datetime.strptime(exp_str, "%Y-%m-%d %H:%M:%S")
+                days_left = (exp_date - now).days
+                if days_left >= 0:
+                    user_status = f"({days_left} روز مانده)"
+                else:
+                    user_status = "(منقضی شده)"
+            except:
+                user_status = "(نامشخص)"
+                
+            keyboard.append([InlineKeyboardButton(f"👤 {uid} {user_status}", callback_data='ignore')])
+            keyboard.append([
+                InlineKeyboardButton("➕ تمدید ۳۰ روز", callback_data=f"adm_ren_{uid}_30"),
+                InlineKeyboardButton("🚫 کنسل", callback_data=f"adm_can_{uid}"),
+                InlineKeyboardButton("❌ حذف", callback_data=f"adm_del_{uid}")
+            ])
+            
+    await c.bot.send_message(chat_id, txt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
 
 async def prepare_page(pg):
     try:
@@ -695,7 +734,7 @@ async def button_callback(u: Update, c: C):
 
     now = time.time()
     key = f"{chat_id}:{data}"
-    if now - _last_call.get(key, 0) < COOLDOWN and data != 'bet_set' and not data.startswith('rem_'):
+    if now - _last_call.get(key, 0) < COOLDOWN and data != 'bet_set' and not data.startswith('rem_') and not data.startswith('adm_'):
         remaining = int(COOLDOWN - (now - _last_call.get(key, 0)))
         return await query.answer(f"⏳ {remaining} ثانیه صبر کنید", show_alert=True)
     _last_call[key] = now
@@ -714,13 +753,55 @@ async def button_callback(u: Update, c: C):
         return
     elif data == 'my_status':
         if await is_premium(chat_id):
-            await query.message.reply_text("✅ <b>وضعیت شما:</b> فعال\nشما به تمام امکانات دسترسی دارید.", parse_mode='HTML')
+            users = await get_allowed_users_dict()
+            exp_str = users.get(str(chat_id), "نامشخص")
+            await query.message.reply_text(f"✅ <b>وضعیت شما:</b> فعال\nتاریخ انقضا: <code>{exp_str}</code>", parse_mode='HTML')
         else:
             await query.message.reply_text("❌ <b>وضعیت شما:</b> غیرفعال\nبرای خرید اشتراک روی دکمه «💳 خرید اشتراک» بزنید.", parse_mode='HTML')
         return
 
+    # --- دکمه‌های مدیریت ---
+    elif data.startswith('adm_'):
+        if str(chat_id) != MY_ID: return
+        parts = data.split('_')
+        action = parts[1]
+        uid = parts[2]
+        users = await get_allowed_users_dict()
+        
+        if action == 'ren':
+            days = int(parts[3])
+            expire = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+            users[uid] = expire
+            await set_github_var("ALLOWED_USERS", json.dumps(users))
+            await query.message.reply_text(f"✅ اشتراک <code>{uid}</code> برای {days} روز تمدید شد.", parse_mode='HTML')
+            try: await c.bot.send_message(uid, f"🎉 اشتراک شما توسط مدیریت برای {days} روز دیگر تمدید شد.", parse_mode='HTML')
+            except: pass
+            await cmd_admin_panel(chat_id, c)
+            
+        elif action == 'can':
+            expire = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+            users[uid] = expire
+            await set_github_var("ALLOWED_USERS", json.dumps(users))
+            await query.message.reply_text(f"🚫 اشتراک <code>{uid}</code> کنسل شد.", parse_mode='HTML')
+            try: await c.bot.send_message(uid, "⚠️ اشتراک شما توسط مدیریت لغو شد.", parse_mode='HTML')
+            except: pass
+            await cmd_admin_panel(chat_id, c)
+            
+        elif action == 'del':
+            if uid in users: del users[uid]
+            await set_github_var("ALLOWED_USERS", json.dumps(users))
+            await query.message.reply_text(f"❌ کاربر <code>{uid}</code> کاملاً حذف شد.", parse_mode='HTML')
+            try: await c.bot.send_message(uid, "⚠️ دسترسی شما به ربات کاملاً قطع شد.", parse_mode='HTML')
+            except: pass
+            await cmd_admin_panel(chat_id, c)
+            
+    elif data == 'admin_refresh':
+        if str(chat_id) != MY_ID: return
+        await query.message.delete()
+        await cmd_admin_panel(chat_id, c)
+
     # --- دکمه‌های معمولی ---
-    if data == 'on': await set_github_var("AUTO_UPDATE", "true"); await query.message.reply_text("✅ روشن شد.")
+    elif data == 'on': await set_github_var("AUTO_UPDATE", "true"); await query.message.reply_text("✅ روشن شد.")
     elif data == 'off': await set_github_var("AUTO_UPDATE", "false"); await query.message.reply_text("🛑 خاموش شد.")
     elif data == 'history': await cmd_history(chat_id, c)
     elif data == 'weather': await query.message.reply_text(await get_weather(), parse_mode='HTML')
@@ -782,8 +863,9 @@ async def handle_photo(u: Update, c: C):
         f"🔔 <b>رسید جدید!</b>\n\n"
         f"👤 نام: {user_name}\n"
         f"آیدی عددی: <code>{chat_id}</code>\n\n"
-        f"برای تایید و فعال‌سازی، روی این متن کلیک کنید تا کپی شود و سپس ارسال کنید:\n"
-        f"<code>/approve {chat_id}</code>"
+        f"برای تایید ۳۰ روزه، روی این متن کلیک کنید تا کپی شود و سپس ارسال کنید:\n"
+        f"<code>/approve {chat_id} 30</code>\n"
+        f"<i>(اگر می‌خواهید تعداد روز دیگری باشد، عدد ۳۰ را تغییر دهید)</i>"
     )
     await c.bot.send_message(MY_ID, admin_msg, parse_mode='HTML')
     await u.message.reply_text("✅ رسید شما دریافت شد.\nپس از بررسی توسط پشتیبانی، اشتراک شما فعال خواهد شد.")
@@ -792,20 +874,21 @@ async def cmd_approve(u: Update, c: C):
     if str(u.effective_chat.id) != MY_ID: return
     try:
         parts = u.message.text.split()
-        if len(parts) < 2: raise ValueError
+        if len(parts) < 3: raise ValueError
         target_id = parts[1].strip()
+        days = int(parts[2])
         
-        allowed = await get_allowed_users()
-        if target_id not in allowed:
-            allowed.append(target_id)
-            await set_github_var("ALLOWED_USERS", ",".join(allowed))
-            await u.message.reply_text(f"✅ کاربر <code>{target_id}</code> با موفقیت تایید و به لیست VIP اضافه شد.", parse_mode='HTML')
-            try: await c.bot.send_message(target_id, "🎉 <b>تبریک!</b>\nاشتراک شما توسط مدیریت تایید شد. حالا به تمام امکانات ربات دسترسی دارید.", parse_mode='HTML')
-            except: await u.message.reply_text("⚠️ نتوانستم به کاربر پیام بدم (شاید ربات را بلاک کرده).")
-        else:
-            await u.message.reply_text("این کاربر از قبل در لیست VIP است.")
+        users = await get_allowed_users_dict()
+        expire_date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        users[target_id] = expire_date
+        
+        await set_github_var("ALLOWED_USERS", json.dumps(users))
+        
+        await u.message.reply_text(f"✅ کاربر <code>{target_id}</code> برای {days} روز تایید شد.\nتاریخ انقضا: <code>{expire_date}</code>", parse_mode='HTML')
+        try: await c.bot.send_message(target_id, f"🎉 <b>تبریک!</b>\nاشتراک شما به مدت {days} روز فعال شد.\nتاریخ انقضا: {expire_date}", parse_mode='HTML')
+        except: await u.message.reply_text("⚠️ نتوانستم به کاربر پیام بدم (شاید ربات را بلاک کرده).")
     except:
-        await u.message.reply_text("❌ فرمت صحیح:\n<code>/approve 123456789</code>", parse_mode='HTML')
+        await u.message.reply_text("❌ فرمت صحیح:\n<code>/approve 123456789 30</code>", parse_mode='HTML')
 
 async def cmd_remove(u: Update, c: C):
     if str(u.effective_chat.id) != MY_ID: return
@@ -814,12 +897,12 @@ async def cmd_remove(u: Update, c: C):
         if len(parts) < 2: raise ValueError
         target_id = parts[1].strip()
         
-        allowed = await get_allowed_users()
-        if target_id in allowed:
-            allowed.remove(target_id)
-            await set_github_var("ALLOWED_USERS", ",".join(allowed))
+        users = await get_allowed_users_dict()
+        if target_id in users:
+            del users[target_id]
+            await set_github_var("ALLOWED_USERS", json.dumps(users))
             await u.message.reply_text(f"🗑 کاربر <code>{target_id}</code> از لیست VIP حذف شد.", parse_mode='HTML')
-            try: await c.bot.send_message(target_id, "⚠️ اشتراک شما به پایان رسیده یا لغو شده است.", parse_mode='HTML')
+            try: await c.bot.send_message(target_id, "⚠️ اشتراک شما لغو شده است.", parse_mode='HTML')
             except: pass
         else:
             await u.message.reply_text("این کاربر در لیست VIP نیست.")
