@@ -19,17 +19,20 @@ MY_ID = "184149177"
 # ============================================================
 # ⚠️ تنظیمات اشتراک (اینجا رو تغییر بده) ⚠️
 # ============================================================
-CARD_NUMBER = "6037-XXXX-XXXX-XXXX"  # <--- شماره کارتت رو اینجا بنویس
-CARD_HOLDER = "نام و نام خانوادگی شما"  # <--- اسمت رو اینجا بنویس
+CARD_NUMBER = "6219-8618-0229-0089"
+CARD_HOLDER = "مرتضی عزیزی"
 SUB_PRICE = "250,000"                 # <--- قیمت اشتراک به تومان
 REF_REWARD_DAYS = 3                   # <--- تعداد روز هدیه برای دعوت از دوستان
 # ============================================================
 
 # ============================================================
-# Anti-Spam
+# Anti-Spam & Cache
 # ============================================================
 _last_call = {}
 COOLDOWN = 60
+
+AR_CACHE = {}
+CACHE_TTL = 600 # 10 دقیقه کش برای جلوگیری از کندی ربات
 
 # ============================================================
 # GitHub Variables & Auth
@@ -169,7 +172,6 @@ def get_confidence_level(res_dict):
 def get_main_menu(chat_id):
     keyboard = []
     
-    # دکمه‌های روشن/خاموش فقط برای ادمین
     if str(chat_id) == MY_ID:
         keyboard.append([InlineKeyboardButton("🟢 روشن", callback_data='on'), InlineKeyboardButton("🔴 خاموش", callback_data='off')])
         
@@ -188,7 +190,6 @@ def get_main_menu(chat_id):
         [InlineKeyboardButton("🌤 وضعیت هوا", callback_data='weather'), InlineKeyboardButton("🏙 تغییر مسیر/شهر", callback_data='change_city')]
     ])
     
-    # دکمه پنل مدیریت هم فقط برای ادمین
     if str(chat_id) == MY_ID:
         keyboard.append([InlineKeyboardButton("👑 پنل مدیریت", callback_data='admin_help')])
         
@@ -299,9 +300,15 @@ async def prepare_page(pg):
     except: pass
 
 # ============================================================
-# Core Analysis with Matrix Extraction
+# Core Analysis with Cache
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
+    # بررسی کش
+    if r_num in AR_CACHE:
+        ts, cached_res = AR_CACHE[r_num]
+        if time.time() - ts < CACHE_TTL:
+            return cached_res
+
     horses = {}
     q_matrix = {} 
 
@@ -411,6 +418,9 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     res_dict['qs'] = f"{top_ls[0]['num']}-{top_ls[0]['n']} + {top_ls[1]['num']}-{top_ls[1]['n']}" if len(top_ls) >= 2 else "N/A"
 
     if save_history: await save_to_history(res_dict, r_num)
+    
+    # ذخیره در کش
+    AR_CACHE[r_num] = (time.time(), res_dict)
     return res_dict
 
 # ============================================================
@@ -456,8 +466,7 @@ async def process_quinellas(chat_id, c, variant_type):
                     for j in range(i+1, n):
                         h1, h2 = horses[i], horses[j]
                         
-                        if variant_type == 'q_safe' and not (i == 0 and j == 1):
-                            continue
+                        if variant_type == 'q_safe' and not (i == 0 and j == 1): continue
                         
                         if variant_type == 'q_value':
                             is_top = (i < 3) or (j < 3)
@@ -471,17 +480,12 @@ async def process_quinellas(chat_id, c, variant_type):
                         if q_p <= 0: continue
                         fair_odd = round(1 / q_p, 2)
                         
-                        candidates.append({
-                            "h1": h1, "h2": h2, "prob": q_p * 100, "fair_odd": fair_odd
-                        })
+                        candidates.append({"h1": h1, "h2": h2, "prob": q_p * 100, "fair_odd": fair_odd})
 
                 if candidates:
-                    if variant_type == 'q_safe':
-                        candidates.sort(key=lambda x: x['prob'], reverse=True)
-                    elif variant_type == 'q_value':
-                        candidates.sort(key=lambda x: x['fair_odd'], reverse=True)
-                    else:
-                        candidates.sort(key=lambda x: x['fair_odd'], reverse=True)
+                    if variant_type == 'q_safe': candidates.sort(key=lambda x: x['prob'], reverse=True)
+                    elif variant_type == 'q_value': candidates.sort(key=lambda x: x['fair_odd'], reverse=True)
+                    else: candidates.sort(key=lambda x: x['fair_odd'], reverse=True)
 
                     best = candidates[0]
                     found_any = True
@@ -506,10 +510,8 @@ async def process_quinellas(chat_id, c, variant_type):
                     
                     rp += "➖➖➖➖➖➖➖➖\n"
 
-            if not found_any:
-                rp += "\n⚠️ برای این نوع دوقلو، گزینه مناسبی پیدا نشد (یا جدول آپلود نشده).\n"
-            else:
-                rp += "\n💡 <i>ضریب منصفانه یعنی اگر سایت بیشتر از این عدد بده، شرط شما سودده است.</i>"
+            if not found_any: rp += "\n⚠️ برای این نوع دوقلو، گزینه مناسبی پیدا نشد (یا جدول آپلود نشده).\n"
+            else: rp += "\n💡 <i>ضریب منصفانه یعنی اگر سایت بیشتر از این عدد بده، شرط شما سودده است.</i>"
                 
             await send_long_message(c, chat_id, rp)
 
@@ -524,8 +526,7 @@ async def process_quinellas(chat_id, c, variant_type):
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
     if await get_github_var("AUTO_UPDATE", "true") == "false" and not is_reminder:
         return await c.bot.send_message(chat_id, "🛑 خاموش است.")
-    if not is_reminder:
-        await c.bot.send_message(chat_id, "⏳ <b>در حال تحلیل...</b>", parse_mode='HTML')
+    if not is_reminder: await c.bot.send_message(chat_id, "⏳ <b>در حال تحلیل...</b>", parse_mode='HTML')
     
     weather = await get_weather()
     browser = None
@@ -580,8 +581,7 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                 await send_long_message(c, chat_id, rp)
                 markup = InlineKeyboardMarkup([[InlineKeyboardButton("⏰ یادآوری خودکار", callback_data=f"rem_set_{specific_round or 1}")]])
                 await c.bot.send_message(chat_id, "می‌خواهید ربات چه زمانی دوباره چک کند؟", reply_markup=markup)
-            else:
-                await send_long_message(c, chat_id, rp)
+            else: await send_long_message(c, chat_id, rp)
     except Exception as e:
         await c.bot.send_message(chat_id, f"❌ خطا:\n<code>{str(e)}</code>", parse_mode='HTML')
     finally:
@@ -753,8 +753,27 @@ async def add_vip_days(target_id, days):
     return new_exp
 
 # ============================================================
-# Background Reminder & Handlers
+# Background Reminder, Expiration Warning & Handlers
 # ============================================================
+async def check_expirations(bot):
+    # اجرای اول با تاخیر، سپس هر ۲۴ ساعت یکبار
+    await asyncio.sleep(3600) # ۱ ساعت بعد از روشن شدن ربات
+    while True:
+        try:
+            users = await get_allowed_users_dict()
+            now = datetime.now()
+            for uid, exp_str in users.items():
+                try:
+                    exp_date = datetime.strptime(exp_str, "%Y-%m-%d %H:%M:%S")
+                    days_left = (exp_date - now).days
+                    if days_left == 2:
+                        try:
+                            await bot.send_message(int(uid), "⚠️ <b>هشدار انقضای اشتراک</b>\n\nاشتراک شما ۲ روز دیگر به پایان می‌رسد.\nبرای جلوگیری از قطع دسترسی به تحلیل‌ها، از دکمه «💳 خرید اشتراک» استفاده کنید.", parse_mode='HTML')
+                        except: pass
+                except: pass
+        except: pass
+        await asyncio.sleep(86400) # ۲۴ ساعت
+
 async def run_reminder(chat_id, c, r_num, delay_minutes):
     await asyncio.sleep(delay_minutes * 60)
     await c.bot.send_message(chat_id, f"⏰ <b>یادآوری!</b> در حال تحلیل خودکار دور {r_num}...", parse_mode='HTML')
@@ -788,7 +807,6 @@ async def button_callback(u: Update, c: C):
         return await query.answer(f"⏳ {remaining} ثانیه صبر کنید", show_alert=True)
     _last_call[key] = now
 
-    # --- دکمه‌های اشتراک ---
     if data == 'buy_sub':
         txt = (
             "💳 <b>خرید اشتراک ویژه</b>\n\n"
@@ -825,7 +843,6 @@ async def button_callback(u: Update, c: C):
         await query.message.reply_text(txt, parse_mode='HTML')
         return
 
-    # --- دکمه‌های مدیریت ---
     elif data.startswith('adm_'):
         if str(chat_id) != MY_ID: return
         parts = data.split('_')
@@ -865,7 +882,6 @@ async def button_callback(u: Update, c: C):
         await query.message.delete()
         await cmd_admin_panel(chat_id, c)
 
-    # --- دکمه‌های معمولی ---
     elif data == 'on': await set_github_var("AUTO_UPDATE", "true"); await query.message.reply_text("✅ روشن شد.")
     elif data == 'off': await set_github_var("AUTO_UPDATE", "false"); await query.message.reply_text("🛑 خاموش شد.")
     elif data == 'history': await cmd_history(chat_id, c)
@@ -974,10 +990,30 @@ async def cmd_remove(u: Update, c: C):
     except:
         await u.message.reply_text("❌ فرمت صحیح:\n<code>/remove 123456789</code>", parse_mode='HTML')
 
+async def cmd_broadcast(u: Update, c: C):
+    if str(u.effective_chat.id) != MY_ID: return
+    if not c.args:
+        await u.message.reply_text("❌ متن پیام را وارد کنید:\n<code>/broadcast سلام به همه کاربران</code>", parse_mode='HTML')
+        return
+    msg = " ".join(c.args)
+    users = await get_allowed_users_dict()
+    success = 0
+    fail = 0
+    status_msg = await u.message.reply_text(f"⏳ در حال ارسال پیام به {len(users)} کاربر...")
+    
+    for uid in users.keys():
+        try:
+            await c.bot.send_message(int(uid), msg, parse_mode='HTML')
+            success += 1
+            await asyncio.sleep(0.1) # جلوگیری از بلاک شدن توسط تلگرام
+        except:
+            fail += 1
+            
+    await status_msg.edit_text(f"✅ ارسال به پایان رسید.\n\nموفق: {success}\nناموفق (ربات را بلاک کرده‌اند): {fail}")
+
 async def cmd_start(u: Update, c: C):
     chat_id = str(u.effective_chat.id)
     
-    # ۱. بررسی دعوت‌نامه (Referral)
     if c.args and c.args[0].startswith('ref_'):
         referrer_id = c.args[0].replace('ref_', '')
         if referrer_id != chat_id:
@@ -989,7 +1025,6 @@ async def cmd_start(u: Update, c: C):
                 referrals[referrer_id].append(chat_id)
                 await set_github_var("REFERRALS", json.dumps(referrals))
                 
-                # پاداش به دعوت‌کننده
                 new_exp = await add_vip_days(referrer_id, REF_REWARD_DAYS)
                 try:
                     await c.bot.send_message(
@@ -1001,12 +1036,10 @@ async def cmd_start(u: Update, c: C):
                     )
                 except: pass
 
-    # ۲. بررسی کاربر جدید و اعطای ۱ روز اشتراک رایگان
     users = await get_allowed_users_dict()
     is_new_user = (chat_id not in users) and (chat_id != MY_ID)
     
     if is_new_user:
-        # ثبت نام کاربر و دادن ۱ روز فرصت
         expire_date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
         users[chat_id] = expire_date
         await set_github_var("ALLOWED_USERS", json.dumps(users))
@@ -1019,7 +1052,6 @@ async def cmd_start(u: Update, c: C):
             "برای اینکه دسترسی‌تان قطع نشود، از دکمه «💳 خرید اشتراک» استفاده کنید."
         )
     else:
-        # پیام برای کاربرانی که از قبل بودند
         welcome_msg = (
             "👋 <b>سلام دوباره!</b>\n"
             "✅ <b>نسخه 4.0 با دوقلوهای هوشمند:</b>\n"
@@ -1036,12 +1068,17 @@ async def main():
     app.add_handler(CH('start', cmd_start))
     app.add_handler(CH('approve', cmd_approve))
     app.add_handler(CH('remove', cmd_remove))
+    app.add_handler(CH('broadcast', cmd_broadcast)) # دکمه ارسال همگانی
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_inputs))
+    
+    # اجرای تسک هشدار انقضا در پس‌زمینه
+    asyncio.create_task(check_expirations(app.bot))
+    
     await app.initialize(); await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-    await asyncio.sleep(17400)
+    await asyncio.sleep(17400) # 5 ساعت
     await app.updater.stop(); await app.stop(); await app.shutdown()
 
 if __name__ == "__main__":
