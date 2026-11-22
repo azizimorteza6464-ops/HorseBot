@@ -19,8 +19,8 @@ MY_ID = "184149177"
 # ============================================================
 # ⚠️ تنظیمات اشتراک (اینجا رو تغییر بده) ⚠️
 # ============================================================
-CARD_NUMBER = "6219-8618-0229-0089"
-CARD_HOLDER = "مرتضی عزیزی"
+CARD_NUMBER = "6037-XXXX-XXXX-XXXX"  # <--- شماره کارتت رو اینجا بنویس
+CARD_HOLDER = "نام و نام خانوادگی شما"  # <--- اسمت رو اینجا بنویس
 SUB_PRICE = "250,000"                 # <--- قیمت اشتراک به تومان
 REF_REWARD_DAYS = 3                   # <--- تعداد روز هدیه برای دعوت از دوستان
 # ============================================================
@@ -179,7 +179,7 @@ def get_main_menu():
         [InlineKeyboardButton("🎲 اسب شگفتی", callback_data='sur_h'), InlineKeyboardButton("🔥 دوقلوی شگفتی", callback_data='sur_d')],
         [InlineKeyboardButton("💰 تعیین مبلغ شرط", callback_data='bet_set')],
         [InlineKeyboardButton("💳 خرید اشتراک / تمدید", callback_data='buy_sub'), InlineKeyboardButton("👤 وضعیت اشتراک من", callback_data='my_status')],
-        [InlineKeyboardButton("🎁 دعوت از دوستان (هدیه)", callback_data='invite')], # دکمه جدید
+        [InlineKeyboardButton("🎁 دعوت از دوستان (هدیه)", callback_data='invite')],
         [InlineKeyboardButton("🌤 وضعیت هوا", callback_data='weather'), InlineKeyboardButton("🏙 تغییر مسیر/شهر", callback_data='change_city')],
         [InlineKeyboardButton("👑 پنل مدیریت", callback_data='admin_help')]
     ])
@@ -952,14 +952,13 @@ async def cmd_remove(u: Update, c: C):
 async def cmd_start(u: Update, c: C):
     chat_id = str(u.effective_chat.id)
     
-    # بررسی دعوت‌نامه (Referral)
+    # ۱. بررسی دعوت‌نامه (Referral)
     if c.args and c.args[0].startswith('ref_'):
         referrer_id = c.args[0].replace('ref_', '')
         if referrer_id != chat_id:
             referrals = await get_referrals()
             if referrer_id not in referrals: referrals[referrer_id] = []
             
-            # اگر کاربر جدید باشد و قبلاً دعوت نشده باشد
             users = await get_allowed_users_dict()
             if chat_id not in referrals[referrer_id] and chat_id not in users:
                 referrals[referrer_id].append(chat_id)
@@ -977,15 +976,34 @@ async def cmd_start(u: Update, c: C):
                     )
                 except: pass
 
-    # ارسال خوش‌آمدگویی
-    welcome_msg = (
-        "👋 <b>سلام مدیر!</b>\n"
-        "✅ <b>نسخه 4.0 با دوقلوهای هوشمند:</b>\n"
-        "🟢 <b>دوقلوی امن:</b> پیش‌بر + میان‌بر\n"
-        "💎 <b>دوقلوی ارزش:</b> یک اسب محبوب + یک اسب با ضریب بالا\n"
-        "🍀 <b>دوقلوی شانسی:</b> دو اسب با ضریب بالا\n\n"
-        "همچنین تمام تحلیل‌ها با سرمایه شما (Kelly) محاسبه می‌شوند."
-    )
+    # ۲. بررسی کاربر جدید و اعطای ۱ روز اشتراک رایگان
+    users = await get_allowed_users_dict()
+    is_new_user = (chat_id not in users) and (chat_id != MY_ID)
+    
+    if is_new_user:
+        # ثبت نام کاربر و دادن ۱ روز فرصت
+        expire_date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        users[chat_id] = expire_date
+        await set_github_var("ALLOWED_USERS", json.dumps(users))
+        
+        welcome_msg = (
+            "👋 <b>سلام و خوش آمدید!</b>\n\n"
+            "🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\n"
+            "از همین حالا می‌توانید تمام دکمه‌ها و تحلیل‌های ربات را تست کنید.\n\n"
+            "⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>\n"
+            "برای اینکه دسترسی‌تان قطع نشود، از دکمه «💳 خرید اشتراک» استفاده کنید."
+        )
+    else:
+        # پیام برای کاربرانی که از قبل بودند
+        welcome_msg = (
+            "👋 <b>سلام دوباره!</b>\n"
+            "✅ <b>نسخه 4.0 با دوقلوهای هوشمند:</b>\n"
+            "🟢 <b>دوقلوی امن:</b> پیش‌بر + میان‌بر\n"
+            "💎 <b>دوقلوی ارزش:</b> یک اسب محبوب + یک اسب با ضریب بالا\n"
+            "🍀 <b>دوقلوی شانسی:</b> دو اسب با ضریب بالا\n\n"
+            "همچنین تمام تحلیل‌ها با سرمایه شما (Kelly) محاسبه می‌شوند."
+        )
+        
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(), parse_mode='HTML')
 
 async def main():
