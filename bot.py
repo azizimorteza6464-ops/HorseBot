@@ -251,6 +251,17 @@ async def cmd_admin_panel(chat_id, c):
         keyboard.append([InlineKeyboardButton("لیست خالی است", callback_data='ignore')])
     else:
         for uid, exp_str in users_dict.items():
+            display_name = "ناشناس"
+            try:
+                chat_info = await c.bot.get_chat(int(uid))
+                display_name = chat_info.first_name or ""
+                if chat_info.last_name:
+                    display_name += f" {chat_info.last_name}"
+                if not display_name.strip():
+                    display_name = "بدون نام"
+            except Exception:
+                display_name = "نامشخص"
+
             try:
                 exp_date = datetime.strptime(exp_str, "%Y-%m-%d %H:%M:%S")
                 days_left = (exp_date - now).days
@@ -261,7 +272,7 @@ async def cmd_admin_panel(chat_id, c):
             except:
                 user_status = "(نامشخص)"
                 
-            keyboard.append([InlineKeyboardButton(f"👤 {uid} {user_status}", callback_data='ignore')])
+            keyboard.append([InlineKeyboardButton(f"👤 {display_name} {user_status}", callback_data='ignore')])
             keyboard.append([
                 InlineKeyboardButton("➕ تمدید ۳۰ روز", callback_data=f"adm_ren_{uid}_30"),
                 InlineKeyboardButton("🚫 کنسل", callback_data=f"adm_can_{uid}"),
