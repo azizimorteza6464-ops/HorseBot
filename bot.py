@@ -166,9 +166,14 @@ def get_confidence_level(res_dict):
     elif model_gap > 6: return "⚖️ متوسط"
     else: return "⚠️ پایین"
 
-def get_main_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🟢 روشن", callback_data='on'), InlineKeyboardButton("🔴 خاموش", callback_data='off')],
+def get_main_menu(chat_id):
+    keyboard = []
+    
+    # دکمه‌های روشن/خاموش فقط برای ادمین
+    if str(chat_id) == MY_ID:
+        keyboard.append([InlineKeyboardButton("🟢 روشن", callback_data='on'), InlineKeyboardButton("🔴 خاموش", callback_data='off')])
+        
+    keyboard.extend([
         [InlineKeyboardButton("🏁 دور ۱", callback_data='r1'), InlineKeyboardButton("🏁 دور ۲", callback_data='r2'), InlineKeyboardButton("🏁 دور ۳", callback_data='r3')],
         [InlineKeyboardButton("🏁 دور ۴", callback_data='r4'), InlineKeyboardButton("🏁 دور ۵", callback_data='r5'), InlineKeyboardButton("🏁 دور ۶", callback_data='r6')],
         [InlineKeyboardButton("🏁 دور ۷", callback_data='r7'), InlineKeyboardButton("📊 تحلیل کل", callback_data='rall')],
@@ -180,9 +185,14 @@ def get_main_menu():
         [InlineKeyboardButton("💰 تعیین مبلغ شرط", callback_data='bet_set')],
         [InlineKeyboardButton("💳 خرید اشتراک / تمدید", callback_data='buy_sub'), InlineKeyboardButton("👤 وضعیت اشتراک من", callback_data='my_status')],
         [InlineKeyboardButton("🎁 دعوت از دوستان (هدیه)", callback_data='invite')],
-        [InlineKeyboardButton("🌤 وضعیت هوا", callback_data='weather'), InlineKeyboardButton("🏙 تغییر مسیر/شهر", callback_data='change_city')],
-        [InlineKeyboardButton("👑 پنل مدیریت", callback_data='admin_help')]
+        [InlineKeyboardButton("🌤 وضعیت هوا", callback_data='weather'), InlineKeyboardButton("🏙 تغییر مسیر/شهر", callback_data='change_city')]
     ])
+    
+    # دکمه پنل مدیریت هم فقط برای ادمین
+    if str(chat_id) == MY_ID:
+        keyboard.append([InlineKeyboardButton("👑 پنل مدیریت", callback_data='admin_help')])
+        
+    return InlineKeyboardMarkup(keyboard)
 
 # ============================================================
 # Message Utils
@@ -756,6 +766,10 @@ async def button_callback(u: Update, c: C):
             )
             return
 
+    if data in ['on', 'off'] and str(chat_id) != MY_ID:
+        await query.answer("⛔ شما اجازه انجام این کار را ندارید.", show_alert=True)
+        return
+
     now = time.time()
     key = f"{chat_id}:{data}"
     if now - _last_call.get(key, 0) < COOLDOWN and data != 'bet_set' and not data.startswith('rem_') and not data.startswith('adm_'):
@@ -853,7 +867,7 @@ async def button_callback(u: Update, c: C):
     elif data == 'change_city': await query.message.reply_text("🏙 مسابقه خودکار انتخاب می‌شود.", parse_mode='HTML')
     elif data == 'admin_help': 
         if str(chat_id) == MY_ID: await cmd_admin_panel(chat_id, c)
-        else: await query.message.reply_text("⛔ شما دسترسی ندارید.")
+        else: await query.answer("⛔ شما دسترسی ندارید.", show_alert=True)
     elif data.startswith('rem_set_'):
         r_num = int(data.split('_')[2])
         c.user_data['awaiting_rem'] = True
@@ -1004,7 +1018,7 @@ async def cmd_start(u: Update, c: C):
             "همچنین تمام تحلیل‌ها با سرمایه شما (Kelly) محاسبه می‌شوند."
         )
         
-    await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(), parse_mode='HTML')
+    await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
     app = AB().token(T).build()
