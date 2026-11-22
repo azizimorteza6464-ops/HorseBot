@@ -23,7 +23,7 @@ _last_call = {}
 COOLDOWN = 60
 
 # ============================================================
-# GitHub Variables
+# GitHub Variables & Auth
 # ============================================================
 async def get_github_var(var_name, default_val=""):
     if not R or not G: return default_val
@@ -55,14 +55,21 @@ async def get_allowed_users():
     users_str = await get_github_var("ALLOWED_USERS", MY_ID)
     return [u.strip() for u in users_str.split(",") if u.strip()]
 
+async def is_premium(chat_id):
+    """بررسی اینکه آیا کاربر اشتراک دارد یا خیر"""
+    if str(chat_id) == MY_ID: return True
+    allowed = await get_allowed_users()
+    return str(chat_id) in allowed
+
 async def is_authorized(u: Update, c: C) -> bool:
+    """فقط چک میکند که کاربر در لیست کلی ربات است یا خیر (برای منو)"""
     if not u.effective_chat: return False
     chat_id = str(u.effective_chat.id)
     if chat_id == MY_ID: return True
     allowed = await get_allowed_users()
     if chat_id not in allowed:
-        await c.bot.send_message(u.effective_chat.id, "⛔ شما اجازه استفاده ندارید.")
-        return False
+        # به جای بلاک کردن، بهش میگیم اشتراک بخره
+        return True 
     return True
 
 # ============================================================
@@ -155,6 +162,8 @@ def get_main_menu():
         [InlineKeyboardButton("🎯 ۳ پره اول", callback_data='ml_3a'), InlineKeyboardButton("🎯 ۳ پره دوم", callback_data='ml_3b')],
         [InlineKeyboardButton("🎲 اسب شگفتی", callback_data='sur_h'), InlineKeyboardButton("🔥 دوقلوی شگفتی", callback_data='sur_d')],
         [InlineKeyboardButton("💰 تعیین مبلغ شرط", callback_data='bet_set')],
+        # دکمه‌های اشتراک
+        [InlineKeyboardButton("💳 خرید اشتراک / تمدید", callback_data='buy_sub'), InlineKeyboardButton("👤 وضعیت اشتراک من", callback_data='my_status')],
         [InlineKeyboardButton("🌤 وضعیت هوا", callback_data='weather'), InlineKeyboardButton("🏙 تغییر مسیر/شهر", callback_data='change_city')],
         [InlineKeyboardButton("👑 پنل مدیریت", callback_data='admin_help')]
     ])
@@ -206,7 +215,7 @@ async def cmd_admin_panel(chat_id, c):
     users = await get_allowed_users()
     users_str = "\n".join([f"• <code>{u}</code>" for u in users]) if users else "هیچ‌کس"
     bet = c.user_data.get('bet_amount', 0)
-    txt = f"👑 <b>پنل مدیریت</b>\n➖➖➖➖➖➖➖➖\n⚙️ <b>وضعیت:</b> {status}\n💰 <b>سرمایه:</b> {f'<code>{bet:,}</code> تومان' if bet else 'تعیین نشده'}\n👥 <b>کاربران ({len(users)}):</b>\n{users_str}\n\n🔐 <b>تغییر توکن‌ها:</b>\n<code>Settings &gt; Secrets and variables</code>"
+    txt = f"👑 <b>پنل مدیریت</b>\n➖➖➖➖➖➖➖➖\n⚙️ <b>وضعیت:</b> {status}\n💰 <b>سرمایه:</b> {f'<code>{bet:,}</code> تومان' if bet else 'تعیین نشده'}\n👥 <b>کاربران VIP ({len(users)}):</b>\n{users_str}\n\n🔐 <b>تغییر توکن‌ها:</b>\n<code>Settings &gt; Secrets and variables</code>\n\n💡 <b>دستور تایید کاربر جدید:</b>\n<code>/approve USER_ID</code>"
     await c.bot.send_message(chat_id, txt, parse_mode='HTML')
 
 async def prepare_page(pg):
@@ -231,7 +240,7 @@ async def prepare_page(pg):
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     horses = {}
-    q_matrix = {} # ماتریس ضرایب دوقلو
+    q_matrix = {} 
 
     try:
         try: await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=5000, force=True)
@@ -256,7 +265,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         if not has_table or not has_race_keywords or has_upload_warning:
             return "NOT_UPLOADED"
 
-        # استخراج اسب‌ها
         pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}Kg)\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
         for m in re.finditer(pattern, table_text):
             name = m.group(1).strip()
@@ -273,33 +281,12 @@ async def ar(p, r_num, c, chat_id, save_history=True):
             await p.wait_for_timeout(3000)
             x_odds = await p.locator('body').inner_text()
             
-            # استخراج ضرایب برد
             odds_pattern = r'([^\n]+)\n(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)'
             for m in re.finditer(odds_pattern, x_odds):
                 name = m.group(1).strip(); w_odd = float(m.group(2))
                 for num, h in horses.items():
                     if name in h['n'] or h['n'] in name:
                         horses[num]['w_odd'] = w_odd; break
-            
-            # === استخراج ماتریس دوقلو (با استفاده از ترفند متن) ===
-            # خطوطی که شامل اعداد اعشاری زیاد هستند (مثل 149.5) مربوط به ماتریس هستند
-            lines = x_odds.split('\n')
-            for line in lines:
-                parts = line.strip().split()
-                # اگر خط 7 عدد داشت و اولی عدد صحیح 1-7 بود، احتمالا یک ردیف ماتریس است
-                if len(parts) >= 5 and parts[0].isdigit() and 1 <= int(parts[0]) <= 10:
-                    row_num = int(parts[0])
-                    cols = []
-                    for val in parts[1:]:
-                        try: cols.append(float(val))
-                        except: cols.append(0)
-                    # نگاشت (فعلا تقریبی، چون هدرها ثابت هستند)
-                    # ما فرض می‌کنیم ستون‌ها به ترتیب اسب‌های 1 تا N هستند
-                    for idx, odd in enumerate(cols):
-                        if odd > 1.0:
-                            # ذخیره دوقلو (بدون ترتیب)
-                            # برای سادگی فعلا ماتریس دقیق را ذخیره نمی‌کنیم چون هدرها در متن مشخص نیستند
-                            pass
         except: pass
     except Exception: return "ERROR"
 
@@ -308,7 +295,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     horse_list = list(horses.values())
     n = len(horse_list)
 
-    # === محاسبات مدل ===
     iors = [h['ior'] for h in horse_list]
     ior_min, ior_max = min(iors), max(iors)
     ior_range = max(ior_max - ior_min, 1)
@@ -403,40 +389,30 @@ async def process_quinellas(chat_id, c, variant_type):
                 probs = [h['model_prob']/100 for h in horses]
                 candidates = []
 
-                # بررسی تمام جفت‌ها
                 for i in range(n):
                     for j in range(i+1, n):
                         h1, h2 = horses[i], horses[j]
                         
-                        # 1. فیلتر امن: فقط پیش‌بر و میان‌بر (رتبه 0 و 1)
                         if variant_type == 'q_safe' and not (i == 0 and j == 1):
                             continue
                         
-                        # 2. فیلتر ارزش: یکی از اسب‌ها باید جزو 3 اسب برتر باشد، و ضریب اسب دیگر >= 5
                         if variant_type == 'q_value':
                             is_top = (i < 3) or (j < 3)
                             is_long = (h1['w_odd'] >= 5) or (h2['w_odd'] >= 5)
                             if not (is_top and is_long): continue
                             
-                        # 3. فیلتر شانسی: هر دو اسب باید ضریب >= 5 داشته باشند
                         if variant_type == 'q_lucky':
                             if not (h1['w_odd'] >= 5 and h2['w_odd'] >= 5): continue
 
-                        # محاسبه شانس دوقلو
                         q_p = quinella_prob(probs, i, j)
                         if q_p <= 0: continue
                         fair_odd = round(1 / q_p, 2)
-                        
-                        # مقایسه با ضریب واقعی (اگر از سایت خونده باشیم، اینجا باید چک بشه)
-                        # فعلا چون استخراج ماتریس پیچیده است و ممکنه اختلال ایجاد کنه،
-                        # به کاربر "ضریب منصفانه" رو میدیم تا با سایت مقایسه کنه.
                         
                         candidates.append({
                             "h1": h1, "h2": h2, "prob": q_p * 100, "fair_odd": fair_odd
                         })
 
                 if candidates:
-                    # مرتب‌سازی بر اساس شانس برد (برای امن) یا ضریب بالاتر (برای شانسی)
                     if variant_type == 'q_safe':
                         candidates.sort(key=lambda x: x['prob'], reverse=True)
                     elif variant_type == 'q_value':
@@ -589,7 +565,7 @@ async def process_multileg(chat_id, c, leg_type, bet_amount=None):
                 for h in details: prob_product *= h['model_prob'] / 100
                 prob_adj = min(prob_product * (1 + 0.06 * (len(details) - 1)), 0.95)
                 fair_odd = round(1 / prob_adj, 1) if prob_adj > 0 else 0
-                actual_odd = round(sum([h['w_odd'] for h in details]), 1) # اینجا جمع است نه ضرب، چون همبستگی داریم
+                actual_odd = round(sum([h['w_odd'] for h in details]), 1)
                 msg += f"\n📊 <b>ضریب منصفانه:</b> <code>{fair_odd:,.1f}</code>\n📊 <b>ضریب تقریبی:</b> <code>{actual_odd:,.1f}</code>\n"
                 if fair_odd > 0 and actual_odd > fair_odd:
                     msg += f"✅ <b>ارزشمند</b>\n"
@@ -702,7 +678,18 @@ async def button_callback(u: Update, c: C):
     await query.answer()
     chat_id = query.message.chat_id
     data = query.data
-    if not await is_authorized(u, c): return
+    
+    # بررسی اینکه آیا کاربر VIP هست یا نه
+    premium_buttons = ['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'rall', 'q_safe', 'q_value', 'q_lucky', 
+                       'value', 'ml_6', 'ml_5', 'ml_3a', 'ml_3b', 'sur_h', 'sur_d']
+    
+    if data in premium_buttons:
+        if not await is_premium(chat_id):
+            await query.message.reply_text(
+                "⛔ <b>دسترسی محدود!</b>\n\nاین بخش ویژه مشترکین است.\nبرای تهیه اشتراک روی دکمه «💳 خرید اشتراک» بزنید.",
+                parse_mode='HTML'
+            )
+            return
 
     now = time.time()
     key = f"{chat_id}:{data}"
@@ -711,6 +698,26 @@ async def button_callback(u: Update, c: C):
         return await query.answer(f"⏳ {remaining} ثانیه صبر کنید", show_alert=True)
     _last_call[key] = now
 
+    # --- دکمه‌های اشتراک ---
+    if data == 'buy_sub':
+        txt = (
+            "💳 <b>خرید اشتراک ویژه</b>\n\n"
+            "برای دسترسی به تمام امکانات ربات، مبلغ <b>۵۰,۰۰۰ تومان</b> را به شماره کارت زیر واریز کنید:\n\n"
+            "💳 <code>6037-XXXX-XXXX-XXXX</code>\n"
+            "👤 به نام: [نام شما]\n\n"
+            "📸 <b>پس از واریز، عکس رسید پرداخت را همین‌جا ارسال کنید.</b>\n"
+            "پس از تایید توسط مدیریت، اشتراک شما فعال می‌شود."
+        )
+        await query.message.reply_text(txt, parse_mode='HTML')
+        return
+    elif data == 'my_status':
+        if await is_premium(chat_id):
+            await query.message.reply_text("✅ <b>وضعیت شما:</b> فعال\nشما به تمام امکانات دسترسی دارید.", parse_mode='HTML')
+        else:
+            await query.message.reply_text("❌ <b>وضعیت شما:</b> غیرفعال\nبرای خرید اشتراک روی دکمه «💳 خرید اشتراک» بزنید.", parse_mode='HTML')
+        return
+
+    # --- دکمه‌های معمولی ---
     if data == 'on': await set_github_var("AUTO_UPDATE", "true"); await query.message.reply_text("✅ روشن شد.")
     elif data == 'off': await set_github_var("AUTO_UPDATE", "false"); await query.message.reply_text("🛑 خاموش شد.")
     elif data == 'history': await cmd_history(chat_id, c)
@@ -721,14 +728,15 @@ async def button_callback(u: Update, c: C):
         cur = c.user_data.get('bet_amount', 0)
         await query.message.reply_text(f"💰 <b>سرمایه فعلی:</b> <code>{cur:,}</code> ت\nعدد جدید را بفرست:", parse_mode='HTML', reply_markup=ForceReply(selective=True))
     elif data == 'change_city': await query.message.reply_text("🏙 مسابقه خودکار انتخاب می‌شود.", parse_mode='HTML')
-    elif data == 'admin_help': await cmd_admin_panel(chat_id, c)
+    elif data == 'admin_help': 
+        if str(chat_id) == MY_ID: await cmd_admin_panel(chat_id, c)
+        else: await query.message.reply_text("⛔ شما دسترسی ندارید.")
     elif data.startswith('rem_set_'):
         r_num = int(data.split('_')[2])
         c.user_data['awaiting_rem'] = True
         c.user_data['rem_round'] = r_num
         await query.message.reply_text("⏰ چند دقیقه دیگر یادآوری کنم؟ (عدد بفرست)", parse_mode='HTML', reply_markup=ForceReply(selective=True))
     
-    # Quinella Variants
     elif data in ['q_safe', 'q_value', 'q_lucky']:
         await process_quinellas(chat_id, c, data)
     
@@ -740,7 +748,6 @@ async def button_callback(u: Update, c: C):
     elif data in ['sur_h', 'sur_d']: await process_surprises(chat_id, c, data, bet_amount=c.user_data.get('bet_amount'))
 
 async def handle_inputs(u: Update, c: C):
-    if not await is_authorized(u, c): return
     if c.user_data.get('awaiting_bet'):
         c.user_data['awaiting_bet'] = False
         try:
@@ -759,8 +766,84 @@ async def handle_inputs(u: Update, c: C):
             await u.message.reply_text(f"✅ یادآوری برای {mins} دقیقه دیگر تنظیم شد.", parse_mode='HTML')
         except: await u.message.reply_text("❌ عدد معتبر بفرست.")
 
+# ============================================================
+# Receipt Handler & Admin Commands
+# ============================================================
+async def handle_photo(u: Update, c: C):
+    """دریافت عکس رسید از کاربر و فوروارد به ادمین"""
+    chat_id = u.effective_chat.id
+    
+    # اگر خود ادمین عکس فرستاد، نادیده بگیر
+    if str(chat_id) == MY_ID: return
+    
+    user_name = u.effective_chat.first_name or "کاربر"
+    
+    # فوروارد عکس به ادمین
+    await c.bot.forward_message(chat_id=MY_ID, from_chat_id=chat_id, message_id=u.message.message_id)
+    
+    # ارسال اطلاعات کاربر به ادمین
+    admin_msg = (
+        f"🔔 <b>رسید جدید!</b>\n\n"
+        f"👤 نام: {user_name}\n"
+        f"آیدی عددی: <code>{chat_id}</code>\n\n"
+        f"برای تایید و فعال‌سازی، روی این متن کلیک کنید تا کپی شود و سپس ارسال کنید:\n"
+        f"<code>/approve {chat_id}</code>"
+    )
+    await c.bot.send_message(MY_ID, admin_msg, parse_mode='HTML')
+    
+    # اطلاع به کاربر
+    await u.message.reply_text("✅ رسید شما دریافت شد.\nپس از بررسی توسط پشتیبانی، اشتراک شما فعال خواهد شد.")
+
+async def cmd_approve(u: Update, c: C):
+    """دستور ادمین برای تایید کاربر: /approve 123456789"""
+    if str(u.effective_chat.id) != MY_ID: return
+    
+    try:
+        parts = u.message.text.split()
+        if len(parts) < 2: raise ValueError
+        target_id = parts[1].strip()
+        
+        allowed = await get_allowed_users()
+        if target_id not in allowed:
+            allowed.append(target_id)
+            await set_github_var("ALLOWED_USERS", ",".join(allowed))
+            
+            await u.message.reply_text(f"✅ کاربر <code>{target_id}</code> با موفقیت تایید و به لیست VIP اضافه شد.", parse_mode='HTML')
+            
+            try:
+                await c.bot.send_message(target_id, "🎉 <b>تبریک!</b>\nاشتراک شما توسط مدیریت تایید شد. حالا به تمام امکانات ربات دسترسی دارید.", parse_mode='HTML')
+            except:
+                await u.message.reply_text("⚠️ نتوانستم به کاربر پیام بدم (شاید ربات را بلاک کرده).")
+        else:
+            await u.message.reply_text("این کاربر از قبل در لیست VIP است.")
+    except:
+        await u.message.reply_text("❌ فرمت صحیح:\n<code>/approve 123456789</code>", parse_mode='HTML')
+
+async def cmd_remove(u: Update, c: C):
+    """دستور ادمین برای حذف کاربر: /remove 123456789"""
+    if str(u.effective_chat.id) != MY_ID: return
+    
+    try:
+        parts = u.message.text.split()
+        if len(parts) < 2: raise ValueError
+        target_id = parts[1].strip()
+        
+        allowed = await get_allowed_users()
+        if target_id in allowed:
+            allowed.remove(target_id)
+            await set_github_var("ALLOWED_USERS", ",".join(allowed))
+            
+            await u.message.reply_text(f"🗑 کاربر <code>{target_id}</code> از لیست VIP حذف شد.", parse_mode='HTML')
+            
+            try:
+                await c.bot.send_message(target_id, "⚠️ اشتراک شما به پایان رسیده یا لغو شده است.", parse_mode='HTML')
+            except: pass
+        else:
+            await u.message.reply_text("این کاربر در لیست VIP نیست.")
+    except:
+        await u.message.reply_text("❌ فرمت صحیح:\n<code>/remove 123456789</code>", parse_mode='HTML')
+
 async def cmd_start(u: Update, c: C):
-    if not await is_authorized(u, c): return
     await c.bot.send_message(
         u.effective_chat.id,
         "👋 <b>سلام مدیر!</b>\n"
@@ -774,7 +857,10 @@ async def cmd_start(u: Update, c: C):
 async def main():
     app = AB().token(T).build()
     app.add_handler(CH('start', cmd_start))
+    app.add_handler(CH('approve', cmd_approve))
+    app.add_handler(CH('remove', cmd_remove))
     app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo)) # هندلر عکس رسید
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_inputs))
     await app.initialize(); await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
