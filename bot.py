@@ -17,6 +17,14 @@ R = os.environ.get("GITHUB_REPOSITORY")
 MY_ID = "184149177"
 
 # ============================================================
+# ⚠️ تنظیمات اشتراک (اینجا رو تغییر بده) ⚠️
+# ============================================================
+CARD_NUMBER = "6219-8618-0229-0089"  # <--- شماره کارتت رو اینجا بنویس
+CARD_HOLDER =نام و نام خانوادگی شما"  # <---مرتضی عزیزی
+SUB_PRICE = "250,000"                 # <--- قیمت اشتراک (تومان)
+# ============================================================
+
+# ============================================================
 # Anti-Spam
 # ============================================================
 _last_call = {}
@@ -56,20 +64,16 @@ async def get_allowed_users():
     return [u.strip() for u in users_str.split(",") if u.strip()]
 
 async def is_premium(chat_id):
-    """بررسی اینکه آیا کاربر اشتراک دارد یا خیر"""
     if str(chat_id) == MY_ID: return True
     allowed = await get_allowed_users()
     return str(chat_id) in allowed
 
 async def is_authorized(u: Update, c: C) -> bool:
-    """فقط چک میکند که کاربر در لیست کلی ربات است یا خیر (برای منو)"""
     if not u.effective_chat: return False
     chat_id = str(u.effective_chat.id)
     if chat_id == MY_ID: return True
     allowed = await get_allowed_users()
-    if chat_id not in allowed:
-        # به جای بلاک کردن، بهش میگیم اشتراک بخره
-        return True 
+    if chat_id not in allowed: return True 
     return True
 
 # ============================================================
@@ -162,7 +166,6 @@ def get_main_menu():
         [InlineKeyboardButton("🎯 ۳ پره اول", callback_data='ml_3a'), InlineKeyboardButton("🎯 ۳ پره دوم", callback_data='ml_3b')],
         [InlineKeyboardButton("🎲 اسب شگفتی", callback_data='sur_h'), InlineKeyboardButton("🔥 دوقلوی شگفتی", callback_data='sur_d')],
         [InlineKeyboardButton("💰 تعیین مبلغ شرط", callback_data='bet_set')],
-        # دکمه‌های اشتراک
         [InlineKeyboardButton("💳 خرید اشتراک / تمدید", callback_data='buy_sub'), InlineKeyboardButton("👤 وضعیت اشتراک من", callback_data='my_status')],
         [InlineKeyboardButton("🌤 وضعیت هوا", callback_data='weather'), InlineKeyboardButton("🏙 تغییر مسیر/شهر", callback_data='change_city')],
         [InlineKeyboardButton("👑 پنل مدیریت", callback_data='admin_help')]
@@ -679,7 +682,6 @@ async def button_callback(u: Update, c: C):
     chat_id = query.message.chat_id
     data = query.data
     
-    # بررسی اینکه آیا کاربر VIP هست یا نه
     premium_buttons = ['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'rall', 'q_safe', 'q_value', 'q_lucky', 
                        'value', 'ml_6', 'ml_5', 'ml_3a', 'ml_3b', 'sur_h', 'sur_d']
     
@@ -702,9 +704,9 @@ async def button_callback(u: Update, c: C):
     if data == 'buy_sub':
         txt = (
             "💳 <b>خرید اشتراک ویژه</b>\n\n"
-            "برای دسترسی به تمام امکانات ربات، مبلغ <b>۵۰,۰۰۰ تومان</b> را به شماره کارت زیر واریز کنید:\n\n"
-            "💳 <code>6037-XXXX-XXXX-XXXX</code>\n"
-            "👤 به نام: [نام شما]\n\n"
+            f"برای دسترسی به تمام امکانات ربات، مبلغ <b>{SUB_PRICE} تومان</b> را به شماره کارت زیر واریز کنید:\n\n"
+            f"💳 <code>{CARD_NUMBER}</code>\n"
+            f"👤 به نام: {CARD_HOLDER}\n\n"
             "📸 <b>پس از واریز، عکس رسید پرداخت را همین‌جا ارسال کنید.</b>\n"
             "پس از تایید توسط مدیریت، اشتراک شما فعال می‌شود."
         )
@@ -770,18 +772,12 @@ async def handle_inputs(u: Update, c: C):
 # Receipt Handler & Admin Commands
 # ============================================================
 async def handle_photo(u: Update, c: C):
-    """دریافت عکس رسید از کاربر و فوروارد به ادمین"""
     chat_id = u.effective_chat.id
-    
-    # اگر خود ادمین عکس فرستاد، نادیده بگیر
     if str(chat_id) == MY_ID: return
     
     user_name = u.effective_chat.first_name or "کاربر"
-    
-    # فوروارد عکس به ادمین
     await c.bot.forward_message(chat_id=MY_ID, from_chat_id=chat_id, message_id=u.message.message_id)
     
-    # ارسال اطلاعات کاربر به ادمین
     admin_msg = (
         f"🔔 <b>رسید جدید!</b>\n\n"
         f"👤 نام: {user_name}\n"
@@ -790,14 +786,10 @@ async def handle_photo(u: Update, c: C):
         f"<code>/approve {chat_id}</code>"
     )
     await c.bot.send_message(MY_ID, admin_msg, parse_mode='HTML')
-    
-    # اطلاع به کاربر
     await u.message.reply_text("✅ رسید شما دریافت شد.\nپس از بررسی توسط پشتیبانی، اشتراک شما فعال خواهد شد.")
 
 async def cmd_approve(u: Update, c: C):
-    """دستور ادمین برای تایید کاربر: /approve 123456789"""
     if str(u.effective_chat.id) != MY_ID: return
-    
     try:
         parts = u.message.text.split()
         if len(parts) < 2: raise ValueError
@@ -807,22 +799,16 @@ async def cmd_approve(u: Update, c: C):
         if target_id not in allowed:
             allowed.append(target_id)
             await set_github_var("ALLOWED_USERS", ",".join(allowed))
-            
             await u.message.reply_text(f"✅ کاربر <code>{target_id}</code> با موفقیت تایید و به لیست VIP اضافه شد.", parse_mode='HTML')
-            
-            try:
-                await c.bot.send_message(target_id, "🎉 <b>تبریک!</b>\nاشتراک شما توسط مدیریت تایید شد. حالا به تمام امکانات ربات دسترسی دارید.", parse_mode='HTML')
-            except:
-                await u.message.reply_text("⚠️ نتوانستم به کاربر پیام بدم (شاید ربات را بلاک کرده).")
+            try: await c.bot.send_message(target_id, "🎉 <b>تبریک!</b>\nاشتراک شما توسط مدیریت تایید شد. حالا به تمام امکانات ربات دسترسی دارید.", parse_mode='HTML')
+            except: await u.message.reply_text("⚠️ نتوانستم به کاربر پیام بدم (شاید ربات را بلاک کرده).")
         else:
             await u.message.reply_text("این کاربر از قبل در لیست VIP است.")
     except:
         await u.message.reply_text("❌ فرمت صحیح:\n<code>/approve 123456789</code>", parse_mode='HTML')
 
 async def cmd_remove(u: Update, c: C):
-    """دستور ادمین برای حذف کاربر: /remove 123456789"""
     if str(u.effective_chat.id) != MY_ID: return
-    
     try:
         parts = u.message.text.split()
         if len(parts) < 2: raise ValueError
@@ -832,11 +818,8 @@ async def cmd_remove(u: Update, c: C):
         if target_id in allowed:
             allowed.remove(target_id)
             await set_github_var("ALLOWED_USERS", ",".join(allowed))
-            
             await u.message.reply_text(f"🗑 کاربر <code>{target_id}</code> از لیست VIP حذف شد.", parse_mode='HTML')
-            
-            try:
-                await c.bot.send_message(target_id, "⚠️ اشتراک شما به پایان رسیده یا لغو شده است.", parse_mode='HTML')
+            try: await c.bot.send_message(target_id, "⚠️ اشتراک شما به پایان رسیده یا لغو شده است.", parse_mode='HTML')
             except: pass
         else:
             await u.message.reply_text("این کاربر در لیست VIP نیست.")
@@ -860,7 +843,7 @@ async def main():
     app.add_handler(CH('approve', cmd_approve))
     app.add_handler(CH('remove', cmd_remove))
     app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo)) # هندلر عکس رسید
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_inputs))
     await app.initialize(); await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
