@@ -272,35 +272,74 @@ async def ar(p, r_num, c, chat_id, save_history=True):
 
     horses = {}
     try:
-        # تلاش برای کلیک روی تب دور
+        # 1. کلیک روی تب دور
+        clicked = False
         for text in [f"R {r_num}", f"R{r_num}", str(r_num), f"دور {r_num}"]:
             try:
                 loc = p.get_by_text(text, exact=True).first
                 if await loc.is_visible():
                     await loc.click(timeout=2000, force=True)
+                    clicked = True
                     break
             except: pass
         
-        # زمان انتظار برای لود جدول
         await p.wait_for_timeout(3000)
-        table_text = await p.locator('body').inner_text()
         
-        # الگوی منعطف‌تر برای پیدا کردن اسب‌ها
-        pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3})\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
-        matches = list(re.finditer(pattern, table_text))
+        # 2. استخراج داده‌های جدول با جاوا اسکریپت (سطری، نه ستونی)
+        js_extract = """() => {
+            let res = '';
+            const rows = document.querySelectorAll('tr, [role="row"], .v-data-table__tr');
+            rows.forEach(r => {
+                const cells = r.querySelectorAll('td, th, [role="cell"], [role="gridcell"], .v-data-table__td');
+                if (cells.length > 2) {
+                    let rowData = [];
+                    cells.forEach(c => {
+                        let text = c.innerText.trim();
+                        if (!text) {
+                            const inp = c.querySelector('input');
+                            if (inp) text = inp.value;
+                        }
+                        rowData.push(text);
+                    });
+                    if (rowData.join('').replace(/\\s/g, '').length > 0) {
+                        res += rowData.join(' | ') + '\\n';
+                    }
+                }
+            });
+            return res;
+        }"""
+        
+        table_text = await p.evaluate(js_extract)
+        
+        # اگر جدول خالی بود، از روش قبلی استفاده کن
+        if not table_text.strip():
+            table_text = await p.locator('body').inner_text()
 
-        if matches:
-            for m in matches:
-                name = m.group(1).strip()
-                if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "R ", "دور"]): continue
-                num = int(m.group(2)); ior = int(m.group(4))
-                perf_str = m.group(5); jockey = m.group(6).strip()
-                horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "w_odd": 50.0}
+        # 3. پارس کردن متن (حالا با جداکننده |)
+        for line in table_text.split('\n'):
+            if '|' in line:
+                parts = [x.strip() for x in line.split('|')]
+                if len(parts) < 4: continue
+                
+                name = ""
+                num = 0
+                ior = 0
+                
+                for p_val in parts:
+                    if p_val.isdigit() and len(p_val) <= 2 and num == 0:
+                        num = int(p_val)
+                    elif p_val.isdigit() and 50 < int(p_val) < 120: 
+                        ior = int(p_val)
+                    elif len(p_val) > 2 and not p_val.isdigit() and not name:
+                        name = p_val
+                        
+                if name and num:
+                    horses[num] = {"n": name, "num": num, "ior": ior, "j": "ناشناس", "perf": "0", "w_odd": 50.0}
         
-        # اگر هیچ اسبی پیدا نشد، متن خام را برای دیباگ می‌فرستیم
+        # اگر هیچ اسبی پیدا نشد، متن استخراج شده را برای دیباگ می‌فرستیم
         if not horses:
             debug_text = table_text[:3000]
-            await c.bot.send_message(chat_id, f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nربات نتوانست داده‌ها را استخراج کند. متن خام صفحه در زیر آمده است:\n\n<pre>{debug_text}</pre>", parse_mode='HTML')
+            await c.bot.send_message(chat_id, f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nمتن استخراج شده:\n\n<pre>{debug_text}</pre>", parse_mode='HTML')
             return "NOT_UPLOADED"
 
     except Exception as e: 
@@ -432,13 +471,12 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                                 rp += f"  {h['num']}-{h['n']}: برد {h['model_prob']:.1f}% | جایگاه {h['place_prob']:.1f}% (منصفانه {h['place_fair_odd']})\n"
                         rp += "➖➖➖➖➖➖➖➖\n"
                     else:
-                        # اضافه کردن دلیل خطا به پیام
                         rp += f"\n⚠️ <b>دور R{r}:</b> {res}\n"
                 except Exception as e:
                     rp += f"\n🚨 <b>خطا در دور R{r}:</b> {str(e)}\n"
                     
             if not found_any:
-                rp += "\n⚠️ <b>جدول مسابقات هنوز آپلود نشده است یا ساختار سایت تغییر کرده است.</b>\n📅 معمولاً ۲۴ ساعت قبل از شروع قرار می‌گیرد."
+                rp += "\n⚠️ <b>جدول مسابقات هنوز آپلود نشده است یا ساختار سایت تغییر کرده است.</b>"
                 await send_long_message(c, chat_id, rp)
                 markup = InlineKeyboardMarkup([[InlineKeyboardButton("⏰ یادآوری خودکار", callback_data=f"rem_set_{specific_round or 1}")]])
                 await c.bot.send_message(chat_id, "می‌خواهید ربات چه زمانی دوباره چک کند؟", reply_markup=markup)
@@ -447,10 +485,6 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
         await c.bot.send_message(chat_id, f"❌ خطا:\n<code>{str(e)}</code>", parse_mode='HTML')
     finally:
         if browser: await browser.close()
-
-# بقیه توابع (process_quinellas, process_multileg, و...) بدون تغییر باقی می‌مانند
-# برای جلوگیری از طولانی شدن پاسخ، فقط بخش‌های تغییر یافته را قرار دادم.
-# لطفاً کد زیر را به طور کامل جایگزین کد خود کنید.
 
 async def process_quinellas(chat_id, c, variant_type):
     await c.bot.send_message(chat_id, "⏳ <b>در حال محاسبه دوقلوهای هوشمند...</b>", parse_mode='HTML')
