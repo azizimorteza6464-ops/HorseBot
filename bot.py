@@ -719,4 +719,4 @@ async def process_value_bets(chat_id, c, bet_amount=None):
                             if bet_amount:
                                 k = calculate_kelly(bet_amount, v['model_prob'], v['w_odd'], fraction=FRACTIONS['win'])
                                 if k > 0: line += f" → <code>{k:,}</code> ت"
-                            rp +=
+                                    rp += f"متن شما..."
