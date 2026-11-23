@@ -16,18 +16,11 @@ G = os.environ.get("GH_PAT")
 R = os.environ.get("GITHUB_REPOSITORY")
 MY_ID = "184149177"
 
-# ============================================================
-# ⚠️ تنظیمات اشتراک (اینجا رو تغییر بده) ⚠️
-# ============================================================
 CARD_NUMBER = "6219-8618-0229-0089"
 CARD_HOLDER = "مرتضی عزیزی"
-SUB_PRICE = "250,000"                 # <--- قیمت اشتراک به تومان
-REF_REWARD_DAYS = 3                   # <--- تعداد روز هدیه برای دعوت از دوستان
-# ============================================================
+SUB_PRICE = "250,000"
+REF_REWARD_DAYS = 3
 
-# ============================================================
-# Anti-Spam & Cache
-# ============================================================
 _last_call = {}
 COOLDOWN = 60
 AR_CACHE = {}
@@ -63,8 +56,7 @@ async def set_github_var(var_name, val):
 
 async def get_allowed_users_dict():
     users_str = await get_github_var("ALLOWED_USERS", "{}")
-    try:
-        return json.loads(users_str)
+    try: return json.loads(users_str)
     except:
         users_dict = {}
         if users_str and ("," in users_str or users_str.isdigit()):
@@ -88,7 +80,6 @@ async def is_premium(chat_id):
 # ============================================================
 async def get_weather():
     try:
-        # سرویس اول
         url = "https://api.open-meteo.com/v1/forecast?latitude=37.25&longitude=55.16&current_weather=true"
         async with httpx.AsyncClient(timeout=10) as client:
             res = await client.get(url)
@@ -96,17 +87,13 @@ async def get_weather():
                 data = res.json()
                 return f"🌡 دما: {data['current_weather']['temperature']}°C | 💨 باد: {data['current_weather']['windspeed']} km/h"
     except: pass
-    
     try:
-        # سرویس جایگزین
         url = "https://wttr.in/Gonbad-e-Kavus?format=j1"
         async with httpx.AsyncClient(timeout=15) as client:
             res = await client.get(url)
             if res.status_code == 200:
                 data = res.json()
-                temp = data['current_condition'][0]['temp_C']
-                wind = data['current_condition'][0]['windspeedKmph']
-                return f"🌡 دما: {temp}°C | 💨 باد: {wind} km/h (جایگزین)"
+                return f"🌡 دما: {data['current_condition'][0]['temp_C']}°C | 💨 باد: {data['current_condition'][0]['windspeedKmph']} km/h"
     except: pass
     return "⚠️ اطلاعات هوا در دسترس نیست."
 
@@ -197,9 +184,6 @@ def get_main_menu(chat_id):
         keyboard.append([InlineKeyboardButton("👑 پنل مدیریت", callback_data='admin_help')])
     return InlineKeyboardMarkup(keyboard)
 
-# ============================================================
-# Message Utils
-# ============================================================
 def _split_safe(text, max_len=4000):
     if len(text) <= max_len: return [text]
     chunks, current = [], ""
@@ -275,7 +259,10 @@ async def cmd_admin_panel(chat_id, c):
 
 async def prepare_page(pg):
     try:
-        await pg.wait_for_timeout(2000)
+        # صبر میکنیم تا کل صفحه و درخواست‌های شبکه‌ای تمام شوند
+        await pg.wait_for_load_state('networkidle', timeout=15000)
+        await pg.wait_for_timeout(3000)
+        
         dropdown = pg.get_by_text("انتخاب فصل مسابقات", exact=False).first
         if await dropdown.is_visible():
             await dropdown.click(timeout=5000, force=True)
@@ -291,7 +278,7 @@ async def prepare_page(pg):
     except: pass
 
 # ============================================================
-# Core Analysis with Cache & Logic Fixed
+# Core Analysis with Improved Scraping
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     cache_key = f"{date.today().isoformat()}_{r_num}"
@@ -301,11 +288,17 @@ async def ar(p, r_num, c, chat_id, save_history=True):
 
     horses = {}
     try:
-        try: await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=5000, force=True)
+        # 1. رفتن به صفحه جدول مسابقات (اگر دکمه‌ای وجود دارد)
+        try: 
+            await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=5000, force=True)
+            await p.wait_for_load_state('networkidle', timeout=10000)
         except: pass
-        try: await p.get_by_text("نمایش دورها", exact=False).first.click(timeout=5000, force=True)
+        
+        try: 
+            await p.get_by_text("نمایش دورها", exact=False).first.click(timeout=5000, force=True)
         except: pass
 
+        # 2. کلیک روی دور مورد نظر
         clicked = False
         possible_texts = [f"R {r_num}", f"R{r_num}", f"دور {r_num}", str(r_num)]
         for text in possible_texts:
@@ -318,42 +311,64 @@ async def ar(p, r_num, c, chat_id, save_history=True):
             except: pass
 
         if not clicked: 
-            print(f"Round {r_num} button not found.")
             return "NO_DATA"
 
-        await p.wait_for_timeout(8000)
-        table_text = await p.locator('body').inner_text()
+        # صبر برای لود شدن جدول بعد از کلیک
+        await p.wait_for_load_state('networkidle', timeout=10000)
+        await p.wait_for_timeout(5000)
         
-        # --- بخش دیباگ برای بررسی مشکل شما ---
-        if "اسب" not in table_text and "وزن" not in table_text:
+        # 3. تلاش برای خواندن مستقیم جدول (به جای کل صفحه)
+        table_text = ""
+        try:
+            # اگر جدول واقعی باشد
+            table_text = await p.locator('table').first.inner_text(timeout=5000)
+        except:
+            # اگر جدول از div ساخته شده باشد
             try:
-                # ارسال عکس صفحه برای اینکه ببینید ربات چه می‌بیند
+                table_text = await p.locator('.v-data-table, .table, [role="grid"]').first.inner_text(timeout=5000)
+            except:
+                # اگر هیچکدام نبود، کل متن را بخوان
+                table_text = await p.locator('body').inner_text()
+
+        # --- بخش دیباگ ---
+        if "kg" not in table_text.lower() and "کیلو" not in table_text:
+            try:
                 await p.screenshot(path=f"debug_round_{r_num}.png")
                 with open(f"debug_round_{r_num}.png", "rb") as photo:
-                    await c.bot.send_photo(chat_id=chat_id, photo=photo, caption=f"⚠️ ربات صفحه دور {r_num} را اینگونه می‌بیند. جدول پیدا نشد.")
-                # ارسال متن خام
-                snippet = table_text[:400].replace('\n', ' | ')
-                await c.bot.send_message(chat_id, f"🔍 متنی که ربات خوانده:\n<code>{snippet}</code>", parse_mode='HTML')
+                    await c.bot.send_photo(chat_id=chat_id, photo=photo, caption=f"⚠️ ربات صفحه دور {r_num} را اینگونه می‌بیند.")
+                
+                # چاپ ساختار HTML برای بررسی دقیق
+                html_content = await p.content()
+                with open(f"debug_round_{r_num}.html", "w", encoding="utf-8") as f:
+                    f.write(html_content)
+                
+                snippet = table_text[:600].replace('\n', ' | ')
+                await c.bot.send_message(chat_id, f"🔍 متن خوانده شده:\n<code>{snippet}</code>", parse_mode='HTML')
             except Exception as e:
                 print("Debug Error:", e)
             return "NOT_UPLOADED"
 
-        pattern = r'([^\n]{3,25})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}\s*[Kk]g)\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
+        # 4. استخراج با Regex
+        # الگوی جدید که با فاصله‌های بیشتر و فرمت‌های مختلف کنار می‌آید
+        pattern = r'([^\n]{3,30})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}\s*(?:[Kk]g|کیلو))\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
         for m in re.finditer(pattern, table_text):
             name = m.group(1).strip()
-            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک"]): continue
+            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "R "]):
+                continue
             try:
-                num = int(m.group(2)); ior = int(m.group(4))
-                perf_str = m.group(5); jockey = m.group(6).strip()
+                num = int(m.group(2))
+                ior = int(m.group(4))
+                perf_str = m.group(5)
+                jockey = m.group(6).strip()
                 horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "w_odd": 50.0}
             except: continue
 
-        # اگر Regex نتوانست اسبی پیدا کند
+        # اگر Regex پیدا نکرد
         if not horses:
-            snippet = table_text[:600].replace('\n', ' | ')
-            await c.bot.send_message(chat_id, f"⚠️ جدول لود شد اما Regex نتوانست اطلاعات را بخواند (دور {r_num}).\nمتن:\n<code>{snippet}</code>", parse_mode='HTML')
+            await c.bot.send_message(chat_id, f"⚠️ جدول لود شد (وزن پیدا شد) اما Regex نتوانست آن را تفکیک کند.\nلطفاً فایل HTML را بررسی کنید.", parse_mode='HTML')
             return "NO_DATA"
 
+        # 5. استخراج ضرایب
         try:
             await p.get_by_text("دورهای", exact=False).first.click(timeout=3000, force=True)
             await p.wait_for_timeout(2000)
@@ -374,6 +389,8 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         return "ERROR"
 
     if not horses or len(horses) < 2: return "NO_DATA"
+    
+    # --- محاسبات ریاضی (بدون تغییر) ---
     horse_list = list(horses.values())
     n = len(horse_list)
 
@@ -452,7 +469,7 @@ async def process_quinellas(chat_id, c, variant_type):
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
-            await pg.wait_for_timeout(5000)
+            await pg.wait_for_load_state('networkidle', timeout=20000)
             if "ورود" in await pg.locator('body').inner_text():
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
@@ -535,8 +552,8 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
             )
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
-            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
-            await pg.wait_for_timeout(5000)
+            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="networkidle")
+            await pg.wait_for_timeout(3000)
             if "ورود" in await pg.locator('body').inner_text():
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
@@ -599,8 +616,8 @@ async def process_multileg(chat_id, c, leg_type, bet_amount=None):
             )
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
-            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
-            await pg.wait_for_timeout(5000)
+            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="networkidle")
+            await pg.wait_for_timeout(3000)
             if "ورود" in await pg.locator('body').inner_text():
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
@@ -652,8 +669,8 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
             )
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
-            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
-            await pg.wait_for_timeout(5000)
+            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="networkidle")
+            await pg.wait_for_timeout(3000)
             if "ورود" in await pg.locator('body').inner_text():
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
@@ -690,8 +707,8 @@ async def process_value_bets(chat_id, c, bet_amount=None):
             )
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
-            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
-            await pg.wait_for_timeout(5000)
+            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="networkidle")
+            await pg.wait_for_timeout(3000)
             if "ورود" in await pg.locator('body').inner_text():
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
@@ -729,9 +746,6 @@ async def cmd_history(chat_id, c):
         txt += f"📅 {item['date']} | دور {item['round']}\n🥇 {item['win']}\n👥 {item['quinella']}\n🎯 {item['confidence']}\n➖➖➖➖\n"
     await c.bot.send_message(chat_id, txt, parse_mode='HTML')
 
-# ============================================================
-# Referral System
-# ============================================================
 async def get_referrals():
     ref_str = await get_github_var("REFERRALS", "{}")
     try: return json.loads(ref_str)
@@ -752,9 +766,6 @@ async def add_vip_days(target_id, days):
     await set_github_var("ALLOWED_USERS", json.dumps(users))
     return new_exp
 
-# ============================================================
-# Background Reminder, Expiration Warning & Handlers
-# ============================================================
 async def clean_cache():
     while True:
         await asyncio.sleep(3600)
@@ -911,9 +922,6 @@ async def handle_inputs(u: Update, c: C):
             await u.message.reply_text(f"✅ یادآوری برای {mins} دقیقه دیگر تنظیم شد.", parse_mode='HTML')
         except: await u.message.reply_text("❌ عدد معتبر بفرست.")
 
-# ============================================================
-# Receipt Handler & Admin Commands
-# ============================================================
 async def handle_photo(u: Update, c: C):
     chat_id = u.effective_chat.id
     if str(chat_id) == MY_ID: return
@@ -1012,11 +1020,6 @@ async def main():
     asyncio.create_task(clean_cache())
     await app.initialize(); await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-    
-    # اگر روی سرور اختصاصی (VPS) اجرا می‌کنید، این خط را از کامنت درآورید تا ربات هرگز خاموش نشود:
-    # await asyncio.Event().wait() 
-    
-    # برای گیت‌هاب اکشنز (که ربات بعد از حدود 5 ساعت باید خاموش شود):
     await asyncio.sleep(17400)
     await app.updater.stop(); await app.stop(); await app.shutdown()
 
