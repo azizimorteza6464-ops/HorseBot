@@ -88,14 +88,27 @@ async def is_premium(chat_id):
 # ============================================================
 async def get_weather():
     try:
+        # سرویس اول
         url = "https://api.open-meteo.com/v1/forecast?latitude=37.25&longitude=55.16&current_weather=true"
         async with httpx.AsyncClient(timeout=10) as client:
             res = await client.get(url)
             if res.status_code == 200:
                 data = res.json()
                 return f"🌡 دما: {data['current_weather']['temperature']}°C | 💨 باد: {data['current_weather']['windspeed']} km/h"
-            return "⚠️ اطلاعات هوا در دسترس نیست."
-    except: return "⚠️ اطلاعات هوا در دسترس نیست."
+    except: pass
+    
+    try:
+        # سرویس جایگزین
+        url = "https://wttr.in/Gonbad-e-Kavus?format=j1"
+        async with httpx.AsyncClient(timeout=15) as client:
+            res = await client.get(url)
+            if res.status_code == 200:
+                data = res.json()
+                temp = data['current_condition'][0]['temp_C']
+                wind = data['current_condition'][0]['windspeedKmph']
+                return f"🌡 دما: {temp}°C | 💨 باد: {wind} km/h (جایگزین)"
+    except: pass
+    return "⚠️ اطلاعات هوا در دسترس نیست."
 
 JOCKEY_TIERS = {'S': ['رحمانی', 'قهرمانی', 'نوروزی'], 'A': ['وحدانی', 'مرادی', 'صوفیان', 'خواجوی'],
                 'B': ['آقاجانی', 'حیدری', 'نصیری', 'مسعودی'], 'C': ['احمدی', 'رضایی']}
@@ -294,17 +307,35 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         except: pass
 
         clicked = False
-        for text in [f"R {r_num}", f"R{r_num}", str(r_num)]:
+        possible_texts = [f"R {r_num}", f"R{r_num}", f"دور {r_num}", str(r_num)]
+        for text in possible_texts:
             try:
-                await p.get_by_text(text, exact=True).first.click(timeout=4000, force=True)
-                clicked = True; break
+                elem = p.locator(f"text={text}").first
+                if await elem.is_visible():
+                    await elem.click(timeout=5000, force=True)
+                    clicked = True
+                    break
             except: pass
-        if not clicked: return "NO_DATA"
 
-        await p.wait_for_timeout(10000)
+        if not clicked: 
+            print(f"Round {r_num} button not found.")
+            return "NO_DATA"
+
+        await p.wait_for_timeout(8000)
         table_text = await p.locator('body').inner_text()
         
-        if not table_text or ("اسب" not in table_text and "وزن" not in table_text):
+        # --- بخش دیباگ برای بررسی مشکل شما ---
+        if "اسب" not in table_text and "وزن" not in table_text:
+            try:
+                # ارسال عکس صفحه برای اینکه ببینید ربات چه می‌بیند
+                await p.screenshot(path=f"debug_round_{r_num}.png")
+                with open(f"debug_round_{r_num}.png", "rb") as photo:
+                    await c.bot.send_photo(chat_id=chat_id, photo=photo, caption=f"⚠️ ربات صفحه دور {r_num} را اینگونه می‌بیند. جدول پیدا نشد.")
+                # ارسال متن خام
+                snippet = table_text[:400].replace('\n', ' | ')
+                await c.bot.send_message(chat_id, f"🔍 متنی که ربات خوانده:\n<code>{snippet}</code>", parse_mode='HTML')
+            except Exception as e:
+                print("Debug Error:", e)
             return "NOT_UPLOADED"
 
         pattern = r'([^\n]{3,25})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}\s*[Kk]g)\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
@@ -317,7 +348,11 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                 horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "w_odd": 50.0}
             except: continue
 
-        if not horses or len(horses) < 2: return "NO_DATA"
+        # اگر Regex نتوانست اسبی پیدا کند
+        if not horses:
+            snippet = table_text[:600].replace('\n', ' | ')
+            await c.bot.send_message(chat_id, f"⚠️ جدول لود شد اما Regex نتوانست اطلاعات را بخواند (دور {r_num}).\nمتن:\n<code>{snippet}</code>", parse_mode='HTML')
+            return "NO_DATA"
 
         try:
             await p.get_by_text("دورهای", exact=False).first.click(timeout=3000, force=True)
@@ -409,8 +444,11 @@ async def process_quinellas(chat_id, c, variant_type):
 
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
-            context = await browser.new_context()
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-blink-features=AutomationControlled'])
+            context = await browser.new_context(
+                viewport={'width': 1440, 'height': 900},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
@@ -490,8 +528,11 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
-            context = await browser.new_context(viewport={'width': 1440, 'height': 900})
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-blink-features=AutomationControlled'])
+            context = await browser.new_context(
+                viewport={'width': 1440, 'height': 900},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
@@ -552,8 +593,10 @@ async def process_multileg(chat_id, c, leg_type, bet_amount=None):
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
-            context = await browser.new_context()
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-blink-features=AutomationControlled'])
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
@@ -603,8 +646,10 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
-            context = await browser.new_context()
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-blink-features=AutomationControlled'])
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
@@ -638,8 +683,11 @@ async def process_value_bets(chat_id, c, bet_amount=None):
     browser = None
     try:
         async with ap() as p:
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
-            context = await browser.new_context(viewport={'width': 1440, 'height': 900})
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-blink-features=AutomationControlled'])
+            context = await browser.new_context(
+                viewport={'width': 1440, 'height': 900},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
@@ -964,6 +1012,11 @@ async def main():
     asyncio.create_task(clean_cache())
     await app.initialize(); await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
+    
+    # اگر روی سرور اختصاصی (VPS) اجرا می‌کنید، این خط را از کامنت درآورید تا ربات هرگز خاموش نشود:
+    # await asyncio.Event().wait() 
+    
+    # برای گیت‌هاب اکشنز (که ربات بعد از حدود 5 ساعت باید خاموش شود):
     await asyncio.sleep(17400)
     await app.updater.stop(); await app.stop(); await app.shutdown()
 
