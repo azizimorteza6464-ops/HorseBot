@@ -250,7 +250,8 @@ async def cmd_admin_panel(chat_id, c):
     keyboard.append([InlineKeyboardButton("🔄 بروزرسانی لیست", callback_data='admin_refresh')])
 
 now = datetime.now()
-    if not users_dict:keyboard.append([InlineKeyboardButton("لیست خالی است", callback_data='ignore')])
+    if not users_dict:
+        keyboard.append([InlineKeyboardButton("لیست خالی است", callback_data='ignore')])
     else:
         for uid, exp_str in users_dict.items():
             display_name = "ناشناس"
