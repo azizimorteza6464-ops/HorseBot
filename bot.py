@@ -284,16 +284,27 @@ async def ar(p, r_num, c, chat_id, save_history=True):
             except: pass
         
         # 2. زمان بیشتر برای لود کامل جدول
-        await p.wait_for_timeout(5000)
+        await p.wait_for_timeout(8000)
         
-        # 3. استخراج بسیار منعطف (بدون فیلترهای سخت‌گیرانه)
+        # 3. استخراج بسیار منعطف (فیلتر کردن تگ‌های CSS و Script)
         js_extract = """() => {
             let items = [];
-            // گرفتن تمام المان‌های متنی و اینپوت‌ها
-            document.querySelectorAll('*').forEach(el => {
+            // تگ‌هایی که نباید خوانده شوند (کدهای CSS و JS)
+            const ignoreTags = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'PATH', 'HEAD', 'META', 'LINK', 'IFRAME', 'TITLE'];
+            
+            document.querySelectorAll('body *').forEach(el => {
+                // اگر تگ در لیست سیاه بود، رد شو
+                if (ignoreTags.includes(el.tagName.toUpperCase())) return;
+                
+                // بررسی اینکه آیا المان واقعا روی صفحه دیده می‌شود یا نه (مخفی نباشد)
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
+
                 if (el.children.length === 0 && el.innerText && el.innerText.trim().length > 0) {
                     const rect = el.getBoundingClientRect();
-                    items.push({ val: el.innerText.trim(), x: rect.x, y: rect.y });
+                    if (rect.width > 0 && rect.height > 0) {
+                        items.push({ val: el.innerText.trim(), x: rect.x, y: rect.y });
+                    }
                 }
                 if (el.tagName === 'INPUT' && el.value) {
                     const rect = el.getBoundingClientRect();
