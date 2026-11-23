@@ -263,7 +263,7 @@ async def prepare_page(pg):
     except: pass
 
 # ============================================================
-# Core Analysis with Cache (UPDATED)
+# Core Analysis with Cache (UPDATED FOR ROBUST EXTRACTION)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -283,56 +283,44 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                     break
             except: pass
         
-        await p.wait_for_timeout(3000)
+        # 2. زمان بیشتر برای لود کامل جدول
+        await p.wait_for_timeout(5000)
         
-        # 2. استخراج داده‌های جدول با جاوا اسکریپت (روش مختصات گرافیکی برای خواندن Input ها)
+        # 3. استخراج بسیار منعطف (بدون فیلترهای سخت‌گیرانه)
         js_extract = """() => {
             let items = [];
-            // گرفتن تمام متن‌های صفحه
-            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-            let node;
-            while (node = walker.nextNode()) {
-                let text = node.nodeValue.trim();
-                if (text && text.length < 50) {
-                    const el = node.parentElement;
-                    if (el && el.tagName !== 'SCRIPT' && el.tagName !== 'STYLE') {
-                        const rect = el.getBoundingClientRect();
-                        if (rect.width > 0 && rect.height > 0) {
-                            items.push({ val: text, x: rect.x, y: rect.y });
-                        }
-                    }
+            // گرفتن تمام المان‌های متنی و اینپوت‌ها
+            document.querySelectorAll('*').forEach(el => {
+                if (el.children.length === 0 && el.innerText && el.innerText.trim().length > 0) {
+                    const rect = el.getBoundingClientRect();
+                    items.push({ val: el.innerText.trim(), x: rect.x, y: rect.y });
                 }
-            }
-            // گرفتن مقادیر داخل فیلدهای Input (شماره اسب ها و ضرایب)
-            document.querySelectorAll('input').forEach(inp => {
-                if (inp.value && inp.value.trim().length < 20) {
-                    const rect = inp.getBoundingClientRect();
-                    if (rect.width > 0 && rect.height > 0) {
-                        items.push({ val: inp.value.trim(), x: rect.x, y: rect.y });
-                    }
+                if (el.tagName === 'INPUT' && el.value) {
+                    const rect = el.getBoundingClientRect();
+                    items.push({ val: el.value.trim(), x: rect.x, y: rect.y });
                 }
             });
-
-            // مرتب‌سازی بر اساس محور Y (ردیف‌ها) و سپس X (ستون‌ها)
+            
+            // مرتب‌سازی بر اساس Y (ردیف) و سپس X (ستون)
             items.sort((a, b) => a.y - b.y || a.x - b.x);
             
             let rows = [];
             items.forEach(item => {
-                // اگر متن در همان ارتفاع (Y) ردیف قبلی بود، به همان ردیف اضافه شود
-                let foundRow = rows.find(r => Math.abs(r.y - item.y) < 10);
+                // تلورانس 15 پیکسل برای اینکه کلمات هم‌سطح در یک ردیف قرار بگیرند
+                let foundRow = rows.find(r => Math.abs(r.y - item.y) < 15);
                 if (foundRow) {
                     foundRow.items.push(item);
                 } else {
                     rows.push({ y: item.y, items: [item] });
                 }
             });
-
+            
             let res = '';
             rows.forEach(row => {
                 row.items.sort((a, b) => a.x - b.x);
                 let rowData = row.items.map(i => i.val);
-                // فیلتر کردن ردیف‌های واقعی اسب‌ها (باید حداقل ۴ ستون و یک عدد ۱ یا ۲ رقمی داشته باشند)
-                if (rowData.length >= 4 && rowData.some(v => /^\\d{1,2}$/.test(v))) {
+                // فقط ردیف‌هایی که حداقل ۲ کلمه دارند (برای حذف نویزهای تک‌کلمه‌ای)
+                if (rowData.length >= 2) {
                     res += rowData.join(' | ') + '\\n';
                 }
             });
@@ -341,21 +329,26 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         
         table_text = await p.evaluate(js_extract)
         
-        # اگر جدول خالی بود، از متن صفحه استفاده کن (فقط برای دیباگ)
+        # فال‌بک در صورت خالی بودن
         if not table_text.strip():
             table_text = await p.locator('body').inner_text()
+            await c.bot.send_message(chat_id, "⚠️ از روش پشتیبان (متن ساده) استفاده شد.", parse_mode='HTML')
 
-        # 3. پارس کردن متن (بسیار انعطاف‌پذیرتر)
+        # 4. پارس کردن متن
         for line in table_text.split('\n'):
+            # نادیده گرفتن منوها و هدرهای سایت
+            if any(kw in line for kw in ['جدول مسابقات', 'مالی', 'پخش زنده', 'گزارش', 'اسبدوانی', 'دوره‌ای']):
+                continue
+                
             if '|' in line:
                 parts = [x.strip() for x in line.split('|')]
-                if len(parts) < 3: continue
+                if len(parts) < 2: continue
                 
                 name = ""
                 num = 0
                 ior = 0
                 
-                # پیدا کردن شماره اسب (اولین عدد ۱ تا ۲ رقمی)
+                # پیدا کردن شماره اسب (اولین عدد ۱ یا ۲ رقمی)
                 for p_val in parts:
                     if p_val.isdigit() and len(p_val) <= 2 and num == 0:
                         num = int(p_val)
@@ -367,7 +360,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                         name = p_val
                         break
                         
-                # پیدا کردن ضریب (معمولا عددی بزرگتر از ۱ در انتهای سطر)
+                # پیدا کردن ضریب (آخرین عدد اعشاری بزرگتر از ۱)
                 for p_val in reversed(parts):
                     if p_val.replace('.', '', 1).isdigit():
                         val = float(p_val)
@@ -378,7 +371,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                 if name and num:
                     horses[num] = {"n": name, "num": num, "ior": ior or 10.0, "j": "ناشناس", "perf": "0", "w_odd": ior or 10.0}
         
-        # اگر هیچ اسبی پیدا نشد، متن استخراج شده را برای دیباگ می‌فرستیم
+        # اگر هیچ اسبی پیدا نشد، متن را برای دیباگ بفرست
         if not horses:
             debug_text = table_text[:3000]
             await c.bot.send_message(chat_id, f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nمتن استخراج شده:\n\n<pre>{debug_text}</pre>", parse_mode='HTML')
@@ -391,6 +384,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
 
     if not horses or len(horses) < 2: return "NO_DATA"
 
+    # --- ادامه محاسبات ریاضی ---
     horse_list = list(horses.values())
     n = len(horse_list)
     iors = [h['ior'] for h in horse_list]
@@ -467,17 +461,15 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
             
-            # 🌟 عکس‌برداری دیباگ اول
             await pg.screenshot(path="debug_start.png")
             with open("debug_start.png", "rb") as f:
-                await c.bot.send_photo(chat_id, photo=f, caption="📸 عکس دیباگ: بعد از ورود به سایت (قبل از انتخاب شهر)")
+                await c.bot.send_photo(chat_id, photo=f, caption="📸 عکس دیباگ: بعد از ورود به سایت")
 
             await prepare_page(pg)
 
-            # 🌟 عکس‌برداری دیباگ دوم
             await pg.screenshot(path="debug_prepared.png")
             with open("debug_prepared.png", "rb") as f:
-                await c.bot.send_photo(chat_id, photo=f, caption="📸 عکس دیباگ: بعد از انتخاب شهر (قبل از کلیک روی دورها)")
+                await c.bot.send_photo(chat_id, photo=f, caption="📸 عکس دیباگ: بعد از انتخاب شهر")
 
             rp = f"🏇 <b>تحلیل جامع</b>\n{weather}\n" + (f"💰 سرمایه: <code>{bet_amount:,}</code> ت\n" if bet_amount else "") + "➖➖➖➖➖➖➖➖\n"
             rounds = range(1, 8) if all_rounds else ([specific_round] if specific_round else [])
@@ -962,26 +954,5 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.0 با دوقلوهای هوشمند</b>\nهمچنین تمام تحلیل‌ها با سرمایه شما (Kelly) محاسبه می‌شوند."
-    await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
-
-async def main():
-    app = AB().token(T).build()
-    app.add_handler(CH('start', cmd_start))
-    app.add_handler(CH('approve', cmd_approve))
-    app.add_handler(CH('remove', cmd_remove))
-    app.add_handler(CH('broadcast', cmd_broadcast)) 
-    app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_inputs))
-    asyncio.create_task(check_expirations(app.bot))
-    await app.initialize(); await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
-    await asyncio.sleep(17400)
-    await app.updater.stop(); await app.stop(); await app.shutdown()
-
-if __name__ == "__main__":
-    try: asyncio.run(main())
-    except Exception as e:
-        print(f"CRITICAL ERROR: {e}")
-        sys.exit(1)
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.1 با استخراج هوشمند جدول</b>\nهمچنین تمام تحلیل‌ها با سرمایه شما (Kelly) محاسبه می‌شوند."
+    await c.bot.send_message(u.effective_chat.id, welcome
