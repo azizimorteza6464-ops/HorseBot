@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import json
+import html
 import time
 import asyncio
 from datetime import datetime, timedelta, date
@@ -393,78 +394,148 @@ async def prepare_page(page):
 
 
 async def ar(page, round_num, context, chat_id, save_history=True):
+    """خواندن جدول دور با چند روش؛ نبودن عبارت Kg به‌تنهایی خطای آپلود نیست."""
     cache_key = f"{date.today().isoformat()}_{round_num}"
     cached = AR_CACHE.get(cache_key)
     if cached and time.time() - cached[0] < CACHE_TTL:
         return cached[1]
 
+    def norm_digits(value):
+        trans = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+        return str(value).translate(trans)
+
+    def clean_lines(value):
+        value = norm_digits(value).replace("\u200c", " ").replace("\xa0", " ")
+        return [re.sub(r"\s+", " ", x).strip() for x in value.splitlines() if x.strip()]
+
     horses = {}
     try:
-        for label in ["جدول مسابقات", "نمایش دورها"]:
+        # رفتن به جدول مسابقات؛ در صورت نبودن دکمه‌ها نیز ادامه می‌دهیم.
+        for label in ["جدول مسابقات", "نمایش دورها", "دورهای"]:
             try:
-                await page.get_by_text(label, exact=False).first.click(timeout=3000, force=True)
+                await page.get_by_text(label, exact=False).first.click(timeout=2500, force=True)
+                await page.wait_for_timeout(700)
             except Exception:
                 pass
+
         clicked = False
-        for label in [f"R {round_num}", f"R{round_num}", str(round_num)]:
+        for label in [f"R {round_num}", f"R{round_num}", f"دور {round_num}", str(round_num)]:
             try:
-                await page.get_by_text(label, exact=True).first.click(timeout=3500, force=True)
+                await page.get_by_text(label, exact=True).first.click(timeout=2500, force=True)
                 clicked = True
                 break
             except Exception:
-                pass
+                continue
         if not clicked:
+            print(f"[RACE DEBUG] R{round_num}: round selector not found")
             return "NO_DATA"
 
-        await page.wait_for_timeout(5000)
-        table_text = await page.locator("body").inner_text()
-        if "Kg" not in table_text:
-            return "NOT_UPLOADED"
+        await page.wait_for_timeout(4500)
+        # ابتدا متن جدول‌های HTML و سپس متن کل صفحه را جمع می‌کنیم.
+        table_parts = []
+        try:
+            rows = await page.locator("table tr").all_inner_texts()
+            if rows:
+                table_parts.extend(rows)
+        except Exception:
+            pass
+        try:
+            table_text = await page.locator("body").inner_text(timeout=10000)
+        except Exception:
+            table_text = ""
+        lines = clean_lines("\n".join(table_parts) + "\n" + table_text)
+        joined = "\n".join(lines)
 
-        pattern = r'([^\n]{3,30})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}Kg)\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
-        for match in re.finditer(pattern, table_text):
-            name = match.group(1).strip()
-            if any(word in name for word in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک"]):
+        # پشتیبانی از قالب‌های Kg / kg / کیلوگرم و ارقام فارسی.
+        weight_re = re.compile(r"(?<!\d)(\d{2,3})\s*(?:kg|KG|Kg|کیلوگرم|کیلو)(?!\w)", re.I)
+        # روش اول: سطرهای جدولی؛ هر ردیف معمولاً شماره، نام، وزن، IOR، عملکرد و سوارکار دارد.
+        try:
+            row_texts = await page.locator("table tr").all_inner_texts()
+        except Exception:
+            row_texts = []
+        for row in row_texts:
+            row = norm_digits(row).replace("\u200c", " ")
+            row_lines = [re.sub(r"\s+", " ", z).strip() for z in re.split(r"\s{2,}|\n", row) if z.strip()]
+            if not row_lines:
+                row_lines = row.split()
+            m_weight = weight_re.search(row)
+            if not m_weight:
                 continue
-            try:
-                num = int(match.group(2))
-                ior = int(match.group(4))
-                perf = match.group(5).strip()
-                jockey = match.group(6).strip()
-                horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf, "w_odd": 50.0}
-            except Exception:
+            before = row[:m_weight.start()].strip()
+            after = row[m_weight.end():].strip()
+            nums = re.findall(r"\d+", before)
+            if not nums:
                 continue
+            num = int(nums[-1])
+            if not 1 <= num <= 30:
+                continue
+            name = re.sub(r"\b\d+\b", " ", before).strip(" -|:")
+            tail_nums = re.findall(r"\d+", after)
+            if not name or not tail_nums:
+                continue
+            ior = int(tail_nums[0])
+            perf_match = re.search(r"(?:\d+\s*[-–/]\s*)+\d+", after)
+            perf = perf_match.group(0).replace("–", "-").replace("/", "-") if perf_match else ""
+            jockey = after.split()[-1] if after.split() else "نامشخص"
+            horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf, "w_odd": 50.0}
+
+        # روش دوم: متن صفحه، وقتی سایت جدول HTML استاندارد ندارد.
+        if len(horses) < 2:
+            for idx, line in enumerate(lines):
+                mw = weight_re.search(line)
+                if not mw:
+                    continue
+                before = line[:mw.start()].strip()
+                after = line[mw.end():].strip()
+                # شماره اسب ممکن است در همان خط یا خط قبل باشد.
+                num_match = re.search(r"(?:^|\s)(\d{1,2})\s*$", before)
+                if not num_match and idx > 0:
+                    num_match = re.search(r"(?:^|\s)(\d{1,2})\s*$", lines[idx-1])
+                    name = before or (lines[idx-2] if idx > 1 else "")
+                else:
+                    name = before[:num_match.start()].strip() if num_match else ""
+                if not num_match:
+                    continue
+                num = int(num_match.group(1))
+                if not 1 <= num <= 30:
+                    continue
+                tail_nums = re.findall(r"\d+", after)
+                if not tail_nums:
+                    continue
+                ior = int(tail_nums[0])
+                perf_match = re.search(r"(?:\d+\s*[-–/]\s*)+\d+", after)
+                perf = perf_match.group(0).replace("–", "-").replace("/", "-") if perf_match else ""
+                jockey = after.split()[-1] if after.split() else "نامشخص"
+                name = re.sub(r"\s+", " ", name).strip(" -|:")
+                if name and not any(x in name for x in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "جدول"]):
+                    horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf, "w_odd": 50.0}
 
         if len(horses) < 2:
-            return "NO_DATA"
-
-        # تلاش برای خواندن ضرایب بازار
-        try:
+            print(f"[RACE DEBUG] R{round_num}: parsed {len(horses)} horses; page text follows:\n{joined[:7000]}")
+            # گزارش تشخیصی برای مدیر ربات؛ توکن و کوکی در پیام قرار نمی‌گیرد.
             try:
-                await page.get_by_text("دورهای", exact=False).first.click(timeout=2500, force=True)
+                excerpt = joined[:3000] or "متن صفحه خالی است"
+                await context.bot.send_message(MY_ID, f"⚠️ خطای خواندن جدول دور {round_num}\nاسب استخراج‌شده: {len(horses)}\nمتن قابل مشاهده سایت:\n<pre>{html.escape(excerpt)}</pre>", parse_mode="HTML")
             except Exception:
                 pass
-            await page.wait_for_timeout(1200)
-            for label in [f"R {round_num}", str(round_num)]:
-                try:
-                    await page.get_by_text(label, exact=True).first.click(timeout=2500, force=True)
-                    break
-                except Exception:
-                    pass
-            await page.wait_for_timeout(2000)
-            odds_text = await page.locator("body").inner_text()
-            odds_pattern = r'([^\n]+)\n(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)'
-            for match in re.finditer(odds_pattern, odds_text):
+            return "NOT_UPLOADED"
+
+        # تلاش برای خواندن ضرایب؛ اگر پیدا نشد، مقدار پیش‌فرض 50 باقی می‌ماند.
+        try:
+            odds_text = joined
+            odds_pattern = re.compile(r"([^\n]{2,80})\s*\n\s*(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)")
+            for match in odds_pattern.finditer(odds_text):
                 name = match.group(1).strip()
                 odd = float(match.group(2))
                 for horse in horses.values():
                     if name in horse["n"] or horse["n"] in name:
                         horse["w_odd"] = odd
                         break
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[ODDS DEBUG] R{round_num}: {exc}")
+
     except Exception as exc:
-        print(f"Scraping error R{round_num}: {exc}")
+        print(f"Scraping error R{round_num}: {type(exc).__name__}: {exc}")
         return "ERROR"
 
     horse_list = list(horses.values())
@@ -507,19 +578,13 @@ async def ar(page, round_num, context, chat_id, save_history=True):
     third = sorted_horses[2] if len(sorted_horses) > 2 else second
     q_prob = quinella_prob(probs, 0, 1)
     q_fair = round(1 / q_prob, 2) if q_prob > 0 else 0
-    result = {
-        "w": win, "p": second, "s": third, "horses": sorted_horses,
-        "q": f"{win['num']}-{win['n']} + {second['num']}-{second['n']}",
-        "q_fair": q_fair,
-    }
+    result = {"w": win, "p": second, "s": third, "horses": sorted_horses,
+              "q": f"{win['num']}-{win['n']} + {second['num']}-{second['n']}", "q_fair": q_fair}
     result["conf"] = get_confidence_level(result)
     long_shots = [h for h in sorted_horses if h["w_odd"] >= 12]
     top_long = sorted(long_shots, key=lambda h: h["model_prob"], reverse=True) if long_shots else sorted_horses[-2:]
     result["su"] = top_long[0] if top_long else sorted_horses[-1]
-    result["qs"] = (
-        f"{top_long[0]['num']}-{top_long[0]['n']} + {top_long[1]['num']}-{top_long[1]['n']}"
-        if len(top_long) >= 2 else "N/A"
-    )
+    result["qs"] = (f"{top_long[0]['num']}-{top_long[0]['n']} + {top_long[1]['num']}-{top_long[1]['n']}" if len(top_long) >= 2 else "N/A")
     if save_history:
         await save_to_history(result, round_num)
     AR_CACHE[cache_key] = (time.time(), result)
