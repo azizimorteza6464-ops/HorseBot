@@ -287,14 +287,15 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         await p.wait_for_timeout(6000)
         table_text = await p.locator('body').inner_text()
         
-        # 🌟 دیباگ: اگر kg نبود، اسکرین‌شات بگیر
-        if "kg" not in table_text.lower():
+        # 🌟 اصلاح دیباگ: بررسی هدرهای جدول به جای کلمه kg
+        if "وزن" not in table_text and "اسب" not in table_text and "عملکرد" not in table_text:
             await p.screenshot(path="debug.png")
             with open("debug.png", "rb") as f:
                 await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nربات نتوانست جدول را ببیند. لطفاً این عکس را برای پشتیبانی بفرستید.", parse_mode='HTML')
             return "NOT_UPLOADED"
 
-        pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}\s*[Kk]g)\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
+        # 🌟 اصلاح Regex: حذف k.g از الگوی جستجو
+        pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3})\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
         for m in re.finditer(pattern, table_text):
             name = m.group(1).strip()
             if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک"]): continue
