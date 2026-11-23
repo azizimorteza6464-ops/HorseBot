@@ -1,5 +1,5 @@
 import os, re, httpx, sys, asyncio, json, time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import (
     ApplicationBuilder as AB, ContextTypes as C,
@@ -300,12 +300,13 @@ async def prepare_page(pg):
     except: pass
 
 # ============================================================
-# Core Analysis with Cache
+# Core Analysis with Cache & Logic Fixed
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
-    # بررسی کش
-    if r_num in AR_CACHE:
-        ts, cached_res = AR_CACHE[r_num]
+    # 🟢 اصلاح باگ کش: اضافه کردن تاریخ به کلید کش
+    cache_key = f"{date.today().isoformat()}_{r_num}"
+    if cache_key in AR_CACHE:
+        ts, cached_res = AR_CACHE[cache_key]
         if time.time() - ts < CACHE_TTL:
             return cached_res
 
@@ -321,27 +322,32 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         clicked = False
         for text in [f"R {r_num}", f"R{r_num}", str(r_num)]:
             try:
-                await p.get_by_text(text, exact=True).first.click(timeout=3000, force=True)
+                await p.get_by_text(text, exact=True).first.click(timeout=4000, force=True)
                 clicked = True; break
             except: pass
         if not clicked: return "NO_DATA"
 
-        await p.wait_for_timeout(4000)
+        # 🟢 افزایش زمان انتظار برای لود کامل جدول
+        await p.wait_for_timeout(6000)
         table_text = await p.locator('body').inner_text()
         
-        has_table = "Kg" in table_text
-        has_race_keywords = any(kw in table_text for kw in ["دور", "اسب", "مسابقه", "سوارکار"])
-        has_upload_warning = any(kw in table_text for kw in ["آپلود نشده", "در دسترس نیست", "مسابقه‌ای وجود ندارد"])
-        if not has_table or not has_race_keywords or has_upload_warning:
+        # 🟢 حذف شرط‌های مزاحم متنی که باعث خطای آپلود نشده می‌شدند
+        # فقط اگر کلمه Kg وجود نداشت، یعنی جدول لود نشده است
+        if "Kg" not in table_text:
             return "NOT_UPLOADED"
 
         pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}Kg)\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
         for m in re.finditer(pattern, table_text):
             name = m.group(1).strip()
             if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک"]): continue
-            num = int(m.group(2)); ior = int(m.group(4))
-            perf_str = m.group(5); jockey = m.group(6).strip()
-            horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "w_odd": 50.0}
+            try:
+                num = int(m.group(2)); ior = int(m.group(4))
+                perf_str = m.group(5); jockey = m.group(6).strip()
+                horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "w_odd": 50.0}
+            except:
+                continue
+
+        if not horses or len(horses) < 2: return "NO_DATA"
 
         try:
             await p.get_by_text("دورهای", exact=False).first.click(timeout=3000, force=True)
@@ -358,7 +364,9 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                     if name in h['n'] or h['n'] in name:
                         horses[num]['w_odd'] = w_odd; break
         except: pass
-    except Exception: return "ERROR"
+    except Exception as e: 
+        print(f"Error in scraping: {e}")
+        return "ERROR"
 
     if not horses or len(horses) < 2: return "NO_DATA"
 
@@ -419,8 +427,8 @@ async def ar(p, r_num, c, chat_id, save_history=True):
 
     if save_history: await save_to_history(res_dict, r_num)
     
-    # ذخیره در کش
-    AR_CACHE[r_num] = (time.time(), res_dict)
+    # 🟢 ذخیره در کش با کلید جدید (تاریخ + دور)
+    AR_CACHE[cache_key] = (time.time(), res_dict)
     return res_dict
 
 # ============================================================
@@ -755,8 +763,15 @@ async def add_vip_days(target_id, days):
 # ============================================================
 # Background Reminder, Expiration Warning & Handlers
 # ============================================================
+async def clean_cache():
+    while True:
+        await asyncio.sleep(3600) # هر ساعت یکبار کش‌های قدیمی پاک شوند
+        now = time.time()
+        keys_to_delete = [k for k, v in AR_CACHE.items() if now - v[0] > CACHE_TTL]
+        for k in keys_to_delete:
+            del AR_CACHE[k]
+
 async def check_expirations(bot):
-    # اجرای اول با تاخیر، سپس هر ۲۴ ساعت یکبار
     await asyncio.sleep(3600) # ۱ ساعت بعد از روشن شدن ربات
     while True:
         try:
@@ -1005,11 +1020,11 @@ async def cmd_broadcast(u: Update, c: C):
         try:
             await c.bot.send_message(int(uid), msg, parse_mode='HTML')
             success += 1
-            await asyncio.sleep(0.1) # جلوگیری از بلاک شدن توسط تلگرام
+            await asyncio.sleep(0.1) 
         except:
             fail += 1
             
-    await status_msg.edit_text(f"✅ ارسال به پایان رسید.\n\nموفق: {success}\nناموفق (ربات را بلاک کرده‌اند): {fail}")
+    await status_msg.edit_text(f"✅ ارسال به پایان رسید.\n\nموفق: {success}\nناموفق: {fail}")
 
 async def cmd_start(u: Update, c: C):
     chat_id = str(u.effective_chat.id)
@@ -1068,13 +1083,14 @@ async def main():
     app.add_handler(CH('start', cmd_start))
     app.add_handler(CH('approve', cmd_approve))
     app.add_handler(CH('remove', cmd_remove))
-    app.add_handler(CH('broadcast', cmd_broadcast)) # دکمه ارسال همگانی
+    app.add_handler(CH('broadcast', cmd_broadcast))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_inputs))
     
-    # اجرای تسک هشدار انقضا در پس‌زمینه
+    # اجرای تسک‌های پس‌زمینه
     asyncio.create_task(check_expirations(app.bot))
+    asyncio.create_task(clean_cache()) # پاکسازی خودکار کش
     
     await app.initialize(); await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
