@@ -955,4 +955,31 @@ async def cmd_start(u: Update, c: C):
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
         welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.1 با استخراج هوشمند جدول</b>\nهمچنین تمام تحلیل‌ها با سرمایه شما (Kelly) محاسبه می‌شوند."
-    await c.bot.send_message(u.effective_chat.id, welcome
+    
+    await c.bot.send_message(
+        chat_id=u.effective_chat.id, 
+        text=welcome_msg, 
+        reply_markup=get_main_menu(chat_id), 
+        parse_mode='HTML'
+    )
+
+async def main():
+    app = AB().token(T).build()
+    app.add_handler(CH('start', cmd_start))
+    app.add_handler(CH('approve', cmd_approve))
+    app.add_handler(CH('remove', cmd_remove))
+    app.add_handler(CH('broadcast', cmd_broadcast)) 
+    app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_inputs))
+    asyncio.create_task(check_expirations(app.bot))
+    await app.initialize(); await app.start()
+    await app.updater.start_polling(drop_pending_updates=True)
+    await asyncio.sleep(17400)
+    await app.updater.stop(); await app.stop(); await app.shutdown()
+
+if __name__ == "__main__":
+    try: asyncio.run(main())
+    except Exception as e:
+        print(f"CRITICAL ERROR: {e}")
+        sys.exit(1)
