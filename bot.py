@@ -263,7 +263,7 @@ async def prepare_page(pg):
     except: pass
 
 # ============================================================
-# Core Analysis with Cache
+# Core Analysis with Cache (UPDATED)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -285,25 +285,55 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         
         await p.wait_for_timeout(3000)
         
-        # 2. استخراج داده‌های جدول با جاوا اسکریپت (سطری، نه ستونی)
+        # 2. استخراج داده‌های جدول با جاوا اسکریپت (روش مختصات گرافیکی برای خواندن Input ها)
         js_extract = """() => {
-            let res = '';
-            const rows = document.querySelectorAll('tr, [role="row"], .v-data-table__tr');
-            rows.forEach(r => {
-                const cells = r.querySelectorAll('td, th, [role="cell"], [role="gridcell"], .v-data-table__td');
-                if (cells.length > 2) {
-                    let rowData = [];
-                    cells.forEach(c => {
-                        let text = c.innerText.trim();
-                        if (!text) {
-                            const inp = c.querySelector('input');
-                            if (inp) text = inp.value;
+            let items = [];
+            // گرفتن تمام متن‌های صفحه
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+            let node;
+            while (node = walker.nextNode()) {
+                let text = node.nodeValue.trim();
+                if (text && text.length < 50) {
+                    const el = node.parentElement;
+                    if (el && el.tagName !== 'SCRIPT' && el.tagName !== 'STYLE') {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                            items.push({ val: text, x: rect.x, y: rect.y });
                         }
-                        rowData.push(text);
-                    });
-                    if (rowData.join('').replace(/\\s/g, '').length > 0) {
-                        res += rowData.join(' | ') + '\\n';
                     }
+                }
+            }
+            // گرفتن مقادیر داخل فیلدهای Input (شماره اسب ها و ضرایب)
+            document.querySelectorAll('input').forEach(inp => {
+                if (inp.value && inp.value.trim().length < 20) {
+                    const rect = inp.getBoundingClientRect();
+                    if (rect.width > 0 && rect.height > 0) {
+                        items.push({ val: inp.value.trim(), x: rect.x, y: rect.y });
+                    }
+                }
+            });
+
+            // مرتب‌سازی بر اساس محور Y (ردیف‌ها) و سپس X (ستون‌ها)
+            items.sort((a, b) => a.y - b.y || a.x - b.x);
+            
+            let rows = [];
+            items.forEach(item => {
+                // اگر متن در همان ارتفاع (Y) ردیف قبلی بود، به همان ردیف اضافه شود
+                let foundRow = rows.find(r => Math.abs(r.y - item.y) < 10);
+                if (foundRow) {
+                    foundRow.items.push(item);
+                } else {
+                    rows.push({ y: item.y, items: [item] });
+                }
+            });
+
+            let res = '';
+            rows.forEach(row => {
+                row.items.sort((a, b) => a.x - b.x);
+                let rowData = row.items.map(i => i.val);
+                // فیلتر کردن ردیف‌های واقعی اسب‌ها (باید حداقل ۴ ستون و یک عدد ۱ یا ۲ رقمی داشته باشند)
+                if (rowData.length >= 4 && rowData.some(v => /^\\d{1,2}$/.test(v))) {
+                    res += rowData.join(' | ') + '\\n';
                 }
             });
             return res;
@@ -311,30 +341,42 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         
         table_text = await p.evaluate(js_extract)
         
-        # اگر جدول خالی بود، از روش قبلی استفاده کن
+        # اگر جدول خالی بود، از متن صفحه استفاده کن (فقط برای دیباگ)
         if not table_text.strip():
             table_text = await p.locator('body').inner_text()
 
-        # 3. پارس کردن متن (حالا با جداکننده |)
+        # 3. پارس کردن متن (بسیار انعطاف‌پذیرتر)
         for line in table_text.split('\n'):
             if '|' in line:
                 parts = [x.strip() for x in line.split('|')]
-                if len(parts) < 4: continue
+                if len(parts) < 3: continue
                 
                 name = ""
                 num = 0
                 ior = 0
                 
+                # پیدا کردن شماره اسب (اولین عدد ۱ تا ۲ رقمی)
                 for p_val in parts:
                     if p_val.isdigit() and len(p_val) <= 2 and num == 0:
                         num = int(p_val)
-                    elif p_val.isdigit() and 50 < int(p_val) < 120: 
-                        ior = int(p_val)
-                    elif len(p_val) > 2 and not p_val.isdigit() and not name:
+                        break
+                
+                # پیدا کردن نام اسب (اولین متن با طول بیشتر از ۲)
+                for p_val in parts:
+                    if len(p_val) > 2 and not p_val.replace('.','',1).isdigit() and not name:
                         name = p_val
+                        break
                         
+                # پیدا کردن ضریب (معمولا عددی بزرگتر از ۱ در انتهای سطر)
+                for p_val in reversed(parts):
+                    if p_val.replace('.', '', 1).isdigit():
+                        val = float(p_val)
+                        if 1.0 <= val <= 999.0:
+                            ior = val
+                            break
+                            
                 if name and num:
-                    horses[num] = {"n": name, "num": num, "ior": ior, "j": "ناشناس", "perf": "0", "w_odd": 50.0}
+                    horses[num] = {"n": name, "num": num, "ior": ior or 10.0, "j": "ناشناس", "perf": "0", "w_odd": ior or 10.0}
         
         # اگر هیچ اسبی پیدا نشد، متن استخراج شده را برای دیباگ می‌فرستیم
         if not horses:
