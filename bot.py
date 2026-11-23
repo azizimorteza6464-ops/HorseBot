@@ -263,7 +263,7 @@ async def prepare_page(pg):
     except: pass
 
 # ============================================================
-# Core Analysis with Cache (UPDATED FOR ROBUST EXTRACTION)
+# ✅ Core Analysis (REWRITTEN FOR ROBUST TABLE EXTRACTION)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -280,112 +280,105 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                 if await loc.is_visible():
                     await loc.click(timeout=2000, force=True)
                     clicked = True
+                    await p.wait_for_timeout(2500) # زمان برای باز شدن مودال یا تغییر صفحه
                     break
             except: pass
         
         # 2. زمان بیشتر برای لود کامل جدول
-        await p.wait_for_timeout(8000)
+        await p.wait_for_timeout(4000)
         
-        # 3. استخراج بسیار منعطف (فیلتر کردن تگ‌های CSS و Script)
+        # 3. استخراج فوق‌هوشمند (تارگت کردن جدول + خواندن Input ها)
         js_extract = """() => {
-            let items = [];
-            // تگ‌هایی که نباید خوانده شوند (کدهای CSS و JS)
-            const ignoreTags = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'PATH', 'HEAD', 'META', 'LINK', 'IFRAME', 'TITLE'];
-            
-            document.querySelectorAll('body *').forEach(el => {
-                // اگر تگ در لیست سیاه بود، رد شو
-                if (ignoreTags.includes(el.tagName.toUpperCase())) return;
-                
-                // بررسی اینکه آیا المان واقعا روی صفحه دیده می‌شود یا نه (مخفی نباشد)
-                const style = window.getComputedStyle(el);
-                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
+            function getText(el) {
+                let text = el.innerText ? el.innerText.trim() : '';
+                if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+                    text = el.value || '';
+                }
+                const inputs = el.querySelectorAll('input');
+                if (inputs.length > 0) {
+                    let inVals = Array.from(inputs).map(i => i.value).filter(v => v).join(' ');
+                    if (inVals) text = text ? text + ' ' + inVals : inVals;
+                }
+                return text;
+            }
 
-                if (el.children.length === 0 && el.innerText && el.innerText.trim().length > 0) {
-                    const rect = el.getBoundingClientRect();
-                    if (rect.width > 0 && rect.height > 0) {
-                        items.push({ val: el.innerText.trim(), x: rect.x, y: rect.y });
-                    }
-                }
-                if (el.tagName === 'INPUT' && el.value) {
-                    const rect = el.getBoundingClientRect();
-                    items.push({ val: el.value.trim(), x: rect.x, y: rect.y });
-                }
-            });
-            
-            // مرتب‌سازی بر اساس Y (ردیف) و سپس X (ستون)
-            items.sort((a, b) => a.y - b.y || a.x - b.x);
-            
-            let rows = [];
-            items.forEach(item => {
-                // تلورانس 15 پیکسل برای اینکه کلمات هم‌سطح در یک ردیف قرار بگیرند
-                let foundRow = rows.find(r => Math.abs(r.y - item.y) < 15);
-                if (foundRow) {
-                    foundRow.items.push(item);
-                } else {
-                    rows.push({ y: item.y, items: [item] });
-                }
-            });
-            
-            let res = '';
-            rows.forEach(row => {
-                row.items.sort((a, b) => a.x - b.x);
-                let rowData = row.items.map(i => i.val);
-                // فقط ردیف‌هایی که حداقل ۲ کلمه دارند (برای حذف نویزهای تک‌کلمه‌ای)
-                if (rowData.length >= 2) {
-                    res += rowData.join(' | ') + '\\n';
-                }
-            });
-            return res;
+            // تلاش اول: پیدا کردن جدول واقعی
+            let tables = document.querySelectorAll('table');
+            if (tables.length > 0) {
+                let res = "";
+                tables.forEach(t => {
+                    t.querySelectorAll('tr').forEach(tr => {
+                        let cells = Array.from(tr.querySelectorAll('td, th')).map(getText).filter(c => c);
+                        if (cells.length > 0) res += cells.join(' | ') + '\\n';
+                    });
+                });
+                if (res.trim()) return res;
+            }
+
+            // فال‌بک: اگر جدول استاندارد نبود، متن کل صفحه را بده (innerText خودکار CSS/JS را حذف می‌کند)
+            return document.body.innerText;
         }"""
         
         table_text = await p.evaluate(js_extract)
         
-        # فال‌بک در صورت خالی بودن
-        if not table_text.strip():
-            table_text = await p.locator('body').inner_text()
-            await c.bot.send_message(chat_id, "⚠️ از روش پشتیبان (متن ساده) استفاده شد.", parse_mode='HTML')
-
-        # 4. پارس کردن متن
+        # 4. پارس کردن متن (با فیلتر کردن هوشمند)
         for line in table_text.split('\n'):
             # نادیده گرفتن منوها و هدرهای سایت
-            if any(kw in line for kw in ['جدول مسابقات', 'مالی', 'پخش زنده', 'گزارش', 'اسبدوانی', 'دوره‌ای']):
+            if any(kw in line for kw in ['جدول مسابقات', 'مالی', 'پخش زنده', 'گزارش', 'اسبدوانی', 'دوره‌ای', 'نظر سنجی', 'حراجی']):
                 continue
                 
             if '|' in line:
-                parts = [x.strip() for x in line.split('|')]
-                if len(parts) < 2: continue
+                parts = [x.strip() for x in line.split('|') if x.strip()]
+                if len(parts) < 3: continue # یک ردیف داده معتبر حداقل ۳ ستون دارد
                 
-                name = ""
+                # فیلتر حیاتی: اگر خط هیچ عدد یا ضریبی ندارد، احتمالا صفحه ماتریسی (ردیف اسم‌ها) است و نباید خوانده شود
+                has_num = any(re.match(r'^\d{1,2}$', p_val) for p_val in parts)
+                has_float = any(re.match(r'^\d+(\.\d+)?$', p_val) for p_val in parts)
+                
+                if not has_num or not has_float:
+                    continue # رد کردن خطوط منو، هدر، و اسم‌های بدون ضریب
+                
                 num = 0
+                name = ""
                 ior = 0
                 
-                # پیدا کردن شماره اسب (اولین عدد ۱ یا ۲ رقمی)
+                # پیدا کردن شماره اسب
                 for p_val in parts:
-                    if p_val.isdigit() and len(p_val) <= 2 and num == 0:
+                    if re.match(r'^\d{1,2}$', p_val) and num == 0:
                         num = int(p_val)
                         break
                 
-                # پیدا کردن نام اسب (اولین متن با طول بیشتر از ۲)
+                # پیدا کردن نام اسب (نادیده گرفتن هدرها)
                 for p_val in parts:
-                    if len(p_val) > 2 and not p_val.replace('.','',1).isdigit() and not name:
-                        name = p_val
-                        break
-                        
-                # پیدا کردن ضریب (آخرین عدد اعشاری بزرگتر از ۱)
+                    if len(p_val) > 2 and not re.match(r'^[\d\.]+$', p_val):
+                        if p_val not in ['نام اسب', 'اسب', 'شماره', 'جیگه', 'کاپیتان', 'H', 'R 1', 'R 2', 'R 3', 'R 4', 'R 5', 'R 6', 'R 7', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7']:
+                            name = p_val
+                            break
+                            
+                # پیدا کردن ضریب
                 for p_val in reversed(parts):
-                    if p_val.replace('.', '', 1).isdigit():
+                    if re.match(r'^\d+(\.\d+)?$', p_val):
                         val = float(p_val)
                         if 1.0 <= val <= 999.0:
                             ior = val
                             break
                             
-                if name and num:
+                if name:
+                    if num == 0: num = len(horses) + 1 # اگر شماره نبود، خودکار بده
                     horses[num] = {"n": name, "num": num, "ior": ior or 10.0, "j": "ناشناس", "perf": "0", "w_odd": ior or 10.0}
         
-        # اگر هیچ اسبی پیدا نشد، متن را برای دیباگ بفرست
+        # اگر هیچ اسبی پیدا نشد، متن و فایل HTML را برای دیباگ بفرست
         if not horses:
-            debug_text = table_text[:3000]
+            debug_text = table_text[:3500]
             await c.bot.send_message(chat_id, f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nمتن استخراج شده:\n\n<pre>{debug_text}</pre>", parse_mode='HTML')
+            
+            # ذخیره و ارسال HTML برای دیباگ دقیق
+            html_content = await p.content()
+            with open("debug_table.html", "w", encoding="utf-8") as f:
+                f.write(html_content)
+            with open("debug_table.html", "rb") as f:
+                await c.bot.send_document(chat_id, document=f, caption="🔍 فایل HTML دیباگ (این را برای پشتیبانی بفرستید تا کد را دقیق تنظیم کنیم).")
+            
             return "NOT_UPLOADED"
 
     except Exception as e: 
@@ -530,6 +523,9 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
         await c.bot.send_message(chat_id, f"❌ خطا:\n<code>{str(e)}</code>", parse_mode='HTML')
     finally:
         if browser: await browser.close()
+
+# [بقیه توابع (process_quinellas, process_multileg, ...) بدون تغییر هستند]
+# (جهت جلوگیری از طولانی شدن، فقط تا اینجا را جایگزین کنید. بقیه کد شما دست‌نخورده باقی می‌ماند)
 
 async def process_quinellas(chat_id, c, variant_type):
     await c.bot.send_message(chat_id, "⏳ <b>در حال محاسبه دوقلوهای هوشمند...</b>", parse_mode='HTML')
@@ -965,7 +961,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.1 با استخراج هوشمند جدول</b>\nهمچنین تمام تحلیل‌ها با سرمایه شما (Kelly) محاسبه می‌شوند."
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.2 با استخراج هوشمند جدول</b>\nهمچنین تمام تحلیل‌ها با سرمایه شما (Kelly) محاسبه می‌شوند."
     
     await c.bot.send_message(
         chat_id=u.effective_chat.id, 
