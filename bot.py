@@ -250,16 +250,16 @@ async def cmd_admin_panel(chat_id, c):
 
 async def prepare_page(pg):
     try:
-        await pg.wait_for_timeout(3000)
+        await pg.wait_for_timeout(2000)
         dropdown = pg.get_by_text("انتخاب فصل مسابقات", exact=False).first
         if await dropdown.is_visible():
             await dropdown.click(timeout=5000, force=True)
-            await pg.wait_for_timeout(2000)
+            await pg.wait_for_timeout(1500)
             try:
                 await pg.get_by_text("یزد", exact=False).last.click(timeout=3000)
             except:
                 await pg.locator("ul li, .v-list-item, .dropdown-item, [role='option']").first.click()
-            await pg.wait_for_timeout(4000)
+            await pg.wait_for_timeout(3000)
     except: pass
 
 # ============================================================
@@ -272,36 +272,46 @@ async def ar(p, r_num, c, chat_id, save_history=True):
 
     horses = {}
     try:
-        try: await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=5000, force=True)
-        except: pass
-        await p.wait_for_timeout(3000)
-
+        # تلاش برای کلیک روی تب دور
         clicked = False
-        for text in [f"R {r_num}", f"R{r_num}", str(r_num)]:
+        for text in [f"دور {r_num}", f"دور{r_num}", f"R {r_num}", f"R{r_num}", str(r_num)]:
             try:
-                await p.get_by_text(text, exact=True).first.click(timeout=3000, force=True)
+                await p.get_by_text(text, exact=True).first.click(timeout=2000, force=True)
                 clicked = True; break
             except: pass
-        if not clicked: return "NO_DATA"
-
-        await p.wait_for_timeout(6000)
+        
+        # زمان انتظار کمتر برای افزایش سرعت
+        await p.wait_for_timeout(2500)
         table_text = await p.locator('body').inner_text()
         
-        # 🌟 اصلاح دیباگ: بررسی هدرهای جدول به جای کلمه kg
-        if "وزن" not in table_text and "اسب" not in table_text and "عملکرد" not in table_text:
-            await p.screenshot(path="debug.png")
-            with open("debug.png", "rb") as f:
-                await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nربات نتوانست جدول را ببیند. لطفاً این عکس را برای پشتیبانی بفرستید.", parse_mode='HTML')
+        # الگوی ۱: نام -> شماره -> وزن
+        pattern1 = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3})\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
+        matches1 = list(re.finditer(pattern1, table_text))
+        
+        # الگوی ۲: شماره -> نام -> وزن
+        pattern2 = r'(\d{1,2})\s+([^\n]{3,25})\s+(\d{2,3})'
+        matches2 = list(re.finditer(pattern2, table_text))
+
+        if matches1:
+            for m in matches1:
+                name = m.group(1).strip()
+                if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک"]): continue
+                num = int(m.group(2)); ior = int(m.group(4))
+                perf_str = m.group(5); jockey = m.group(6).strip()
+                horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "w_odd": 50.0}
+        elif matches2:
+            for m in matches2:
+                num = int(m.group(1))
+                name = m.group(2).strip()
+                if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک"]): continue
+                horses[num] = {"n": name, "num": num, "ior": 0, "j": "ناشناس", "perf": "0", "w_odd": 50.0}
+        
+        # اگر هیچ اسبی پیدا نشد، متن خام را برای دیباگ می‌فرستیم
+        if not horses:
+            debug_text = table_text[:3000]
+            await c.bot.send_message(chat_id, f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nربات نتوانست داده‌ها را استخراج کند. متن خام صفحه در زیر آمده است تا پشتیبانی بررسی کند:\n\n<pre>{debug_text}</pre>", parse_mode='HTML')
             return "NOT_UPLOADED"
 
-        # 🌟 اصلاح Regex: حذف k.g از الگوی جستجو
-        pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3})\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
-        for m in re.finditer(pattern, table_text):
-            name = m.group(1).strip()
-            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک"]): continue
-            num = int(m.group(2)); ior = int(m.group(4))
-            perf_str = m.group(5); jockey = m.group(6).strip()
-            horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "w_odd": 50.0}
     except Exception as e: 
         print(f"Error in ar: {e}")
         return "ERROR"
@@ -384,14 +394,14 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
             
-            # 🌟 عکس‌برداری دیباگ اول: بعد از ورود به سایت
+            # 🌟 عکس‌برداری دیباگ اول
             await pg.screenshot(path="debug_start.png")
             with open("debug_start.png", "rb") as f:
                 await c.bot.send_photo(chat_id, photo=f, caption="📸 عکس دیباگ: بعد از ورود به سایت (قبل از انتخاب شهر)")
 
             await prepare_page(pg)
 
-            # 🌟 عکس‌برداری دیباگ دوم: بعد از انتخاب شهر
+            # 🌟 عکس‌برداری دیباگ دوم
             await pg.screenshot(path="debug_prepared.png")
             with open("debug_prepared.png", "rb") as f:
                 await c.bot.send_photo(chat_id, photo=f, caption="📸 عکس دیباگ: بعد از انتخاب شهر (قبل از کلیک روی دورها)")
@@ -453,7 +463,7 @@ async def process_quinellas(chat_id, c, variant_type):
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
-            await pg.wait_for_timeout(5000)
+            await pg.wait_for_timeout(4000)
             if "ورود" in await pg.locator('body').inner_text():
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
@@ -523,7 +533,7 @@ async def process_multileg(chat_id, c, leg_type, bet_amount=None):
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
-            await pg.wait_for_timeout(5000)
+            await pg.wait_for_timeout(4000)
             if "ورود" in await pg.locator('body').inner_text():
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
@@ -572,7 +582,7 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
-            await pg.wait_for_timeout(5000)
+            await pg.wait_for_timeout(4000)
             if "ورود" in await pg.locator('body').inner_text():
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
@@ -607,7 +617,7 @@ async def process_value_bets(chat_id, c, bet_amount=None):
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
-            await pg.wait_for_timeout(5000)
+            await pg.wait_for_timeout(4000)
             if "ورود" in await pg.locator('body').inner_text():
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
