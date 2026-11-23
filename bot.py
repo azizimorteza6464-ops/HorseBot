@@ -273,47 +273,39 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     horses = {}
     try:
         # تلاش برای کلیک روی تب دور
-        clicked = False
-        for text in [f"دور {r_num}", f"دور{r_num}", f"R {r_num}", f"R{r_num}", str(r_num)]:
+        for text in [f"R {r_num}", f"R{r_num}", str(r_num), f"دور {r_num}"]:
             try:
-                await p.get_by_text(text, exact=True).first.click(timeout=2000, force=True)
-                clicked = True; break
+                loc = p.get_by_text(text, exact=True).first
+                if await loc.is_visible():
+                    await loc.click(timeout=2000, force=True)
+                    break
             except: pass
         
-        # زمان انتظار کمتر برای افزایش سرعت
-        await p.wait_for_timeout(2500)
+        # زمان انتظار برای لود جدول
+        await p.wait_for_timeout(3000)
         table_text = await p.locator('body').inner_text()
         
-        # الگوی ۱: نام -> شماره -> وزن
-        pattern1 = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3})\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
-        matches1 = list(re.finditer(pattern1, table_text))
-        
-        # الگوی ۲: شماره -> نام -> وزن
-        pattern2 = r'(\d{1,2})\s+([^\n]{3,25})\s+(\d{2,3})'
-        matches2 = list(re.finditer(pattern2, table_text))
+        # الگوی منعطف‌تر برای پیدا کردن اسب‌ها
+        pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3})\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
+        matches = list(re.finditer(pattern, table_text))
 
-        if matches1:
-            for m in matches1:
+        if matches:
+            for m in matches:
                 name = m.group(1).strip()
-                if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک"]): continue
+                if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "R ", "دور"]): continue
                 num = int(m.group(2)); ior = int(m.group(4))
                 perf_str = m.group(5); jockey = m.group(6).strip()
                 horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "w_odd": 50.0}
-        elif matches2:
-            for m in matches2:
-                num = int(m.group(1))
-                name = m.group(2).strip()
-                if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک"]): continue
-                horses[num] = {"n": name, "num": num, "ior": 0, "j": "ناشناس", "perf": "0", "w_odd": 50.0}
         
         # اگر هیچ اسبی پیدا نشد، متن خام را برای دیباگ می‌فرستیم
         if not horses:
             debug_text = table_text[:3000]
-            await c.bot.send_message(chat_id, f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nربات نتوانست داده‌ها را استخراج کند. متن خام صفحه در زیر آمده است تا پشتیبانی بررسی کند:\n\n<pre>{debug_text}</pre>", parse_mode='HTML')
+            await c.bot.send_message(chat_id, f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nربات نتوانست داده‌ها را استخراج کند. متن خام صفحه در زیر آمده است:\n\n<pre>{debug_text}</pre>", parse_mode='HTML')
             return "NOT_UPLOADED"
 
     except Exception as e: 
         print(f"Error in ar: {e}")
+        await c.bot.send_message(chat_id, f"🚨 <b>خطای داخلی در تحلیل دور {r_num}</b>\n<code>{str(e)}</code>", parse_mode='HTML')
         return "ERROR"
 
     if not horses or len(horses) < 2: return "NO_DATA"
@@ -412,35 +404,41 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
             found_any = False
             
             for r in rounds:
-                res = await ar(pg, r, c, chat_id, save_history=save_h)
-                if isinstance(res, dict):
-                    found_any = True
-                    w = res['w']
-                    rp += f"\n🏁 <b>دور R{r}</b>\n"
-                    rp += f"🥇 <b>پیش‌بر:</b> {w['num']}-{w['n']} (ضریب {w['w_odd']})\n"
-                    rp += f"   📊 مدل: {w['model_prob']:.1f}% | بازار: {w['market_prob']:.1f}% | Edge: {w['edge']:+.1f}%\n"
-                    rp += f"🥈 <b>میان‌بر:</b> {res['p']['num']}-{res['p']['n']}\n"
-                    rp += f"👥 <b>دوقلو (امن):</b> {res['q']} → منصفانه <code>{res['q_fair']}</code>\n"
-                    rp += f"🎯 <b>اطمینان:</b> {res['conf']}\n"
-                    
-                    if bet_amount and specific_round and r == specific_round:
-                        rp += f"\n💰 <b>مدیریت سرمایه</b>\n"
-                        k_win = calculate_kelly(bet_amount, w['model_prob'], w['w_odd'], fraction=FRACTIONS['win'])
-                        if k_win > 0: rp += f"🥇 برد {w['n']}: <code>{k_win:,}</code> ت\n"
-                        w_place_odd = round((w['w_odd'] - 1) / 4 + 1, 2)
-                        k_place = calculate_kelly(bet_amount, w['place_prob'], w_place_odd, fraction=FRACTIONS['place'], confidence=0.60)
-                        if k_place > 0: rp += f"🥈 جایگاه {w['n']}: <code>{k_place:,}</code> ت\n"
-                        k_q = calculate_kelly(bet_amount, 100/res['q_fair'], res['q_fair'], fraction=FRACTIONS['quinella'], confidence=0.45)
-                        if k_q > 0: rp += f"👥 دوقلو امن: <code>{k_q:,}</code> ت\n"
-                    
-                    if specific_round:
-                        rp += "\n📈 <b>سه اسب برتر (Place):</b>\n"
-                        for h in res['horses'][:3]:
-                            rp += f"  {h['num']}-{h['n']}: برد {h['model_prob']:.1f}% | جایگاه {h['place_prob']:.1f}% (منصفانه {h['place_fair_odd']})\n"
-                    rp += "➖➖➖➖➖➖➖➖\n"
+                try:
+                    res = await ar(pg, r, c, chat_id, save_history=save_h)
+                    if isinstance(res, dict):
+                        found_any = True
+                        w = res['w']
+                        rp += f"\n🏁 <b>دور R{r}</b>\n"
+                        rp += f"🥇 <b>پیش‌بر:</b> {w['num']}-{w['n']} (ضریب {w['w_odd']})\n"
+                        rp += f"   📊 مدل: {w['model_prob']:.1f}% | بازار: {w['market_prob']:.1f}% | Edge: {w['edge']:+.1f}%\n"
+                        rp += f"🥈 <b>میان‌بر:</b> {res['p']['num']}-{res['p']['n']}\n"
+                        rp += f"👥 <b>دوقلو (امن):</b> {res['q']} → منصفانه <code>{res['q_fair']}</code>\n"
+                        rp += f"🎯 <b>اطمینان:</b> {res['conf']}\n"
+                        
+                        if bet_amount and specific_round and r == specific_round:
+                            rp += f"\n💰 <b>مدیریت سرمایه</b>\n"
+                            k_win = calculate_kelly(bet_amount, w['model_prob'], w['w_odd'], fraction=FRACTIONS['win'])
+                            if k_win > 0: rp += f"🥇 برد {w['n']}: <code>{k_win:,}</code> ت\n"
+                            w_place_odd = round((w['w_odd'] - 1) / 4 + 1, 2)
+                            k_place = calculate_kelly(bet_amount, w['place_prob'], w_place_odd, fraction=FRACTIONS['place'], confidence=0.60)
+                            if k_place > 0: rp += f"🥈 جایگاه {w['n']}: <code>{k_place:,}</code> ت\n"
+                            k_q = calculate_kelly(bet_amount, 100/res['q_fair'], res['q_fair'], fraction=FRACTIONS['quinella'], confidence=0.45)
+                            if k_q > 0: rp += f"👥 دوقلو امن: <code>{k_q:,}</code> ت\n"
+                        
+                        if specific_round:
+                            rp += "\n📈 <b>سه اسب برتر (Place):</b>\n"
+                            for h in res['horses'][:3]:
+                                rp += f"  {h['num']}-{h['n']}: برد {h['model_prob']:.1f}% | جایگاه {h['place_prob']:.1f}% (منصفانه {h['place_fair_odd']})\n"
+                        rp += "➖➖➖➖➖➖➖➖\n"
+                    else:
+                        # اضافه کردن دلیل خطا به پیام
+                        rp += f"\n⚠️ <b>دور R{r}:</b> {res}\n"
+                except Exception as e:
+                    rp += f"\n🚨 <b>خطا در دور R{r}:</b> {str(e)}\n"
                     
             if not found_any:
-                rp += "\n⚠️ <b>جدول مسابقات هنوز آپلود نشده است.</b>\n📅 معمولاً ۲۴ ساعت قبل از شروع قرار می‌گیرد."
+                rp += "\n⚠️ <b>جدول مسابقات هنوز آپلود نشده است یا ساختار سایت تغییر کرده است.</b>\n📅 معمولاً ۲۴ ساعت قبل از شروع قرار می‌گیرد."
                 await send_long_message(c, chat_id, rp)
                 markup = InlineKeyboardMarkup([[InlineKeyboardButton("⏰ یادآوری خودکار", callback_data=f"rem_set_{specific_round or 1}")]])
                 await c.bot.send_message(chat_id, "می‌خواهید ربات چه زمانی دوباره چک کند؟", reply_markup=markup)
@@ -449,6 +447,10 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
         await c.bot.send_message(chat_id, f"❌ خطا:\n<code>{str(e)}</code>", parse_mode='HTML')
     finally:
         if browser: await browser.close()
+
+# بقیه توابع (process_quinellas, process_multileg, و...) بدون تغییر باقی می‌مانند
+# برای جلوگیری از طولانی شدن پاسخ، فقط بخش‌های تغییر یافته را قرار دادم.
+# لطفاً کد زیر را به طور کامل جایگزین کد خود کنید.
 
 async def process_quinellas(chat_id, c, variant_type):
     await c.bot.send_message(chat_id, "⏳ <b>در حال محاسبه دوقلوهای هوشمند...</b>", parse_mode='HTML')
