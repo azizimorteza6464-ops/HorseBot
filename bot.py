@@ -21,8 +21,8 @@ MY_ID = "184149177"
 # ============================================================
 CARD_NUMBER = "6219-8618-0229-0089"
 CARD_HOLDER = "مرتضی عزیزی"
-SUB_PRICE = "250,000"                 # <--- قیمت اشتراک به تومان
-REF_REWARD_DAYS = 3                   # <--- تعداد روز هدیه برای دعوت از دوستان
+SUB_PRICE = "250,000"                 
+REF_REWARD_DAYS = 3                   
 # ============================================================
 
 # ============================================================
@@ -32,7 +32,7 @@ _last_call = {}
 COOLDOWN = 60
 
 AR_CACHE = {}
-CACHE_TTL = 600 # 10 دقیقه کش برای جلوگیری از کندی ربات
+CACHE_TTL = 0 # 🌟 موقتا صفر شد تا مشکل کش حل شود
 
 # ============================================================
 # GitHub Variables & Auth
@@ -284,19 +284,20 @@ async def cmd_admin_panel(chat_id, c):
 
 async def prepare_page(pg):
     try:
-        await pg.wait_for_timeout(2000)
+        await pg.wait_for_timeout(3000) # افزایش زمان انتظار
         dropdown = pg.get_by_text("انتخاب فصل مسابقات", exact=False).first
         if await dropdown.is_visible():
             await dropdown.click(timeout=5000, force=True)
             await pg.wait_for_timeout(2000)
-            first_option = pg.locator("ul li, .v-list-item, .dropdown-item, [role='option']").first
+            
+            # 🌟 تلاش برای انتخاب یزد
             try:
-                await first_option.wait_for(state="visible", timeout=3000)
-                await first_option.click()
-                await pg.wait_for_timeout(3000)
+                await pg.get_by_text("یزد", exact=False).last.click(timeout=3000)
             except:
-                await pg.keyboard.press("Enter")
-                await pg.wait_for_timeout(3000)
+                # اگر پیدا نشد، گزینه اول
+                await pg.locator("ul li, .v-list-item, .dropdown-item, [role='option']").first.click()
+                
+            await pg.wait_for_timeout(3000)
     except: pass
 
 # ============================================================
@@ -326,16 +327,17 @@ async def ar(p, r_num, c, chat_id, save_history=True):
             except: pass
         if not clicked: return "NO_DATA"
 
-        await p.wait_for_timeout(4000)
+        await p.wait_for_timeout(5000) # 🌟 افزایش زمان انتظار
         table_text = await p.locator('body').inner_text()
         
-        has_table = "Kg" in table_text
-        has_race_keywords = any(kw in table_text for kw in ["دور", "اسب", "مسابقه", "سوارکار"])
-        has_upload_warning = any(kw in table_text for kw in ["آپلود نشده", "در دسترس نیست", "مسابقه‌ای وجود ندارد"])
-        if not has_table or not has_race_keywords or has_upload_warning:
+        # 🌟 بررسی غیرحساس به حروف و حذف کلمات مزاحم
+        if "kg" not in table_text.lower():
+            print("==== DEBUG: NO KG FOUND ====")
+            print(table_text[:1000])
             return "NOT_UPLOADED"
 
-        pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}Kg)\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
+        # 🌟 Regex اصلاح شده برای خواندن راحت‌تر وزن (با یا بدون فاصله)
+        pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}\s*[Kk]g)\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
         for m in re.finditer(pattern, table_text):
             name = m.group(1).strip()
             if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک"]): continue
@@ -756,8 +758,7 @@ async def add_vip_days(target_id, days):
 # Background Reminder, Expiration Warning & Handlers
 # ============================================================
 async def check_expirations(bot):
-    # اجرای اول با تاخیر، سپس هر ۲۴ ساعت یکبار
-    await asyncio.sleep(3600) # ۱ ساعت بعد از روشن شدن ربات
+    await asyncio.sleep(3600)
     while True:
         try:
             users = await get_allowed_users_dict()
@@ -772,7 +773,7 @@ async def check_expirations(bot):
                         except: pass
                 except: pass
         except: pass
-        await asyncio.sleep(86400) # ۲۴ ساعت
+        await asyncio.sleep(86400)
 
 async def run_reminder(chat_id, c, r_num, delay_minutes):
     await asyncio.sleep(delay_minutes * 60)
@@ -1005,7 +1006,7 @@ async def cmd_broadcast(u: Update, c: C):
         try:
             await c.bot.send_message(int(uid), msg, parse_mode='HTML')
             success += 1
-            await asyncio.sleep(0.1) # جلوگیری از بلاک شدن توسط تلگرام
+            await asyncio.sleep(0.1) 
         except:
             fail += 1
             
@@ -1068,17 +1069,16 @@ async def main():
     app.add_handler(CH('start', cmd_start))
     app.add_handler(CH('approve', cmd_approve))
     app.add_handler(CH('remove', cmd_remove))
-    app.add_handler(CH('broadcast', cmd_broadcast)) # دکمه ارسال همگانی
+    app.add_handler(CH('broadcast', cmd_broadcast)) 
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_inputs))
     
-    # اجرای تسک هشدار انقضا در پس‌زمینه
     asyncio.create_task(check_expirations(app.bot))
     
     await app.initialize(); await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-    await asyncio.sleep(17400) # 5 ساعت
+    await asyncio.sleep(17400)
     await app.updater.stop(); await app.stop(); await app.shutdown()
 
 if __name__ == "__main__":
