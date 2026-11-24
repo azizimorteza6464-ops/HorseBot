@@ -53,8 +53,7 @@ async def set_github_var(var_name, val):
 
 async def get_allowed_users_dict():
     users_str = await get_github_var("ALLOWED_USERS", "{}")
-    try:
-        return json.loads(users_str)
+    try: return json.loads(users_str)
     except:
         users_dict = {}
         if users_str and ("," in users_str or users_str.isdigit()):
@@ -237,34 +236,17 @@ async def cmd_admin_panel(chat_id, c):
     async def prepare_page(pg):
     try:
         await pg.wait_for_timeout(3000)
-        try:
-            dropdown = pg.get_by_text("انتخاب فصل مسابقات", exact=False).first
-            if await dropdown.is_visible(timeout=3000):
-                await dropdown.click(timeout=3000, force=True)
-                await pg.wait_for_timeout(1500)
+        dropdown = pg.get_by_text("انتخاب فصل مسابقات", exact=False).first
+        if await dropdown.is_visible():
+            await dropdown.click(timeout=5000, force=True)
+            await pg.wait_for_timeout(1500)
+            try:
                 await pg.get_by_text("یزد", exact=False).last.click(timeout=3000)
-                await pg.wait_for_timeout(4000)
-                return
-        except: pass
-        
-        try:
-            selects = pg.locator("select, .dropdown, [role='combobox']")
-            count = await selects.count()
-            for i in range(count):
-                sel = selects.nth(i)
-                try:
-                    txt = await sel.inner_text(timeout=1000)
-                    if "یزد" in txt or "فصل" in txt:
-                        await sel.click(timeout=2000, force=True)
-                        await pg.wait_for_timeout(1000)
-                        await pg.get_by_text("یزد", exact=False).last.click(timeout=3000)
-                        await pg.wait_for_timeout(4000)
-                        return
-                except: pass
-        except: pass
-        await pg.wait_for_timeout(3000)
+            except:
+                await pg.locator("ul li, .v-list-item, .dropdown-item, [role='option']").first.click()
+            await pg.wait_for_timeout(3000)
     except Exception as e:
-        print(f"خطای کلی prepare_page: {e}")
+        print(f"Prepare page error: {e}")
 
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -378,7 +360,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         return "ERROR"
 
     if not horses or len(horses) < 2: return "NO_DATA"
-
     horse_list = list(horses.values())
     n = len(horse_list)
     iors = [h['ior'] for h in horse_list]
@@ -470,7 +451,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                         rp += f"🥈 <b>میان‌بر:</b> {res['p']['num']}-{res['p']['n']}\n"
                         rp += f"👥 <b>دوقلو (امن):</b> {res['q']} → منصفانه <code>{res['q_fair']}</code>\n"
                         rp += f"🎯 <b>اطمینان:</b> {res['conf']}\n"
-                        
                         if bet_amount and specific_round and r == specific_round:
                             rp += f"\n💰 <b>مدیریت سرمایه</b>\n"
                             k_win = calculate_kelly(bet_amount, w['model_prob'], w['w_odd'], fraction=FRACTIONS['win'])
@@ -480,7 +460,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                             if k_place > 0: rp += f"🥈 جایگاه {w['n']}: <code>{k_place:,}</code> ت\n"
                             k_q = calculate_kelly(bet_amount, 100/res['q_fair'], res['q_fair'], fraction=FRACTIONS['quinella'], confidence=0.45)
                             if k_q > 0: rp += f"👥 دوقلو امن: <code>{k_q:,}</code> ت\n"
-                        
                         if specific_round:
                             rp += "\n📈 <b>سه اسب برتر (Place):</b>\n"
                             for h in res['horses'][:3]:
@@ -695,7 +674,8 @@ async def process_value_bets(chat_id, c, bet_amount=None):
         await c.bot.send_message(chat_id, f"❌ خطا: {str(e)}")
     finally:
         if browser: await browser.close()
-            async def cmd_history(chat_id, c):
+
+async def cmd_history(chat_id, c):
     history_str = await get_github_var("BOT_HISTORY", "[]")
     try: history = json.loads(history_str)
     except: history = []
