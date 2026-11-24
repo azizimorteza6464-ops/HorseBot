@@ -248,13 +248,9 @@ async def cmd_admin_panel(chat_id, c):
             ])
     await c.bot.send_message(chat_id, txt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
 
-# ============================================================
-# ✅ prepare_page: انتخاب هوشمند استان یزد با چندین روش
-# ============================================================
 async def prepare_page(pg):
     try:
         await pg.wait_for_timeout(3000)
-        # روش ۱: کلیک روی دراپ‌داون فصل مسابقات
         try:
             dropdown = pg.get_by_text("انتخاب فصل مسابقات", exact=False).first
             if await dropdown.is_visible(timeout=3000):
@@ -262,12 +258,9 @@ async def prepare_page(pg):
                 await pg.wait_for_timeout(1500)
                 await pg.get_by_text("یزد", exact=False).last.click(timeout=3000)
                 await pg.wait_for_timeout(4000)
-                print("✅ استان یزد انتخاب شد (روش ۱)")
                 return
-        except Exception as e:
-            print(f"روش ۱ شکست خورد: {e}")
+        except: pass
         
-        # روش ۲: جستجو در تمام dropdown ها و select ها
         try:
             selects = pg.locator("select, .dropdown, [role='combobox']")
             count = await selects.count()
@@ -280,20 +273,13 @@ async def prepare_page(pg):
                         await pg.wait_for_timeout(1000)
                         await pg.get_by_text("یزد", exact=False).last.click(timeout=3000)
                         await pg.wait_for_timeout(4000)
-                        print(f"✅ استان یزد انتخاب شد (روش ۲ - المان {i})")
                         return
                 except: pass
         except: pass
-        
-        # روش ۳: اگر هیچ‌کدام نشد، حداقل کمی صبر کن
         await pg.wait_for_timeout(3000)
-        print("⚠️ هیچ روشی برای انتخاب استان موفق نشد")
     except Exception as e:
         print(f"خطای کلی prepare_page: {e}")
 
-# ============================================================
-# ✅ Core Analysis (REWRITTEN - ULTRA ROBUST)
-# ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
         ts, cached_res = AR_CACHE[r_num]
@@ -301,7 +287,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
 
     horses = {}
     try:
-        # ۱. کلیک روی تب دور
         for text in [f"R {r_num}", f"R{r_num}", str(r_num), f"دور {r_num}"]:
             try:
                 loc = p.get_by_text(text, exact=True).first
@@ -310,10 +295,8 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                     break
             except: pass
         
-        # ۲. زمان کافی برای لود کامل جدول و ضرایب
         await p.wait_for_timeout(8000)
         
-        # ۳. استخراج فوق‌هوشمند - چند لایه
         js_extract = """() => {
             function getCellText(el) {
                 let text = el.innerText ? el.innerText.trim() : '';
@@ -328,7 +311,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                 return text.replace(/\\s+/g, ' ').trim();
             }
 
-            // روش A: جدول استاندارد
             let tables = document.querySelectorAll('table');
             let result = [];
             tables.forEach(t => {
@@ -339,7 +321,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
             });
             if (result.length > 0) return result.join('\\n');
 
-            // روش B: کارت‌های حاوی اسب
             let cards = document.querySelectorAll('[class*="horse"], [class*="runner"], [class*="card"], [class*="row"]');
             let res2 = [];
             cards.forEach(card => {
@@ -348,13 +329,11 @@ async def ar(p, r_num, c, chat_id, save_history=True):
             });
             if (res2.length > 0) return res2.join('\\n');
 
-            // فال‌بک: متن کل صفحه
             return document.body.innerText;
         }"""
         
         table_text = await p.evaluate(js_extract)
         
-        # ۴. پارس کردن هوشمند
         for line in table_text.split('\n'):
             line = line.strip()
             if not line: continue
@@ -396,16 +375,14 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                     if num == 0: num = len(horses) + 1
                     horses[num] = {"n": name, "num": num, "ior": ior or 10.0, "j": "ناشناس", "perf": "0", "w_odd": ior or 10.0}
         
-        # ۵. اگر هیچ اسبی پیدا نشد، دیباگ کامل ارسال کن
         if not horses:
             print(f"⚠️ جدول دور {r_num} خالی است. ارسال دیباگ...")
             debug_text = table_text[:3000] if table_text else "متن خالی"
             try:
-                await c.bot.send_message(chat_id, f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\n\n<b>متن استخراج شده (۳۰۰۰ کاراکتر اول):</b>\n<pre>{debug_text}</pre>", parse_mode='HTML')
+                await c.bot.send_message(chat_id, f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\n\n<b>متن استخراج شده:</b>\n<pre>{debug_text}</pre>", parse_mode='HTML')
             except:
                 await c.bot.send_message(chat_id, f"🚨 خطا در دور {r_num}")
             
-            # ذخیره عکس و HTML
             try:
                 await p.screenshot(path=f"debug_r{r_num}.png")
                 with open(f"debug_r{r_num}.png", "rb") as f:
@@ -432,7 +409,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
 
     if not horses or len(horses) < 2: return "NO_DATA"
 
-    # --- محاسبات ریاضی ---
     horse_list = list(horses.values())
     n = len(horse_list)
     iors = [h['ior'] for h in horse_list]
@@ -486,9 +462,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     AR_CACHE[r_num] = (time.time(), res_dict)
     return res_dict
 
-# ============================================================
-# Process Odds
-# ============================================================
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
     if await get_github_var("AUTO_UPDATE", "true") == "false" and not is_reminder:
         return await c.bot.send_message(chat_id, "🛑 خاموش است.")
@@ -551,4 +524,23 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     
             if not found_any:
                 rp += "\n⚠️ <b>جدول مسابقات هنوز آپلود نشده است یا ساختار سایت تغییر کرده است.</b>"
-                await send_long_message(c, chat_id,
+                await send_long_message(c, chat_id, rp)
+                markup = InlineKeyboardMarkup([[InlineKeyboardButton("⏰ یادآوری خودکار", callback_data=f"rem_set_{specific_round or 1}")]])
+                await c.bot.send_message(chat_id, "می‌خواهید ربات چه زمانی دوباره چک کند؟", reply_markup=markup)
+            else: await send_long_message(c, chat_id, rp)
+    except Exception as e:
+        await c.bot.send_message(chat_id, f"❌ خطا:\n<code>{str(e)}</code>", parse_mode='HTML')
+    finally:
+        if browser: await browser.close()
+
+async def process_quinellas(chat_id, c, variant_type):
+    await c.bot.send_message(chat_id, "⏳ <b>در حال محاسبه دوقلوهای هوشمند...</b>", parse_mode='HTML')
+    browser = None
+    bet = c.user_data.get('bet_amount')
+    titles = {'q_safe': "🟢 دوقلوی امن (Safe)", 'q_value': "💎 دوقلوی ارزش (Value)", 'q_lucky': "🍀 دوقلوی شانسی (Lucky)"}
+    title = titles[variant_type]
+    try:
+        async with ap() as p:
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
+            context = await browser.new_context()
+            await context.add_cookies([{'name': 'auth
