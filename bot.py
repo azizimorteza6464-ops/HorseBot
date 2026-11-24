@@ -173,8 +173,7 @@ def get_main_menu(chat_id):
         [InlineKeyboardButton("🏁 دور ۷", callback_data='r7'), InlineKeyboardButton("📊 تحلیل کل", callback_data='rall')],
         [InlineKeyboardButton("🟢 دوقلوی امن", callback_data='q_safe'), InlineKeyboardButton("💎 دوقلوی ارزش", callback_data='q_value'), InlineKeyboardButton("🍀 دوقلوی شانسی", callback_data='q_lucky')],
         [InlineKeyboardButton("💎 شکار ارزش", callback_data='value'), InlineKeyboardButton("📜 سابقه تحلیل‌ها", callback_data='history')],
-
-[InlineKeyboardButton("🎯 ۶ پره", callback_data='ml_6'), InlineKeyboardButton("🎯 ۵ پره", callback_data='ml_5')],
+        [InlineKeyboardButton("🎯 ۶ پره", callback_data='ml_6'), InlineKeyboardButton("🎯 ۵ پره", callback_data='ml_5')],
         [InlineKeyboardButton("🎯 ۳ پره اول", callback_data='ml_3a'), InlineKeyboardButton("🎯 ۳ پره دوم", callback_data='ml_3b')],
         [InlineKeyboardButton("🎲 اسب شگفتی", callback_data='sur_h'), InlineKeyboardButton("🔥 دوقلوی شگفتی", callback_data='sur_d')],
         [InlineKeyboardButton("💰 تعیین مبلغ شرط", callback_data='bet_set')],
@@ -240,8 +239,9 @@ async def cmd_admin_panel(chat_id, c):
                 exp_date = datetime.strptime(exp_str, "%Y-%m-%d %H:%M:%S")
                 days_left = (exp_date - now).days
                 user_status = f"({days_left} روز مانده)" if days_left >= 0 else "(منقضی شده)"
-
-except: user_status = "(نامشخص)"
+            except: 
+                user_status = "(نامشخص)"
+            
             keyboard.append([InlineKeyboardButton(f"👤 {display_name} {user_status}", callback_data='ignore')])
             keyboard.append([
                 InlineKeyboardButton("➕ تمدید ۳۰ روز", callback_data=f"adm_ren_{uid}_30"),
@@ -326,7 +326,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         h['combined'] = (0.40 * market_norm + 0.25 * ior_norm + 0.20 * form_norm + 0.10 * jockey_norm + 0.05 * 0.5)
         h['market_prob'] = market_probs[idx] * 100
 
-model_raw = power_probs([h['combined'] for h in horse_list], power=1.8)
+    model_raw = power_probs([h['combined'] for h in horse_list], power=1.8)
     ALPHA = 0.35
     for idx, h in enumerate(horse_list):
         blended = ALPHA * model_raw[idx] + (1 - ALPHA) * market_probs[idx]
@@ -397,7 +397,7 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
             with open("debug_prepared.png", "rb") as f:
                 await c.bot.send_photo(chat_id, photo=f, caption="📸 عکس دیباگ: بعد از انتخاب شهر (قبل از کلیک روی دورها)")
 
-rp = f"🏇 <b>تحلیل جامع</b>\n{weather}\n" + (f"💰 سرمایه: <code>{bet_amount:,}</code> ت\n" if bet_amount else "") + "➖➖➖➖➖➖➖➖\n"
+            rp = f"🏇 <b>تحلیل جامع</b>\n{weather}\n" + (f"💰 سرمایه: <code>{bet_amount:,}</code> ت\n" if bet_amount else "") + "➖➖➖➖➖➖➖➖\n"
             rounds = range(1, 8) if all_rounds else ([specific_round] if specific_round else [])
             save_h = specific_round is not None
             found_any = False
@@ -453,7 +453,7 @@ async def process_quinellas(chat_id, c, variant_type):
             context = await browser.new_context()
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
 
-pg = await context.new_page()
+            pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
             await pg.wait_for_timeout(5000)
             if "ورود" in await pg.locator('body').inner_text():
@@ -573,7 +573,7 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
             context = await browser.new_context()
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
 
-pg = await context.new_page()
+            pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
             await pg.wait_for_timeout(5000)
             if "ورود" in await pg.locator('body').inner_text():
@@ -713,8 +713,7 @@ async def button_callback(u: Update, c: C):
     if data == 'buy_sub':
         txt = f"💳 <b>خرید اشتراک ویژه</b>\n\nبرای دسترسی به تمام امکانات ربات، مبلغ <b>{SUB_PRICE} تومان</b> را به شماره کارت زیر واریز کنید:\n\n💳 <code>{CARD_NUMBER}</code>\n👤 به نام: {CARD_HOLDER}\n\n📸 <b>پس از واریز، عکس رسید پرداخت را همین‌جا ارسال کنید.</b>\nپس از تایید توسط مدیریت، اشتراک شما فعال می‌شود."
         await query.message.reply_text(txt, parse_mode='HTML')
-
-return
+        return
     elif data == 'my_status':
         if await is_premium(chat_id):
             users = await get_allowed_users_dict()
@@ -769,8 +768,7 @@ return
         cur = c.user_data.get('bet_amount', 0)
         await query.message.reply_text(f"💰 <b>سرمایه فعلی:</b> <code>{cur:,}</code> ت\nعدد جدید را بفرست:", parse_mode='HTML', reply_markup=ForceReply(selective=True))
     elif data == 'change_city': await query.message.reply_text("🏙 مسابقه خودکار انتخاب می‌شود.", parse_mode='HTML')
-
-elif data == 'admin_help': 
+    elif data == 'admin_help': 
         if str(chat_id) == MY_ID: await cmd_admin_panel(chat_id, c)
         else: await query.answer("⛔ شما دسترسی ندارید.", show_alert=True)
     elif data.startswith('rem_set_'):
@@ -830,8 +828,7 @@ async def cmd_approve(u: Update, c: C):
 
 async def cmd_remove(u: Update, c: C):
     if str(u.effective_chat.id) != MY_ID: return
-
-try:
+    try:
         parts = u.message.text.split()
         if len(parts) < 2: raise ValueError
         target_id = parts[1].strip()
@@ -898,7 +895,7 @@ async def main():
     await asyncio.sleep(17400)
     await app.updater.stop(); await app.stop(); await app.shutdown()
 
-if name == "main":
+if __name__ == "__main__":
     try: asyncio.run(main())
     except Exception as e:
         print(f"CRITICAL ERROR: {e}")
