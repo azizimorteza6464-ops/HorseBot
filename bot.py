@@ -250,19 +250,29 @@ async def cmd_admin_panel(chat_id, c):
             ])
     await c.bot.send_message(chat_id, txt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
 
+# 🌟 تابع اصلاح‌شده: انتخاب هوشمند اولین شهر موجود در منو (اقلا یا گنبد)
 async def prepare_page(pg):
     try:
-        await pg.wait_for_timeout(3000)
-        dropdown = pg.get_by_text("انتخاب فصل مسابقات", exact=False).first
+        await pg.wait_for_timeout(4000)
+        
+        # پیدا کردن دکمه انتخاب فصل/شهر
+        dropdown = pg.get_by_text("انتخاب فصل", exact=False).first
+        if not await dropdown.is_visible():
+             dropdown = pg.get_by_text("فصل مسابقات", exact=False).first
+             
         if await dropdown.is_visible():
             await dropdown.click(timeout=5000, force=True)
             await pg.wait_for_timeout(2000)
-            try:
-                await pg.get_by_text("یزد", exact=False).last.click(timeout=3000)
-            except:
-                await pg.locator("ul li, .v-list-item, .dropdown-item, [role='option']").first.click()
+            # کلیک روی اولین گزینه (فعال‌ترین مسابقه)
+            options = pg.locator("ul li, .v-list-item, .dropdown-item, [role='option']")
+            if await options.count() > 0:
+                await options.first.click(timeout=5000, force=True)
             await pg.wait_for_timeout(4000)
-    except: pass
+        else:
+            # اگر منو مخفی بود، حداقل صفحه را اسکرول کن
+            await pg.evaluate("window.scrollTo(0, 500)")
+    except Exception as e:
+        print(f"Prepare page error: {e}")
 
 # ============================================================
 # Core Analysis with Cache
@@ -276,35 +286,33 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     try:
         try: await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=5000, force=True)
         except: pass
-        await p.wait_for_timeout(3000)
+        await p.wait_for_timeout(6000) # صبر بیشتر برای لود جدول
 
         clicked = False
-        for text in [f"R {r_num}", f"R{r_num}", str(r_num)]:
+        for text in [f"R {r_num}", f"R{r_num}", f"دور {r_num}", str(r_num)]:
             try:
-                await p.get_by_text(text, exact=True).first.click(timeout=3000, force=True)
+                await p.get_by_text(text, exact=True).first.click(timeout=2000, force=True)
                 clicked = True; break
             except: pass
-        if not clicked: return "NO_DATA"
-
-        await p.wait_for_timeout(6000)
         
-        # گرفتن متن از جدول (اگر تگ table باشد) یا از کل صفحه
-        table_text = ""
-        try:
-            table_loc = p.locator('table')
-            if await table_loc.count() > 0:
-                table_text = await table_loc.first.inner_text()
-            else:
-                table_text = await p.locator('body').inner_text()
-        except:
-            table_text = await p.locator('body').inner_text()
+        await p.wait_for_timeout(4000)
+        
+        await p.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await p.wait_for_timeout(2000)
+        table_text = await p.locator('body').inner_text()
 
-        # 🌟 حذف شرط وجود kg. الگوی جدید حالا kg را اختیاری می‌داند
+        # 🚨 چک کردن خالی نبودن صفحه
+        if len(table_text.strip()) < 100 or ("اسب" not in table_text and "کیلو" not in table_text and "kg" not in table_text.lower()):
+            await p.screenshot(path="debug_blank.png")
+            with open("debug_blank.png", "rb") as f:
+                await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nربات صفحه را سفید/خالی می‌بیند.", parse_mode='HTML')
+            return "NOT_UPLOADED"
+
         pattern = r'([^\n\d]{3,30})\s*\n.*?(\d{1,2})\s+(\d{2,3}(?:\s*[Kk]g)?)\s*\n.*?(\d{1,3})\s*\n.*?([\d\-]+)\s*\n.*?([^\n]+)'
         
         for m in re.finditer(pattern, table_text):
             name = m.group(1).strip()
-            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "مربی", "جیگه", "H"]): continue
+            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "مربی", "جیگه", "H", "دور", "R"]): continue
             num = int(m.group(2)); ior = int(m.group(4))
             perf_str = m.group(5); jockey = m.group(6).strip()
             horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "w_odd": 50.0}
@@ -314,13 +322,12 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         return "ERROR"
 
     if not horses:
-        # اگر ربات اصلا نتوانست داده‌ای پیدا کند، هم عکس و هم متن دیباگ را می‌فرستد
-        await p.screenshot(path="debug.png")
-        with open("debug.png", "rb") as f:
-            await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nربات نتوانست داده‌ها را پارس کند.", parse_mode='HTML')
+        await p.screenshot(path="debug_parse_fail.png")
+        with open("debug_parse_fail.png", "rb") as f:
+            await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در پارس کردن جدول دور {r_num}</b>\nربات جدول را دید ولی نتوانست آن را بخواند.", parse_mode='HTML')
         
-        debug_text = table_text[:2000].replace('<', '&lt;').replace('>', '&gt;')
-        await c.bot.send_message(chat_id, f"<b>متن خوانده شده توسط ربات (برای دیباگ):</b>\n<code>{debug_text}</code>", parse_mode='HTML')
+        debug_text = table_text[:3000].replace('<', '&lt;').replace('>', '&gt;')
+        await c.bot.send_message(chat_id, f"<b>متن خامی که ربات دید (برای دیباگ):</b>\n<code>{debug_text}</code>", parse_mode='HTML')
         return "NOT_UPLOADED"
 
     if len(horses) < 2: return "NO_DATA"
