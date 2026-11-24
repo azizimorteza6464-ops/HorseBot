@@ -31,7 +31,7 @@ REF_REWARD_DAYS = 3
 _last_call = {}
 COOLDOWN = 60
 AR_CACHE = {}
-CACHE_TTL = 0 # غیرفعال کردن کش برای دیباگ
+CACHE_TTL = 0 
 
 # ============================================================
 # GitHub Variables & Auth
@@ -287,27 +287,43 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         if not clicked: return "NO_DATA"
 
         await p.wait_for_timeout(6000)
-        table_text = await p.locator('body').inner_text()
         
-        # 🌟 دیباگ: اگر kg نبود، اسکرین‌شات بگیر
-        if "kg" not in table_text.lower():
-            await p.screenshot(path="debug.png")
-            with open("debug.png", "rb") as f:
-                await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nربات نتوانست جدول را ببیند. لطفاً این عکس را برای پشتیبانی بفرستید.", parse_mode='HTML')
-            return "NOT_UPLOADED"
+        # گرفتن متن از جدول (اگر تگ table باشد) یا از کل صفحه
+        table_text = ""
+        try:
+            table_loc = p.locator('table')
+            if await table_loc.count() > 0:
+                table_text = await table_loc.first.inner_text()
+            else:
+                table_text = await p.locator('body').inner_text()
+        except:
+            table_text = await p.locator('body').inner_text()
 
-        pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}\s*[Kk]g)\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
+        # 🌟 حذف شرط وجود kg. الگوی جدید حالا kg را اختیاری می‌داند
+        pattern = r'([^\n\d]{3,30})\s*\n.*?(\d{1,2})\s+(\d{2,3}(?:\s*[Kk]g)?)\s*\n.*?(\d{1,3})\s*\n.*?([\d\-]+)\s*\n.*?([^\n]+)'
+        
         for m in re.finditer(pattern, table_text):
             name = m.group(1).strip()
-            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک"]): continue
+            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "مربی", "جیگه", "H"]): continue
             num = int(m.group(2)); ior = int(m.group(4))
             perf_str = m.group(5); jockey = m.group(6).strip()
             horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "w_odd": 50.0}
+            
     except Exception as e: 
         print(f"Error in ar: {e}")
         return "ERROR"
 
-    if not horses or len(horses) < 2: return "NO_DATA"
+    if not horses:
+        # اگر ربات اصلا نتوانست داده‌ای پیدا کند، هم عکس و هم متن دیباگ را می‌فرستد
+        await p.screenshot(path="debug.png")
+        with open("debug.png", "rb") as f:
+            await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nربات نتوانست داده‌ها را پارس کند.", parse_mode='HTML')
+        
+        debug_text = table_text[:2000].replace('<', '&lt;').replace('>', '&gt;')
+        await c.bot.send_message(chat_id, f"<b>متن خوانده شده توسط ربات (برای دیباگ):</b>\n<code>{debug_text}</code>", parse_mode='HTML')
+        return "NOT_UPLOADED"
+
+    if len(horses) < 2: return "NO_DATA"
 
     horse_list = list(horses.values())
     n = len(horse_list)
@@ -363,7 +379,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     return res_dict
 
 # ============================================================
-# Process Odds (With Debug Screenshot)
+# Process Odds
 # ============================================================
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
     if await get_github_var("AUTO_UPDATE", "true") == "false" and not is_reminder:
@@ -384,18 +400,8 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
             if "ورود" in await pg.locator('body').inner_text():
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
-            
-            # 🌟 عکس‌برداری دیباگ اول: بعد از ورود به سایت
-            await pg.screenshot(path="debug_start.png")
-            with open("debug_start.png", "rb") as f:
-                await c.bot.send_photo(chat_id, photo=f, caption="📸 عکس دیباگ: بعد از ورود به سایت (قبل از انتخاب شهر)")
 
             await prepare_page(pg)
-
-            # 🌟 عکس‌برداری دیباگ دوم: بعد از انتخاب شهر
-            await pg.screenshot(path="debug_prepared.png")
-            with open("debug_prepared.png", "rb") as f:
-                await c.bot.send_photo(chat_id, photo=f, caption="📸 عکس دیباگ: بعد از انتخاب شهر (قبل از کلیک روی دورها)")
 
             rp = f"🏇 <b>تحلیل جامع</b>\n{weather}\n" + (f"💰 سرمایه: <code>{bet_amount:,}</code> ت\n" if bet_amount else "") + "➖➖➖➖➖➖➖➖\n"
             rounds = range(1, 8) if all_rounds else ([specific_round] if specific_round else [])
@@ -431,7 +437,7 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     rp += "➖➖➖➖➖➖➖➖\n"
                     
             if not found_any:
-                rp += "\n⚠️ <b>جدول مسابقات هنوز آپلود نشده است.</b>\n📅 معمولاً ۲۴ ساعت قبل از شروع قرار می‌گیرد."
+                rp += "\n⚠️ <b>جدول مسابقات هنوز آپلود نشده است یا ربات نتوانست آن را بخواند.</b>"
                 await send_long_message(c, chat_id, rp)
                 markup = InlineKeyboardMarkup([[InlineKeyboardButton("⏰ یادآوری خودکار", callback_data=f"rem_set_{specific_round or 1}")]])
                 await c.bot.send_message(chat_id, "می‌خواهید ربات چه زمانی دوباره چک کند؟", reply_markup=markup)
