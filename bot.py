@@ -31,7 +31,7 @@ REF_REWARD_DAYS = 3
 _last_call = {}
 COOLDOWN = 60
 AR_CACHE = {}
-CACHE_TTL = 0 # غیرفعال کردن کش برای دیباگ
+CACHE_TTL = 0 # غیرفعال برای دیباگ
 
 # ============================================================
 # GitHub Variables & Auth
@@ -249,27 +249,24 @@ async def cmd_admin_panel(chat_id, c):
     await c.bot.send_message(chat_id, txt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
 
 # ============================================================
-# 🌟 اصلاح تابع prepare_page (انتخاب استان یزد)
+# 🌟 تابع prepare_page (اصلاح شده)
 # ============================================================
 async def prepare_page(pg):
     try:
         await pg.wait_for_timeout(3000)
-        # تلاش برای پیدا کردن منوی انتخاب استان/فصل
         dropdown = pg.get_by_text("انتخاب فصل مسابقات", exact=False).first
         if await dropdown.is_visible():
             await dropdown.click(timeout=5000, force=True)
             await pg.wait_for_timeout(2000)
             try:
-                # تلاش برای کلیک روی یزد
                 await pg.get_by_text("یزد", exact=False).last.click(timeout=3000)
             except:
-                # اگر پیدا نشد، اولین گزینه را کلیک کن
                 await pg.locator("ul li, .v-list-item, .dropdown-item, [role='option']").first.click()
             await pg.wait_for_timeout(4000)
     except: pass
 
 # ============================================================
-# 🌟 اصلاح تابع ar (خواندن مقادیر از input)
+# 🌟 تابع ar (استخراج از تگ‌های input)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -292,12 +289,12 @@ async def ar(p, r_num, c, chat_id, save_history=True):
 
         await p.wait_for_timeout(6000)
         
-        # خواندن مقادیر از تگ‌های input (چون سایت داینامیک است)
+        # روش جدید: خواندن مقادیر از تگ‌های input
         rows = await p.locator('tr').all()
         for row in rows:
             try:
                 inputs = await row.locator('input').all()
-                if len(inputs) >= 4:
+                if len(inputs) >= 3:
                     name = await row.locator('td').first.inner_text()
                     name = name.strip()
                     if not name or any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "ردیف"]): continue
@@ -305,7 +302,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                     num_val = await inputs[0].input_value()
                     ior_val = await inputs[1].input_value()
                     w_odd_val = await inputs[2].input_value()
-                    perf_val = await inputs[3].input_value()
+                    perf_val = await inputs[3].input_value() if len(inputs) > 3 else ""
                     
                     if not num_val or not num_val.isdigit(): continue
                     
@@ -316,22 +313,24 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                     horses[num] = {"n": name, "num": num, "ior": ior, "j": "", "perf": perf_val or "", "w_odd": w_odd}
             except: continue
 
-        # اگر از طریق input ها پیدا نشد، از روش قدیمی متن استفاده کن
+        # اگر از طریق input ها پیدا نشد، از روش متن استفاده کن
         if not horses or len(horses) < 2:
             table_text = await p.locator('body').inner_text()
-            if "kg" not in table_text.lower():
+            if "kg" not in table_text.lower() and "وزن" not in table_text:
                 await p.screenshot(path="debug.png")
                 with open("debug.png", "rb") as f:
-                    await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nربات نتوانست جدول را ببیند. لطفاً این عکس را برای پشتیبانی بفرستید.", parse_mode='HTML')
+                    await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>", parse_mode='HTML')
                 return "NOT_UPLOADED"
 
-            pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}\s*[Kk]g)\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
+            pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}\s*[Kk]g)?\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
             for m in re.finditer(pattern, table_text):
                 name = m.group(1).strip()
                 if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک"]): continue
-                num = int(m.group(2)); ior = int(m.group(4))
-                perf_str = m.group(5); jockey = m.group(6).strip()
-                horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "w_odd": 50.0}
+                try:
+                    num = int(m.group(2)); ior = int(m.group(4))
+                    perf_str = m.group(5); jockey = m.group(6).strip()
+                    horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "w_odd": 50.0}
+                except: continue
                 
     except Exception as e: 
         print(f"Error in ar: {e}")
@@ -393,7 +392,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     return res_dict
 
 # ============================================================
-# Process Odds (With Debug Screenshot)
+# Process Odds
 # ============================================================
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
     if await get_github_var("AUTO_UPDATE", "true") == "false" and not is_reminder:
@@ -415,18 +414,8 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
             
-            # 🌟 عکس‌برداری دیباگ اول: بعد از ورود به سایت
-            await pg.screenshot(path="debug_start.png")
-            with open("debug_start.png", "rb") as f:
-                await c.bot.send_photo(chat_id, photo=f, caption="📸 عکس دیباگ: بعد از ورود به سایت (قبل از انتخاب شهر)")
-
             await prepare_page(pg)
-
-            # 🌟 عکس‌برداری دیباگ دوم: بعد از انتخاب شهر
-            await pg.screenshot(path="debug_prepared.png")
-            with open("debug_prepared.png", "rb") as f:
-                await c.bot.send_photo(chat_id, photo=f, caption="📸 عکس دیباگ: بعد از انتخاب شهر (قبل از کلیک روی دورها)")
-
+            
             rp = f"🏇 <b>تحلیل جامع</b>\n{weather}\n" + (f"💰 سرمایه: <code>{bet_amount:,}</code> ت\n" if bet_amount else "") + "➖➖➖➖➖➖➖➖\n"
             rounds = range(1, 8) if all_rounds else ([specific_round] if specific_round else [])
             save_h = specific_round is not None
@@ -461,7 +450,7 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     rp += "➖➖➖➖➖➖➖➖\n"
                     
             if not found_any:
-                rp += "\n⚠️ <b>جدول مسابقات هنوز آپلود نشده است.</b>\n📅 معمولاً ۲۴ ساعت قبل از شروع قرار می‌گیرد."
+                rp += "\n⚠️ <b>جدول مسابقات هنوز آپلود نشده است.</b>"
                 await send_long_message(c, chat_id, rp)
                 markup = InlineKeyboardMarkup([[InlineKeyboardButton("⏰ یادآوری خودکار", callback_data=f"rem_set_{specific_round or 1}")]])
                 await c.bot.send_message(chat_id, "می‌خواهید ربات چه زمانی دوباره چک کند؟", reply_markup=markup)
@@ -482,7 +471,6 @@ async def process_quinellas(chat_id, c, variant_type):
             browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
             context = await browser.new_context()
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
-
             pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
             await pg.wait_for_timeout(5000)
@@ -602,7 +590,6 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
             browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
             context = await browser.new_context()
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
-
             pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
             await pg.wait_for_timeout(5000)
