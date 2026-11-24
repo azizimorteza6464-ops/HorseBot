@@ -234,7 +234,7 @@ async def cmd_admin_panel(chat_id, c):
             ])
     await c.bot.send_message(chat_id, txt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
     async def prepare_page(pg):
-    try:
+        try:
         await pg.wait_for_timeout(3000)
         dropdown = pg.get_by_text("انتخاب فصل مسابقات", exact=False).first
         if await dropdown.is_visible():
