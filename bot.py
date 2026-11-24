@@ -7,6 +7,9 @@ from telegram.ext import (
     MessageHandler, filters
 )
 from playwright.async_api import async_playwright as ap
+from PIL import Image
+import pytesseract
+import io
 
 T = os.environ.get("BOT_TOKEN")
 A = os.environ.get("USER_TOKEN")
@@ -31,7 +34,7 @@ REF_REWARD_DAYS = 3
 _last_call = {}
 COOLDOWN = 60
 AR_CACHE = {}
-CACHE_TTL = 0 # غیرفعال برای دیباگ
+CACHE_TTL = 0 
 
 # ============================================================
 # GitHub Variables & Auth
@@ -248,9 +251,6 @@ async def cmd_admin_panel(chat_id, c):
             ])
     await c.bot.send_message(chat_id, txt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
 
-# ============================================================
-# 🌟 تابع prepare_page (اصلاح شده)
-# ============================================================
 async def prepare_page(pg):
     try:
         await pg.wait_for_timeout(3000)
@@ -266,7 +266,7 @@ async def prepare_page(pg):
     except: pass
 
 # ============================================================
-# 🌟 تابع ar (استخراج از تگ‌های input)
+# 🌟 تابع ar (با استفاده از OCR برای خواندن عکس جدول)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -289,39 +289,46 @@ async def ar(p, r_num, c, chat_id, save_history=True):
 
         await p.wait_for_timeout(6000)
         
-        # روش جدید: خواندن مقادیر از تگ‌های input
-        rows = await p.locator('tr').all()
-        for row in rows:
-            try:
-                inputs = await row.locator('input').all()
-                if len(inputs) >= 3:
-                    name = await row.locator('td').first.inner_text()
-                    name = name.strip()
-                    if not name or any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "ردیف"]): continue
-                    
-                    num_val = await inputs[0].input_value()
-                    ior_val = await inputs[1].input_value()
-                    w_odd_val = await inputs[2].input_value()
-                    perf_val = await inputs[3].input_value() if len(inputs) > 3 else ""
-                    
-                    if not num_val or not num_val.isdigit(): continue
-                    
-                    num = int(num_val)
-                    ior = int(ior_val) if ior_val and ior_val.isdigit() else 0
-                    w_odd = float(w_odd_val) if w_odd_val else 50.0
-                    
-                    horses[num] = {"n": name, "num": num, "ior": ior, "j": "", "perf": perf_val or "", "w_odd": w_odd}
-            except: continue
+        # 1. گرفتن اسکرین‌شات از کل صفحه
+        img_bytes = await p.screenshot(full_page=True)
+        
+        # 2. ارسال عکس دیباگ به تلگرام (برای اینکه ببینید عکس چه شکلی است)
+        await c.bot.send_photo(chat_id, photo=io.BytesIO(img_bytes), caption=f"📸 عکس جدول دور {r_num} (قبل از پردازش OCR)")
 
-        # اگر از طریق input ها پیدا نشد، از روش متن استفاده کن
+        # 3. تبدیل به تصویر و خواندن با OCR
+        image = Image.open(io.BytesIO(img_bytes))
+        
+        # تنظیمات OCR: زبان فارسی و انگلیسی
+        custom_config = r'--oem 3 --psm 6 -l fas+eng'
+        text = pytesseract.image_to_string(image, config=custom_config)
+        
+        print(f"OCR TEXT for round {r_num}:\n{text}")
+
+        # 4. پردازش متن استخراج شده (جستجوی الگوهای اعداد و ضرایب)
+        lines = text.split('\n')
+        current_num = None
+        
+        for line in lines:
+            line = line.strip()
+            if not line: continue
+            
+            # پیدا کردن شماره اسب (معمولاً در ابتدای خط یا بعد از کاراکترهای خاص)
+            # این regex سعی می‌کند شماره، نام و ضریب را از متن پیدا کند
+            match = re.search(r'(\d+)\s+([^\d]+?)\s+(\d+(?:\.\d+)?)', line)
+            if match:
+                try:
+                    num = int(match.group(1))
+                    name = match.group(2).strip()
+                    w_odd = float(match.group(3))
+                    
+                    if len(name) > 2 and not name.isdigit():
+                        horses[num] = {"n": name, "num": num, "ior": 0, "j": "", "perf": "", "w_odd": w_odd}
+                except: pass
+            
+        # اگر OCR نتوانست چیزی پیدا کند، از روش‌های دیگر استفاده کن
         if not horses or len(horses) < 2:
+            # جستجوی متن ساده در HTML (شاید این بار جواب بدهد)
             table_text = await p.locator('body').inner_text()
-            if "kg" not in table_text.lower() and "وزن" not in table_text:
-                await p.screenshot(path="debug.png")
-                with open("debug.png", "rb") as f:
-                    await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>", parse_mode='HTML')
-                return "NOT_UPLOADED"
-
             pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}\s*[Kk]g)?\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
             for m in re.finditer(pattern, table_text):
                 name = m.group(1).strip()
@@ -338,6 +345,9 @@ async def ar(p, r_num, c, chat_id, save_history=True):
 
     if not horses or len(horses) < 2: return "NO_DATA"
 
+    # ============================================================
+    # محاسبات ریاضی
+    # ============================================================
     horse_list = list(horses.values())
     n = len(horse_list)
     iors = [h['ior'] for h in horse_list]
