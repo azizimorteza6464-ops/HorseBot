@@ -7,9 +7,6 @@ from telegram.ext import (
     MessageHandler, filters
 )
 from playwright.async_api import async_playwright as ap
-from PIL import Image
-import pytesseract
-import io
 
 T = os.environ.get("BOT_TOKEN")
 A = os.environ.get("USER_TOKEN")
@@ -34,7 +31,7 @@ REF_REWARD_DAYS = 3
 _last_call = {}
 COOLDOWN = 60
 AR_CACHE = {}
-CACHE_TTL = 0 
+CACHE_TTL = 0 # غیرفعال کردن کش برای دیباگ
 
 # ============================================================
 # GitHub Variables & Auth
@@ -176,7 +173,8 @@ def get_main_menu(chat_id):
         [InlineKeyboardButton("🏁 دور ۷", callback_data='r7'), InlineKeyboardButton("📊 تحلیل کل", callback_data='rall')],
         [InlineKeyboardButton("🟢 دوقلوی امن", callback_data='q_safe'), InlineKeyboardButton("💎 دوقلوی ارزش", callback_data='q_value'), InlineKeyboardButton("🍀 دوقلوی شانسی", callback_data='q_lucky')],
         [InlineKeyboardButton("💎 شکار ارزش", callback_data='value'), InlineKeyboardButton("📜 سابقه تحلیل‌ها", callback_data='history')],
-        [InlineKeyboardButton("🎯 ۶ پره", callback_data='ml_6'), InlineKeyboardButton("🎯 ۵ پره", callback_data='ml_5')],
+
+[InlineKeyboardButton("🎯 ۶ پره", callback_data='ml_6'), InlineKeyboardButton("🎯 ۵ پره", callback_data='ml_5')],
         [InlineKeyboardButton("🎯 ۳ پره اول", callback_data='ml_3a'), InlineKeyboardButton("🎯 ۳ پره دوم", callback_data='ml_3b')],
         [InlineKeyboardButton("🎲 اسب شگفتی", callback_data='sur_h'), InlineKeyboardButton("🔥 دوقلوی شگفتی", callback_data='sur_d')],
         [InlineKeyboardButton("💰 تعیین مبلغ شرط", callback_data='bet_set')],
@@ -242,7 +240,8 @@ async def cmd_admin_panel(chat_id, c):
                 exp_date = datetime.strptime(exp_str, "%Y-%m-%d %H:%M:%S")
                 days_left = (exp_date - now).days
                 user_status = f"({days_left} روز مانده)" if days_left >= 0 else "(منقضی شده)"
-            except: user_status = "(نامشخص)"
+
+except: user_status = "(نامشخص)"
             keyboard.append([InlineKeyboardButton(f"👤 {display_name} {user_status}", callback_data='ignore')])
             keyboard.append([
                 InlineKeyboardButton("➕ تمدید ۳۰ روز", callback_data=f"adm_ren_{uid}_30"),
@@ -266,7 +265,7 @@ async def prepare_page(pg):
     except: pass
 
 # ============================================================
-# 🌟 تابع ar (با استفاده از OCR برای خواندن عکس جدول)
+# Core Analysis with Cache
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -288,66 +287,28 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         if not clicked: return "NO_DATA"
 
         await p.wait_for_timeout(6000)
+        table_text = await p.locator('body').inner_text()
         
-        # 1. گرفتن اسکرین‌شات از کل صفحه
-        img_bytes = await p.screenshot(full_page=True)
-        
-        # 2. ارسال عکس دیباگ به تلگرام (برای اینکه ببینید عکس چه شکلی است)
-        await c.bot.send_photo(chat_id, photo=io.BytesIO(img_bytes), caption=f"📸 عکس جدول دور {r_num} (قبل از پردازش OCR)")
+        # 🌟 دیباگ: اگر kg نبود، اسکرین‌شات بگیر
+        if "kg" not in table_text.lower():
+            await p.screenshot(path="debug.png")
+            with open("debug.png", "rb") as f:
+                await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nربات نتوانست جدول را ببیند. لطفاً این عکس را برای پشتیبانی بفرستید.", parse_mode='HTML')
+            return "NOT_UPLOADED"
 
-        # 3. تبدیل به تصویر و خواندن با OCR
-        image = Image.open(io.BytesIO(img_bytes))
-        
-        # تنظیمات OCR: زبان فارسی و انگلیسی
-        custom_config = r'--oem 3 --psm 6 -l fas+eng'
-        text = pytesseract.image_to_string(image, config=custom_config)
-        
-        print(f"OCR TEXT for round {r_num}:\n{text}")
-
-        # 4. پردازش متن استخراج شده (جستجوی الگوهای اعداد و ضرایب)
-        lines = text.split('\n')
-        current_num = None
-        
-        for line in lines:
-            line = line.strip()
-            if not line: continue
-            
-            # پیدا کردن شماره اسب (معمولاً در ابتدای خط یا بعد از کاراکترهای خاص)
-            # این regex سعی می‌کند شماره، نام و ضریب را از متن پیدا کند
-            match = re.search(r'(\d+)\s+([^\d]+?)\s+(\d+(?:\.\d+)?)', line)
-            if match:
-                try:
-                    num = int(match.group(1))
-                    name = match.group(2).strip()
-                    w_odd = float(match.group(3))
-                    
-                    if len(name) > 2 and not name.isdigit():
-                        horses[num] = {"n": name, "num": num, "ior": 0, "j": "", "perf": "", "w_odd": w_odd}
-                except: pass
-            
-        # اگر OCR نتوانست چیزی پیدا کند، از روش‌های دیگر استفاده کن
-        if not horses or len(horses) < 2:
-            # جستجوی متن ساده در HTML (شاید این بار جواب بدهد)
-            table_text = await p.locator('body').inner_text()
-            pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}\s*[Kk]g)?\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
-            for m in re.finditer(pattern, table_text):
-                name = m.group(1).strip()
-                if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک"]): continue
-                try:
-                    num = int(m.group(2)); ior = int(m.group(4))
-                    perf_str = m.group(5); jockey = m.group(6).strip()
-                    horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "w_odd": 50.0}
-                except: continue
-                
+        pattern = r'([^\n]{3,20})\n?[^\n]*?\n?(\d{1,2})\s+(\d{2,3}\s*[Kk]g)\n?(\d{1,3})\n?([\d\-]+)\n?([^\n]+)'
+        for m in re.finditer(pattern, table_text):
+            name = m.group(1).strip()
+            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک"]): continue
+            num = int(m.group(2)); ior = int(m.group(4))
+            perf_str = m.group(5); jockey = m.group(6).strip()
+            horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "w_odd": 50.0}
     except Exception as e: 
         print(f"Error in ar: {e}")
         return "ERROR"
 
     if not horses or len(horses) < 2: return "NO_DATA"
 
-    # ============================================================
-    # محاسبات ریاضی
-    # ============================================================
     horse_list = list(horses.values())
     n = len(horse_list)
     iors = [h['ior'] for h in horse_list]
@@ -365,7 +326,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         h['combined'] = (0.40 * market_norm + 0.25 * ior_norm + 0.20 * form_norm + 0.10 * jockey_norm + 0.05 * 0.5)
         h['market_prob'] = market_probs[idx] * 100
 
-    model_raw = power_probs([h['combined'] for h in horse_list], power=1.8)
+model_raw = power_probs([h['combined'] for h in horse_list], power=1.8)
     ALPHA = 0.35
     for idx, h in enumerate(horse_list):
         blended = ALPHA * model_raw[idx] + (1 - ALPHA) * market_probs[idx]
@@ -402,7 +363,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     return res_dict
 
 # ============================================================
-# Process Odds
+# Process Odds (With Debug Screenshot)
 # ============================================================
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
     if await get_github_var("AUTO_UPDATE", "true") == "false" and not is_reminder:
@@ -424,9 +385,19 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
             
+            # 🌟 عکس‌برداری دیباگ اول: بعد از ورود به سایت
+            await pg.screenshot(path="debug_start.png")
+            with open("debug_start.png", "rb") as f:
+                await c.bot.send_photo(chat_id, photo=f, caption="📸 عکس دیباگ: بعد از ورود به سایت (قبل از انتخاب شهر)")
+
             await prepare_page(pg)
-            
-            rp = f"🏇 <b>تحلیل جامع</b>\n{weather}\n" + (f"💰 سرمایه: <code>{bet_amount:,}</code> ت\n" if bet_amount else "") + "➖➖➖➖➖➖➖➖\n"
+
+            # 🌟 عکس‌برداری دیباگ دوم: بعد از انتخاب شهر
+            await pg.screenshot(path="debug_prepared.png")
+            with open("debug_prepared.png", "rb") as f:
+                await c.bot.send_photo(chat_id, photo=f, caption="📸 عکس دیباگ: بعد از انتخاب شهر (قبل از کلیک روی دورها)")
+
+rp = f"🏇 <b>تحلیل جامع</b>\n{weather}\n" + (f"💰 سرمایه: <code>{bet_amount:,}</code> ت\n" if bet_amount else "") + "➖➖➖➖➖➖➖➖\n"
             rounds = range(1, 8) if all_rounds else ([specific_round] if specific_round else [])
             save_h = specific_round is not None
             found_any = False
@@ -460,7 +431,7 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     rp += "➖➖➖➖➖➖➖➖\n"
                     
             if not found_any:
-                rp += "\n⚠️ <b>جدول مسابقات هنوز آپلود نشده است.</b>"
+                rp += "\n⚠️ <b>جدول مسابقات هنوز آپلود نشده است.</b>\n📅 معمولاً ۲۴ ساعت قبل از شروع قرار می‌گیرد."
                 await send_long_message(c, chat_id, rp)
                 markup = InlineKeyboardMarkup([[InlineKeyboardButton("⏰ یادآوری خودکار", callback_data=f"rem_set_{specific_round or 1}")]])
                 await c.bot.send_message(chat_id, "می‌خواهید ربات چه زمانی دوباره چک کند؟", reply_markup=markup)
@@ -481,7 +452,8 @@ async def process_quinellas(chat_id, c, variant_type):
             browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
             context = await browser.new_context()
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
-            pg = await context.new_page()
+
+pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
             await pg.wait_for_timeout(5000)
             if "ورود" in await pg.locator('body').inner_text():
@@ -600,7 +572,8 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
             browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
             context = await browser.new_context()
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
-            pg = await context.new_page()
+
+pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
             await pg.wait_for_timeout(5000)
             if "ورود" in await pg.locator('body').inner_text():
@@ -740,7 +713,8 @@ async def button_callback(u: Update, c: C):
     if data == 'buy_sub':
         txt = f"💳 <b>خرید اشتراک ویژه</b>\n\nبرای دسترسی به تمام امکانات ربات، مبلغ <b>{SUB_PRICE} تومان</b> را به شماره کارت زیر واریز کنید:\n\n💳 <code>{CARD_NUMBER}</code>\n👤 به نام: {CARD_HOLDER}\n\n📸 <b>پس از واریز، عکس رسید پرداخت را همین‌جا ارسال کنید.</b>\nپس از تایید توسط مدیریت، اشتراک شما فعال می‌شود."
         await query.message.reply_text(txt, parse_mode='HTML')
-        return
+
+return
     elif data == 'my_status':
         if await is_premium(chat_id):
             users = await get_allowed_users_dict()
@@ -795,7 +769,8 @@ async def button_callback(u: Update, c: C):
         cur = c.user_data.get('bet_amount', 0)
         await query.message.reply_text(f"💰 <b>سرمایه فعلی:</b> <code>{cur:,}</code> ت\nعدد جدید را بفرست:", parse_mode='HTML', reply_markup=ForceReply(selective=True))
     elif data == 'change_city': await query.message.reply_text("🏙 مسابقه خودکار انتخاب می‌شود.", parse_mode='HTML')
-    elif data == 'admin_help': 
+
+elif data == 'admin_help': 
         if str(chat_id) == MY_ID: await cmd_admin_panel(chat_id, c)
         else: await query.answer("⛔ شما دسترسی ندارید.", show_alert=True)
     elif data.startswith('rem_set_'):
@@ -855,7 +830,8 @@ async def cmd_approve(u: Update, c: C):
 
 async def cmd_remove(u: Update, c: C):
     if str(u.effective_chat.id) != MY_ID: return
-    try:
+
+try:
         parts = u.message.text.split()
         if len(parts) < 2: raise ValueError
         target_id = parts[1].strip()
@@ -922,7 +898,7 @@ async def main():
     await asyncio.sleep(17400)
     await app.updater.stop(); await app.stop(); await app.shutdown()
 
-if __name__ == "__main__":
+if name == "main":
     try: asyncio.run(main())
     except Exception as e:
         print(f"CRITICAL ERROR: {e}")
