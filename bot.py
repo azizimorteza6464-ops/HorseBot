@@ -250,15 +250,12 @@ async def cmd_admin_panel(chat_id, c):
             ])
     await c.bot.send_message(chat_id, txt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
 
-# 🌟 تابع اصلاح‌شده: انتخاب هوشمند اولین شهر موجود در منو
 async def prepare_page(pg):
     try:
         await pg.wait_for_timeout(4000)
-        
         dropdown = pg.get_by_text("انتخاب فصل", exact=False).first
         if not await dropdown.is_visible():
              dropdown = pg.get_by_text("فصل مسابقات", exact=False).first
-             
         if await dropdown.is_visible():
             await dropdown.click(timeout=5000, force=True)
             await pg.wait_for_timeout(2000)
@@ -272,7 +269,30 @@ async def prepare_page(pg):
         print(f"Prepare page error: {e}")
 
 # ============================================================
-# Core Analysis with Cache (اصلاح شده برای خواندن دقیق‌تر جدول)
+# 🆕 دیباگ: دامپ HTML کامل رندرشده و ارسال به کاربر
+# ============================================================
+async def _dump_rendered_html(pg, c, chat_id, r_num):
+    """ذخیره کامل HTML رندرشده و ارسال به کاربر برای دیباگ."""
+    try:
+        html = await pg.content()
+        fname = f"Table_HTML_R{r_num}.txt"
+        with open(fname, "w", encoding="utf-8") as f:
+            f.write(html)
+        with open(fname, "rb") as f:
+            await c.bot.send_document(
+                chat_id,
+                document=f,
+                filename=fname,
+                caption=(f"🔍 <b>دیباگ HTML دور {r_num}</b>\n"
+                         f"📏 حجم: {len(html):,} کاراکتر\n"
+                         f"👇 در فایل سرچ کنید: <code>سانتال</code> یا <code>58Kg</code>"),
+                parse_mode='HTML'
+            )
+    except Exception as e:
+        print(f"Dump HTML error: {e}")
+
+# ============================================================
+# Core Analysis with Cache
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -280,11 +300,11 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         if time.time() - ts < CACHE_TTL: return cached_res
 
     horses = {}
+    table_text = ""   # 🆕 مقداردهی اولیه
     try:
         try: await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=5000, force=True)
         except: pass
         
-        # صبر می‌کنیم تا جدول لود شود (منتظر ماندن برای دیدن اعداد)
         try:
             await p.wait_for_selector("text=/\\d+/", timeout=8000) 
         except:
@@ -302,8 +322,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         await p.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         await p.wait_for_timeout(2000)
         
-        # تلاش برای خواندن مستقیم از تگ جدول (اگر وجود داشته باشد) در غیر این صورت کل صفحه
-        table_text = ""
         try:
             table_locator = p.locator('table').first
             if await table_locator.count() > 0:
@@ -318,9 +336,9 @@ async def ar(p, r_num, c, chat_id, save_history=True):
             await p.screenshot(path="debug_blank.png")
             with open("debug_blank.png", "rb") as f:
                 await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nربات صفحه را سفید/خالی می‌بیند.", parse_mode='HTML')
+            await _dump_rendered_html(p, c, chat_id, r_num)   # 🆕
             return "NOT_UPLOADED"
 
-        # Regex جدید و انعطاف‌پذیرتر (با فاصله‌های بیشتر و آپشنال برای حالت‌های مختلف جدول)
         pattern = r'([^\n\d]{3,30})\s*\n\s*(\d{1,2})\s*\n\s*(\d{2,3}(?:\s*[Kk]g)?)\s*\n\s*(\d{1,3})\s*\n\s*([\d\-]+)\s*\n\s*([^\n]+)'
         pattern_alt = r'([^\n\d]{3,30})\s+(\d{1,2})\s+(\d{2,3}(?:\s*[Kk]g)?)\s+(\d{1,3})\s+([\d\-]+)\s+([^\n]+)'
         
@@ -346,7 +364,9 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     if not horses:
         await p.screenshot(path="debug_parse_fail.png")
         with open("debug_parse_fail.png", "rb") as f:
-            await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در پارس کردن جدول دور {r_num}</b>\nربات جدول را دید ولی نتوانست آن را بخواند. (متن خام در پیام بعدی)", parse_mode='HTML')
+            await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در پارس کردن جدول دور {r_num}</b>\nربات جدول را دید ولی نتوانست آن را بخواند. (فایل HTML در پیام بعدی)", parse_mode='HTML')
+        
+        await _dump_rendered_html(p, c, chat_id, r_num)   # 🆕
         
         debug_text = table_text[:3000].replace('<', '&lt;').replace('>', '&gt;')
         await c.bot.send_message(chat_id, f"<b>متن خامی که ربات دید (برای دیباگ):</b>\n<code>{debug_text}</code>", parse_mode='HTML')
@@ -891,6 +911,45 @@ async def cmd_broadcast(u: Update, c: C):
         except: fail += 1
     await status_msg.edit_text(f"✅ ارسال به پایان رسید.\n\nموفق: {success}\nناموفق: {fail}")
 
+# ============================================================
+# 🆕 کامند /debug برای گرفتن HTML هر دور
+# ============================================================
+async def cmd_debug(u: Update, c: C):
+    if str(u.effective_chat.id) != MY_ID:
+        return await u.message.reply_text("⛔ فقط ادمین.")
+    try:
+        r_num = int(c.args[0]) if c.args else 1
+    except:
+        r_num = 1
+    await u.message.reply_text(f"⏳ در حال گرفتن HTML دور {r_num}...")
+    browser = None
+    try:
+        async with ap() as p:
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
+            context = await browser.new_context(viewport={'width': 1440, 'height': 900})
+            await context.add_cookies([
+                {'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},
+                {'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},
+                {'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}
+            ])
+            pg = await context.new_page()
+            await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
+            await pg.wait_for_timeout(5000)
+            await prepare_page(pg)
+            for text in [f"R {r_num}", f"R{r_num}", f"دور {r_num}", str(r_num)]:
+                try:
+                    await pg.get_by_text(text, exact=True).first.click(timeout=2000, force=True)
+                    break
+                except: pass
+            await pg.wait_for_timeout(4000)
+            await pg.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await pg.wait_for_timeout(2000)
+            await _dump_rendered_html(pg, c, u.effective_chat.id, r_num)
+    except Exception as e:
+        await u.message.reply_text(f"❌ خطا: {e}")
+    finally:
+        if browser: await browser.close()
+
 async def cmd_start(u: Update, c: C):
     chat_id = str(u.effective_chat.id)
     if c.args and c.args[0].startswith('ref_'):
@@ -912,7 +971,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.0 با دوقلوهای هوشمند</b>\nهمچنین تمام تحلیل‌ها با سرمایه شما (Kelly) محاسبه می‌شوند."
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.1 با دیباگ HTML</b>\nهمچنین تمام تحلیل‌ها با سرمایه شما (Kelly) محاسبه می‌شوند."
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
@@ -921,6 +980,7 @@ async def main():
     app.add_handler(CH('approve', cmd_approve))
     app.add_handler(CH('remove', cmd_remove))
     app.add_handler(CH('broadcast', cmd_broadcast)) 
+    app.add_handler(CH('debug', cmd_debug))   # 🆕
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_inputs))
