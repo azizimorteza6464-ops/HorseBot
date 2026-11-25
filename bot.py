@@ -260,7 +260,6 @@ async def prepare_page(pg):
 async def click_round(pg, r_num):
     """کلیک روی تب دور مورد نظر در صفحه برای لود شدن ضرایب جدید"""
     try:
-        # ۱. کلیک روی دکمه "نمایش دورها" اگر وجود داشته باشد
         try:
             show_btn = pg.locator('text="نمایش دورها"').first
             if await show_btn.is_visible():
@@ -268,13 +267,11 @@ async def click_round(pg, r_num):
                 await pg.wait_for_timeout(1500)
         except: pass
 
-        # ۲. کلیک روی خودِ عدد دور (با جلوگیری از کلیک روی اعداد داخل جدول)
         clicked = await pg.evaluate(f"""
             () => {{
                 let elements = Array.from(document.querySelectorAll('button, div, span, a'));
                 for (let el of elements) {{
                     if (el.innerText && el.innerText.trim() === '{r_num}') {{
-                        // اطمینان از اینکه این عدد داخل جدول داده‌ها نیست (مثل رتبه ۱)
                         if (!el.closest('table') && !el.closest('.v-data-table') && !el.closest('tr')) {{
                             let rect = el.getBoundingClientRect();
                             if (rect.width > 0 && rect.height > 0) {{
@@ -288,7 +285,7 @@ async def click_round(pg, r_num):
             }}
         """)
         if clicked:
-            await pg.wait_for_timeout(3000) # صبر برای آپدیت ضرایب لحظه‌ای
+            await pg.wait_for_timeout(3000) 
     except Exception as e:
         print(f"Click round error: {e}")
 
@@ -304,15 +301,14 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
                 document=f,
                 filename=fname,
                 caption=(f"🔍 <b>دیباگ HTML دور {r_num}</b>\n"
-                         f"📏 حجم: {len(html):,} کاراکتر\n"
-                         f"👇 در فایل سرچ کنید: <code>سانتال</code> یا <code>58kg</code>"),
+                         f"📏 حجم: {len(html):,} کاراکتر"),
                 parse_mode='HTML'
             )
     except Exception as e:
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# 🆕 Core Analysis (نسخه ۴.۶ - استخراج هوشمند با Div و Table)
+# 🆕 Core Analysis (نسخه ۵.۰ - پارس متنی ضدضربه)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -323,134 +319,51 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     await click_round(p, r_num)
     
     horses = {}
+    full_text = ""
     try:
-        await p.wait_for_timeout(2000)
-
-        # استخراج داده‌ها با استفاده از تمام ساختارهای ممکن (Table یا Div)
-        scraped_data = await p.evaluate("""
-            () => {
-                let mainRows = [];
-                let oddsRows = [];
-
-                // پیدا کردن تمام ردیف‌ها (چه table و چه divهای شبیه به ردیف)
-                let rows = Array.from(document.querySelectorAll('tr, .v-data-table__tr, [role="row"]'));
-                
-                // اگر هیچ ردیفی پیدا نشد، احتمالا با divهای خالص روبرو هستیم
-                if (rows.length === 0) {
-                    let divs = Array.from(document.querySelectorAll('div'));
-                    divs.forEach(div => {
-                        if (div.children.length >= 5 && div.children.length <= 7) {
-                            let t = div.innerText || '';
-                            if (t.includes('kg') || /\\d+\\.\\d+/.test(t)) {
-                                rows.push(div);
-                            }
-                        }
-                    });
-                }
-
-                for (let r of rows) {
-                    let cells = [];
-                    if (r.tagName.toLowerCase() === 'tr') {
-                        cells = Array.from(r.querySelectorAll('td, th')).map(c => c.innerText.trim());
-                    } else if (r.querySelectorAll('.v-data-table__td, [role="cell"], [role="gridcell"]').length > 0) {
-                        cells = Array.from(r.querySelectorAll('.v-data-table__td, [role="cell"], [role="gridcell"]')).map(c => c.innerText.trim());
-                    } else {
-                        cells = Array.from(r.children).map(c => c.innerText.trim());
-                    }
-
-                    if (cells.length < 4) continue;
-                    
-                    let rowText = cells.join(' ');
-
-                    // فیلتر کردن هدرها
-                    if (rowText.includes('مقام') && rowText.includes('اسب')) continue;
-                    if (rowText.includes('پیش‌بر') && rowText.includes('میان‌بر')) continue;
-
-                    // جدول اصلی (دارای kg)
-                    if (rowText.includes('kg')) {
-                        mainRows.push(cells);
-                    }
-                    // جدول ضرایب (دارای اعداد اعشاری و بدون kg)
-                    else if (cells.length >= 5 && !isNaN(parseFloat(cells[2])) && !isNaN(parseFloat(cells[3]))) {
-                        oddsRows.push(cells);
-                    }
-                }
-
-                return { mainRows, oddsRows };
+        await p.wait_for_timeout(3000)
+        # خواندن کل متن صفحه، بدون توجه به ساختار HTML
+        full_text = await p.evaluate("() => document.body.innerText")
+        
+        # ۱. استخراج جدول اصلی (رتبه، نام، چابکسوار، سن، وزن، IOR، روزها، عملکرد)
+        # این الگو دقیقاً مثل چشم انسان متن‌ها را می‌خواند
+        pattern_main = re.compile(r'(\d+)\s*\n\s*(.*?)\s*\n\s*(.*?)\s*\n\s*(\d+)\s*\n\s*(\d+(?:\.\d+)?)\s*kg\s*\n\s*(\d+)\s*\n\s*(.*?)\s*\n\s*([\d\-]+)', re.IGNORECASE)
+        matches = pattern_main.findall(full_text)
+        
+        for m in matches:
+            rank = int(m[0])
+            name = m[1].strip()
+            jockey = m[2].strip()
+            weight = float(m[4])
+            ior = int(m[5])
+            perf = m[7].strip()
+            
+            horses[rank] = {
+                "n": name, "num": rank, "ior": ior, "j": jockey, 
+                "perf": perf, "w_odd": 50.0, "weight": weight
             }
-        """)
 
-        main_rows = scraped_data.get('mainRows', [])
-        odds_rows = scraped_data.get('oddsRows', [])
-
-        if not main_rows:
-            raise ValueError(f"جدول مشخصات اسب‌ها پیدا نشد. (دور {r_num})")
-
-        # ۱. پردازش جدول اصلی (مشخصات، وزن، عملکرد)
-        for row in main_rows:
-            if len(row) < 5: continue
-            try:
-                num_str = re.sub(r'[^\d]', '', row[0])
-                if not num_str: continue
-                num = int(num_str)
-                
-                name = row[1]
-                if not name: continue
-
-                # وزن
-                weight = None
-                weight_match = re.search(r'(\d+(?:\.\d+)?)\s*kg', row[2], re.IGNORECASE)
-                if weight_match:
-                    weight = float(weight_match.group(1))
-
-                # IOR
-                ior = int(row[3]) if row[3].isdigit() else 50
-
-                # عملکرد (استخراج دقیق الگوی رکورد)
-                perf_str = "0"
-                if len(row) > 4:
-                    perf_match = re.search(r'(\d+-\d+(?:-\d+)*)', row[4].translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')))
-                    if perf_match:
-                        perf_str = perf_match.group(1)
-
-                # چابکسوار
-                jockey = "نامشخص"
-                if len(row) > 5:
-                    names = row[5].split('\n')
-                    if names: jockey = names[-1].strip()
-
-                horses[num] = {
-                    "n": name, "num": num, "ior": ior, "j": jockey, 
-                    "perf": perf_str, "w_odd": 50.0, "weight": weight
-                }
-            except Exception as e:
-                continue
-
-        # ۲. پردازش جدول ضرایب با تطبیق نام اسب (برای جلوگیری از خطای ستون‌ها)
-        for row in odds_rows:
-            if len(row) < 4: continue
-            matched_num = None
+        # ۲. استخراج ضرایب با استفاده از خواندن متن
+        # پیدا کردن بلوکی که با "پیش‌بر" شروع می‌شود و تا کلمه "بروزرسانی" ادامه دارد
+        odds_block_match = re.search(r'پیش.?بر.*?نام اسب.*?\n(.*?)(?:بروزرسانی|$)', full_text, re.DOTALL)
+        if odds_block_match:
+            odds_text = odds_block_match.group(1).strip()
+            odds_lines = [line.strip() for line in odds_text.split('\n') if line.strip()]
             
-            # پیدا کردن اسب بر اساس تطبیق نام
-            for cell in row:
-                for num, h in horses.items():
-                    c_clean = cell.replace(' ', '').strip()
-                    h_clean = h['n'].replace(' ', '').strip()
-                    if c_clean and (c_clean in h_clean or h_clean in c_clean):
-                        matched_num = num
-                        break
-                if matched_num: break
-            
-            if matched_num:
-                # پیدا کردن ضریب برد (اولین عدد اعشاری بزرگتر از 1.0)
-                for cell in row:
-                    cell_clean = cell.strip().translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789'))
-                    try:
-                        val = float(cell_clean)
-                        if val > 1.0: 
-                            horses[matched_num]['w_odd'] = val
+            # پردازش ردیف‌های ضرایب (هر ۶ خط یک اسب)
+            for i in range(0, len(odds_lines) - 5, 6):
+                try:
+                    win_odd_str = odds_lines[i+2].translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789'))
+                    win_odd = float(win_odd_str)
+                    horse_name_odd = odds_lines[i+5].strip()
+                    
+                    # تطبیق نام اسب از جدول ضرایب با جدول اصلی
+                    for num, h in horses.items():
+                        if horse_name_odd in h['n'] or h['n'] in horse_name_odd:
+                            h['w_odd'] = win_odd
                             break
-                    except: pass
+                except:
+                    continue
 
     except Exception as e: 
         print(f"Error in ar: {e}")
@@ -459,6 +372,10 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         return "ERROR"
 
     if not horses:
+        # اگر هیچ اسبی پیدا نشد، یک تکه از متن را برای دیباگ می‌فرستیم
+        snippet = full_text.replace('\n', ' | ')[:1000]
+        await c.bot.send_message(chat_id, f"⚠️ <b>ربات جدول را پیدا نکرد. پیش‌نمایش متن صفحه:</b>\n<code>{snippet}</code>", parse_mode='HTML')
+        await _dump_rendered_html(p, c, chat_id, r_num)
         return "NOT_UPLOADED"
 
     if len(horses) < 2: return "NO_DATA"
@@ -520,7 +437,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     return res_dict
 
 # ============================================================
-# توابع دیگر (بدون تغییر)
+# توابع دیگر
 # ============================================================
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
     if await get_github_var("AUTO_UPDATE", "true") == "false" and not is_reminder:
@@ -1018,7 +935,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.6 (پشتیبانی از جدول‌های Div و تطبیق هوشمند ضرایب)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 5.0 (پارس متنی ضدضربه و بدون خطا)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
