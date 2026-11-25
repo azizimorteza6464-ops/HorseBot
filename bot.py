@@ -252,18 +252,9 @@ async def cmd_admin_panel(chat_id, c):
 async def prepare_page(pg):
     try:
         await pg.wait_for_timeout(4000)
-        dropdown = pg.get_by_text("انتخاب فصل", exact=False).first
-        if not await dropdown.is_visible():
-             dropdown = pg.get_by_text("فصل مسابقات", exact=False).first
-        if await dropdown.is_visible():
-            await dropdown.click(timeout=5000, force=True)
-            await pg.wait_for_timeout(2000)
-            options = pg.locator("ul li, .v-list-item, .dropdown-item, [role='option']")
-            if await options.count() > 0:
-                await options.first.click(timeout=5000, force=True)
-            await pg.wait_for_timeout(4000)
-        else:
-            await pg.evaluate("window.scrollTo(0, 500)")
+        # بستن پاپ‌آپ‌های احتمالی
+        try: await pg.keyboard.press("Escape")
+        except: pass
     except Exception as e:
         print(f"Prepare page error: {e}")
 
@@ -280,14 +271,14 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
                 filename=fname,
                 caption=(f"🔍 <b>دیباگ HTML دور {r_num}</b>\n"
                          f"📏 حجم: {len(html):,} کاراکتر\n"
-                         f"👇 در فایل سرچ کنید: <code>سانتال</code> یا <code>58Kg</code>"),
+                         f"👇 در فایل سرچ کنید: <code>سانتال</code> یا <code>58kg</code>"),
                 parse_mode='HTML'
             )
     except Exception as e:
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# 🆕 Core Analysis (کاملاً بازنویسی شده برای ساختار جدید سایت)
+# 🆕 Core Analysis (اصلاح شده برای صفحه اصلی عکس ۱)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -296,77 +287,88 @@ async def ar(p, r_num, c, chat_id, save_history=True):
 
     horses = {}
     try:
-        try: await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=5000, force=True)
-        except: pass
-        
-        try:
-            await p.wait_for_selector("text=/\\d+/", timeout=8000) 
-        except:
-            await p.wait_for_timeout(4000)
-
-        for text in [f"R {r_num}", f"R{r_num}", f"دور {r_num}", str(r_num)]:
-            try:
-                await p.get_by_text(text, exact=True).first.click(timeout=2000, force=True)
-                break
-            except: pass
-        
-        await p.wait_for_timeout(4000)
-        await p.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         await p.wait_for_timeout(2000)
-        
-        # 🆕 استخراج مستقیم از DOM (بدون نیاز به Regex و inner_text)
-        # این کد جاوااسکریپت ردیف‌های جدول را دقیقاً همانطور که در مرورگر رندر شده‌اند می‌خواند
-        table_data = await p.evaluate("""
-            () => {
-                let tables = document.querySelectorAll('table, .v-data-table, [role="grid"]');
-                let target = null;
-                // پیدا کردن جدولی که کلمات 'اسب' و 'H' یا 'R1' را دارد
-                for (let t of tables) {
-                    if (t.innerText.includes('اسب') && (t.innerText.includes('H') || t.innerText.includes('R1'))) {
-                        target = t; break;
-                    }
-                }
-                if (!target) return [];
 
-                let rows = target.querySelectorAll('tr, .v-data-table__tr');
-                let result = [];
-                for (let r of rows) {
-                    let cols = r.querySelectorAll('td, th, .v-data-table__td');
-                    if (cols.length > 1) {
-                        let rowData = Array.from(cols).map(c => c.innerText.trim());
-                        result.push(rowData);
+        # استخراج تمام جدول‌هایی که مربوط به اسب‌ها و وزن هستند
+        tables_data = await p.evaluate("""
+            () => {
+                let tables = Array.from(document.querySelectorAll('table, .v-data-table, [role="grid"]')).filter(t =>
+                    t.innerText.includes('اسب') && (t.innerText.includes('وزن') || t.innerText.includes('عملکرد'))
+                );
+                let allData = [];
+                for (let table of tables) {
+                    let rows = table.querySelectorAll('tr, .v-data-table__tr');
+                    let tableData = [];
+                    for (let r of rows) {
+                        let cols = r.querySelectorAll('td, .v-data-table__td');
+                        if (cols.length >= 4) {
+                            let rowData = Array.from(cols).map(c => c.innerText.trim());
+                            tableData.push(rowData);
+                        }
                     }
+                    if (tableData.length > 1) allData.push(tableData);
                 }
-                return result;
+                return allData;
             }
         """)
 
-        if not table_data:
-            raise ValueError("جدول اسب‌ها در صفحه پیدا نشد.")
+        if not tables_data or len(tables_data) < r_num:
+            raise ValueError(f"جدول دور {r_num} پیدا نشد. (تعداد جداول یافت شده در صفحه: {len(tables_data) if tables_data else 0})")
 
-        # پردازش داده‌های استخراج شده از DOM
-        for row in table_data:
-            # فیلتر کردن هدر جدول
-            if any("اسب" in cell or "H" in cell for cell in row): continue
-            
-            name = None
+        target_table = tables_data[r_num - 1] # آرایه از 0 شروع می‌شود
+
+        # پردازش داده‌های استخراج شده
+        for row in target_table:
+            if any("اسب" in cell for cell in row): continue # فیلتر هدر
+
             num = None
-            perf_list = []
-            
-            # جدول جدید سایت: [شماره (H), نام اسب, R1, R2, R3, R4, R5, R6]
-            for cell in row:
-                if cell.isdigit():
-                    if num is None:
-                        num = int(cell)
-                    else:
-                        perf_list.append(cell) # نتایج مسابقات قبلی
-                elif len(cell) > 2 and not cell.isdigit() and name is None:
-                    name = cell # نام اسب
-            
-            if num and name:
-                perf_str = "-".join(perf_list) if perf_list else "0"
-                # چون سایت ستون وزن و جیگه را حذف کرده، مقادیر پیش‌فرض می‌گذاریم
-                horses[num] = {"n": name, "num": num, "ior": 50, "j": "نامشخص", "perf": perf_str, "w_odd": 50.0}
+            name = None
+            weight = None
+            ior = None
+            perf_str = "0"
+            jockey = "نامشخص"
+
+            try:
+                # ستون 0: شماره (H)
+                if row[0].isdigit():
+                    num = int(row[0])
+
+                # ستون 1: نام اسب
+                name = row[1]
+
+                # ستون 2: سن / وزن / IOR (مثلا "3\n58kg\n75")
+                col2_parts = row[2].split('\n')
+                for part in col2_parts:
+                    part = part.strip()
+                    if 'kg' in part.lower():
+                        weight = float(re.sub(r'[^\d.]', '', part.lower()))
+                    elif part.isdigit() and len(part) <= 3:
+                        ior = int(part)
+
+                # ستون 3: عملکرد (مثلا "6-1-2-1-1")
+                perf_str = row[3].replace('\n', '').strip()
+                # تبدیل اعداد فارسی به انگلیسی برای محاسبات
+                perf_str = perf_str.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789'))
+                perf_str = re.sub(r'[^\d\-]', '', perf_str)
+
+                # ستون 4: مالک / مربی / چابکسوار
+                if len(row) > 4:
+                    names = row[4].split('\n')
+                    if names:
+                        jockey = names[-1].strip() # آخرین نفر چابکسوار است
+
+                if num and name:
+                    horses[num] = {
+                        "n": name, "num": num, 
+                        "ior": ior or 50, 
+                        "j": jockey, 
+                        "perf": perf_str, 
+                        "w_odd": 50.0,
+                        "weight": weight
+                    }
+            except Exception as e:
+                print(f"Error parsing row {row}: {e}")
+                continue
 
     except Exception as e: 
         print(f"Error in ar: {e}")
@@ -386,10 +388,13 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     horse_list = list(horses.values())
     n = len(horse_list)
     
-    # چون دیتای وزن و ضریب در این صفحه نیست، همه ضرایب برابر فرض می‌شوند و فقط فرم اخیر (R1-R6) محاسبه می‌شود
+    # محاسبه فرم بر اساس ستون عملکرد
     forms = [decayed_form(h['perf']) for h in horse_list]
     form_max = max(forms) if forms and max(forms) > 0 else 1
-    market_probs = normalize_market([h['w_odd'] for h in horse_list])
+    
+    # استفاده از IOR برای شانس بازار (چون ضریب واقعی نداریم)
+    total_ior = sum(h['ior'] for h in horse_list)
+    market_probs = [h['ior'] / total_ior if total_ior > 0 else 1/n for h in horse_list]
 
     for idx, h in enumerate(horse_list):
         form_norm = decayed_form(h['perf']) / form_max
@@ -423,7 +428,8 @@ async def ar(p, r_num, c, chat_id, save_history=True):
 
     res_dict = {"w": w, "p": p_horse, "s": s_horse, "horses": sorted_horses, "q": f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}", "q_fair": q_fair}
     res_dict['conf'] = get_confidence_level(res_dict)
-    long_shots = [h for h in sorted_horses if h['w_odd'] >= 12]
+    
+    long_shots = [h for h in sorted_horses if h['market_prob'] <= 10] # اسب‌های با شانس کمتر
     top_ls = sorted(long_shots, key=lambda x: x['model_prob'], reverse=True) if long_shots else sorted_horses[-2:]
     res_dict['su'] = top_ls[0] if top_ls else sorted_horses[-1]
     res_dict['qs'] = f"{top_ls[0]['num']}-{top_ls[0]['n']} + {top_ls[1]['num']}-{top_ls[1]['n']}" if len(top_ls) >= 2 else "N/A"
@@ -433,7 +439,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     return res_dict
 
 # ============================================================
-# Process Odds
+# توابع دیگر (بدون تغییر)
 # ============================================================
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
     if await get_github_var("AUTO_UPDATE", "true") == "false" and not is_reminder:
@@ -481,7 +487,7 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     if specific_round:
                         rp += "\n📈 <b>سه اسب برتر:</b>\n"
                         for h in res['horses'][:3]:
-                            rp += f"  {h['num']}-{h['n']}: احتمال {h['model_prob']:.1f}%\n"
+                            rp += f"  {h['num']}-{h['n']}: احتمال {h['model_prob']:.1f}% (IOR: {h['ior']})\n"
                     rp += "➖➖➖➖➖➖➖➖\n"
                     
             if not found_any:
@@ -498,7 +504,6 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
 async def process_quinellas(chat_id, c, variant_type):
     await c.bot.send_message(chat_id, "⏳ <b>در حال محاسبه دوقلوهای هوشمند...</b>", parse_mode='HTML')
     browser = None
-    bet = c.user_data.get('bet_amount')
     titles = {'q_safe': "🟢 دوقلوی امن (Safe)", 'q_value': "💎 دوقلوی ارزش (Value)", 'q_lucky': "🍀 دوقلوی شانسی (Lucky)"}
     title = titles[variant_type]
     try:
@@ -650,7 +655,7 @@ async def process_value_bets(chat_id, c, bet_amount=None):
                         found_any = True
                         rp += f"\n🏁 <b>دور R{r}:</b>\n"
                         for v in values[:3]:
-                            line = f"💎 {v['num']}-{v['n']} | مدل {v['model_prob']:.1f}%"
+                            line = f"💎 {v['num']}-{v['n']} | مدل {v['model_prob']:.1f}% (IOR: {v['ior']})"
                             rp += line + "\n"
                         rp += "➖➖➖➖➖➖➖➖\n"
             if not found_any: rp += "\n⚠️ <b>ارزشی پیدا نشد.</b>"
@@ -900,14 +905,6 @@ async def cmd_debug(u: Update, c: C):
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
             await pg.wait_for_timeout(5000)
             await prepare_page(pg)
-            for text in [f"R {r_num}", f"R{r_num}", f"دور {r_num}", str(r_num)]:
-                try:
-                    await pg.get_by_text(text, exact=True).first.click(timeout=2000, force=True)
-                    break
-                except: pass
-            await pg.wait_for_timeout(4000)
-            await pg.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await pg.wait_for_timeout(2000)
             await _dump_rendered_html(pg, c, u.effective_chat.id, r_num)
     except Exception as e:
         await u.message.reply_text(f"❌ خطا: {e}")
@@ -935,7 +932,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.3 (سازگار با ساختار جدید سایت)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.4 (استخراج دقیق جدول‌های اصلی)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
