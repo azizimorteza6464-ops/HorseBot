@@ -63,8 +63,7 @@ async def set_github_var(var_name, val):
 
 async def get_allowed_users_dict():
     users_str = await get_github_var("ALLOWED_USERS", "{}")
-    try:
-        return json.loads(users_str)
+    try: return json.loads(users_str)
     except:
         users_dict = {}
         if users_str and ("," in users_str or users_str.isdigit()):
@@ -268,11 +267,7 @@ async def prepare_page(pg):
     except Exception as e:
         print(f"Prepare page error: {e}")
 
-# ============================================================
-# 🆕 دیباگ: دامپ HTML کامل رندرشده و ارسال به کاربر
-# ============================================================
 async def _dump_rendered_html(pg, c, chat_id, r_num):
-    """ذخیره کامل HTML رندرشده و ارسال به کاربر برای دیباگ."""
     try:
         html = await pg.content()
         fname = f"Table_HTML_R{r_num}.txt"
@@ -292,7 +287,7 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# Core Analysis with Cache (Fixed Parsing)
+# 🆕 Core Analysis (کاملاً بازنویسی شده برای ساختار جدید سایت)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -300,7 +295,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         if time.time() - ts < CACHE_TTL: return cached_res
 
     horses = {}
-    table_text = ""
     try:
         try: await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=5000, force=True)
         except: pass
@@ -310,105 +304,96 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         except:
             await p.wait_for_timeout(4000)
 
-        clicked = False
         for text in [f"R {r_num}", f"R{r_num}", f"دور {r_num}", str(r_num)]:
             try:
                 await p.get_by_text(text, exact=True).first.click(timeout=2000, force=True)
-                clicked = True; break
+                break
             except: pass
         
         await p.wait_for_timeout(4000)
-        
         await p.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         await p.wait_for_timeout(2000)
         
-        # 🆕 1. پیدا کردن جدول درست (جستجو در تمام جدول‌ها برای کلمات کلیدی)
-        try:
-            tables = await p.locator('table').all()
-            for t in tables:
-                t_text = await t.inner_text()
-                if "اسب" in t_text and ("کیلو" in t_text or "Kg" in t_text or "وزن" in t_text):
-                    table_text = t_text
-                    break
-            
-            # اگر جدول با تگ <table> پیدا نشد، در ساختارهای Vue/React جستجو می‌کنیم
-            if not table_text:
-                grids = await p.locator('.v-data-table, .v-table, [role="grid"]').all()
-                for g in grids:
-                    g_text = await g.inner_text()
-                    if "اسب" in g_text and ("کیلو" in g_text or "Kg" in g_text or "وزن" in g_text):
-                        table_text = g_text
-                        break
-                        
-            if not table_text:
-                table_text = await p.locator('body').inner_text()
-        except:
-            table_text = await p.locator('body').inner_text()
+        # 🆕 استخراج مستقیم از DOM (بدون نیاز به Regex و inner_text)
+        # این کد جاوااسکریپت ردیف‌های جدول را دقیقاً همانطور که در مرورگر رندر شده‌اند می‌خواند
+        table_data = await p.evaluate("""
+            () => {
+                let tables = document.querySelectorAll('table, .v-data-table, [role="grid"]');
+                let target = null;
+                // پیدا کردن جدولی که کلمات 'اسب' و 'H' یا 'R1' را دارد
+                for (let t of tables) {
+                    if (t.innerText.includes('اسب') && (t.innerText.includes('H') || t.innerText.includes('R1'))) {
+                        target = t; break;
+                    }
+                }
+                if (!target) return [];
 
-        # 🚨 چک کردن خالی نبودن صفحه
-        if len(table_text.strip()) < 100 or "اسب" not in table_text:
-            await p.screenshot(path="debug_blank.png")
-            with open("debug_blank.png", "rb") as f:
-                await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nربات صفحه را سفید/خالی یا بدون جدول اسب‌ها می‌بیند.", parse_mode='HTML')
-            await _dump_rendered_html(p, c, chat_id, r_num)
-            return "NOT_UPLOADED"
+                let rows = target.querySelectorAll('tr, .v-data-table__tr');
+                let result = [];
+                for (let r of rows) {
+                    let cols = r.querySelectorAll('td, th, .v-data-table__td');
+                    if (cols.length > 1) {
+                        let rowData = Array.from(cols).map(c => c.innerText.trim());
+                        result.push(rowData);
+                    }
+                }
+                return result;
+            }
+        """)
 
-        # 🆕 2. تمیز کردن متن: تبدیل Tab های جدول به فاصله تا Regex بتواند بخواند
-        clean_text = re.sub(r'[\t]+', ' ', table_text)
-        
-        # 🆕 3. Regex اصلاح شده (به جای \n از \s استفاده می‌کند تا فاصله‌ها و Tab ها را بگیرد)
-        pattern = r'([^\n\d]{3,30})\s+(\d{1,2})\s+(\d{2,3}(?:\s*[Kk]g)?)\s+(\d{1,3})\s+([\d\-]+)\s+([^\n]+)'
-        pattern_alt = r'([^\n\d]+?)\s+(\d{1,2})\s+(\d{2,3}(?:\s*[Kk]g)?)\s+(\d{1,3})\s+([\d\-]+)\s+([^\n]+)'
-        
-        matches = list(re.finditer(pattern, clean_text))
-        if not matches:
-            matches = list(re.finditer(pattern_alt, clean_text))
-        
-        for m in matches:
-            name = m.group(1).strip()
-            # فیلتر کردن هدرهای جدول
-            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "مربی", "جیگه", "H", "دور", "R", "انتخاب", "هفته", "پاییز"]): 
-                continue
+        if not table_data:
+            raise ValueError("جدول اسب‌ها در صفحه پیدا نشد.")
+
+        # پردازش داده‌های استخراج شده از DOM
+        for row in table_data:
+            # فیلتر کردن هدر جدول
+            if any("اسب" in cell or "H" in cell for cell in row): continue
             
-            try:
-                num = int(m.group(2)); ior = int(m.group(4))
-                perf_str = m.group(5); jockey = m.group(6).strip()
-                horses[num] = {"n": name, "num": num, "ior": ior, "j": jockey, "perf": perf_str, "w_odd": 50.0}
-            except:
-                continue
-                
+            name = None
+            num = None
+            perf_list = []
+            
+            # جدول جدید سایت: [شماره (H), نام اسب, R1, R2, R3, R4, R5, R6]
+            for cell in row:
+                if cell.isdigit():
+                    if num is None:
+                        num = int(cell)
+                    else:
+                        perf_list.append(cell) # نتایج مسابقات قبلی
+                elif len(cell) > 2 and not cell.isdigit() and name is None:
+                    name = cell # نام اسب
+            
+            if num and name:
+                perf_str = "-".join(perf_list) if perf_list else "0"
+                # چون سایت ستون وزن و جیگه را حذف کرده، مقادیر پیش‌فرض می‌گذاریم
+                horses[num] = {"n": name, "num": num, "ior": 50, "j": "نامشخص", "perf": perf_str, "w_odd": 50.0}
+
     except Exception as e: 
         print(f"Error in ar: {e}")
+        await _dump_rendered_html(p, c, chat_id, r_num)
+        await c.bot.send_message(chat_id, f"🚨 <b>خطای سیستمی در خواندن جدول دور {r_num}:</b>\n<code>{str(e)}</code>", parse_mode='HTML')
         return "ERROR"
 
     if not horses:
         await p.screenshot(path="debug_parse_fail.png")
         with open("debug_parse_fail.png", "rb") as f:
-            await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در پارس کردن جدول دور {r_num}</b>\nربات جدول را دید ولی نتوانست ستون‌ها را تفکیک کند.", parse_mode='HTML')
-        
+            await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در پارس کردن جدول دور {r_num}</b>\nربات جدول را دید ولی نتوانست ردیف‌های اسب‌ها را تشخیص دهد.", parse_mode='HTML')
         await _dump_rendered_html(p, c, chat_id, r_num)
-        
-        debug_text = table_text[:3000].replace('<', '&lt;').replace('>', '&gt;')
-        await c.bot.send_message(chat_id, f"<b>متن خامی که ربات دید (برای دیباگ):</b>\n<code>{debug_text}</code>", parse_mode='HTML')
         return "NOT_UPLOADED"
 
     if len(horses) < 2: return "NO_DATA"
 
     horse_list = list(horses.values())
     n = len(horse_list)
-    iors = [h['ior'] for h in horse_list]
-    ior_min, ior_max = min(iors), max(iors)
-    ior_range = max(ior_max - ior_min, 1)
+    
+    # چون دیتای وزن و ضریب در این صفحه نیست، همه ضرایب برابر فرض می‌شوند و فقط فرم اخیر (R1-R6) محاسبه می‌شود
     forms = [decayed_form(h['perf']) for h in horse_list]
     form_max = max(forms) if forms and max(forms) > 0 else 1
     market_probs = normalize_market([h['w_odd'] for h in horse_list])
 
     for idx, h in enumerate(horse_list):
-        ior_norm = (h['ior'] - ior_min) / ior_range
         form_norm = decayed_form(h['perf']) / form_max
-        jockey_norm = jockey_rating(h['j'])
-        market_norm = market_probs[idx]
-        h['combined'] = (0.40 * market_norm + 0.25 * ior_norm + 0.20 * form_norm + 0.10 * jockey_norm + 0.05 * 0.5)
+        h['combined'] = (0.60 * form_norm + 0.40 * market_probs[idx])
         h['market_prob'] = market_probs[idx] * 100
 
     model_raw = power_probs([h['combined'] for h in horse_list], power=1.8)
@@ -483,26 +468,20 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     found_any = True
                     w = res['w']
                     rp += f"\n🏁 <b>دور R{r}</b>\n"
-                    rp += f"🥇 <b>پیش‌بر:</b> {w['num']}-{w['n']} (ضریب {w['w_odd']})\n"
-                    rp += f"   📊 مدل: {w['model_prob']:.1f}% | بازار: {w['market_prob']:.1f}% | Edge: {w['edge']:+.1f}%\n"
+                    rp += f"🥇 <b>پیش‌بر:</b> {w['num']}-{w['n']}\n"
+                    rp += f"   📊 مدل: {w['model_prob']:.1f}% | بازار: {w['market_prob']:.1f}%\n"
                     rp += f"🥈 <b>میان‌بر:</b> {res['p']['num']}-{res['p']['n']}\n"
-                    rp += f"👥 <b>دوقلو (امن):</b> {res['q']} → منصفانه <code>{res['q_fair']}</code>\n"
+                    rp += f"👥 <b>دوقلو (امن):</b> {res['q']}\n"
                     rp += f"🎯 <b>اطمینان:</b> {res['conf']}\n"
                     
                     if bet_amount and specific_round and r == specific_round:
                         rp += f"\n💰 <b>مدیریت سرمایه</b>\n"
-                        k_win = calculate_kelly(bet_amount, w['model_prob'], w['w_odd'], fraction=FRACTIONS['win'])
-                        if k_win > 0: rp += f"🥇 برد {w['n']}: <code>{k_win:,}</code> ت\n"
-                        w_place_odd = round((w['w_odd'] - 1) / 4 + 1, 2)
-                        k_place = calculate_kelly(bet_amount, w['place_prob'], w_place_odd, fraction=FRACTIONS['place'], confidence=0.60)
-                        if k_place > 0: rp += f"🥈 جایگاه {w['n']}: <code>{k_place:,}</code> ت\n"
-                        k_q = calculate_kelly(bet_amount, 100/res['q_fair'], res['q_fair'], fraction=FRACTIONS['quinella'], confidence=0.45)
-                        if k_q > 0: rp += f"👥 دوقلو امن: <code>{k_q:,}</code> ت\n"
+                        rp += f"(به دلیل نبود ضرایب در سایت، شرط‌بندی پیشنهاد نمی‌شود.)\n"
                     
                     if specific_round:
-                        rp += "\n📈 <b>سه اسب برتر (Place):</b>\n"
+                        rp += "\n📈 <b>سه اسب برتر:</b>\n"
                         for h in res['horses'][:3]:
-                            rp += f"  {h['num']}-{h['n']}: برد {h['model_prob']:.1f}% | جایگاه {h['place_prob']:.1f}% (منصفانه {h['place_fair_odd']})\n"
+                            rp += f"  {h['num']}-{h['n']}: احتمال {h['model_prob']:.1f}%\n"
                     rp += "➖➖➖➖➖➖➖➖\n"
                     
             if not found_any:
@@ -536,7 +515,6 @@ async def process_quinellas(chat_id, c, variant_type):
                 return
             await prepare_page(pg)
             rp = f"{title}\n"
-            if bet: rp += f"💰 سرمایه: <code>{bet:,}</code> ت (Kelly)\n"
             rp += "➖➖➖➖➖➖➖➖\n"
             found_any = False
             for r in range(1, 8):
@@ -552,10 +530,9 @@ async def process_quinellas(chat_id, c, variant_type):
                         if variant_type == 'q_safe' and not (i == 0 and j == 1): continue
                         if variant_type == 'q_value':
                             is_top = (i < 3) or (j < 3)
-                            is_long = (h1['w_odd'] >= 5) or (h2['w_odd'] >= 5)
-                            if not (is_top and is_long): continue
+                            if not is_top: continue
                         if variant_type == 'q_lucky':
-                            if not (h1['w_odd'] >= 5 and h2['w_odd'] >= 5): continue
+                            if not (i >= 3 and j >= 3): continue
                         q_p = quinella_prob(probs, i, j)
                         if q_p <= 0: continue
                         fair_odd = round(1 / q_p, 2)
@@ -568,22 +545,8 @@ async def process_quinellas(chat_id, c, variant_type):
                     rp += f"\n🏁 <b>دور R{r}</b>\n"
                     rp += f"👥 <b>{best['h1']['num']}-{best['h1']['n']} + {best['h2']['num']}-{best['h2']['n']}</b>\n"
                     rp += f"   📊 احتمال برد: <b>{best['prob']:.1f}%</b>\n"
-                    rp += f"   📊 ضریب منصفانه: <code>{best['fair_odd']}</code>\n"
-                    if bet:
-                        if variant_type == 'q_safe':
-                            k = calculate_kelly(bet, best['prob'], best['fair_odd'], fraction=0.15, confidence=0.60)
-                            if k > 0: rp += f"   💰 شرط پیشنهادی: <code>{k:,}</code> ت\n"
-                        elif variant_type == 'q_value':
-                            k = calculate_kelly(bet, best['prob'], best['fair_odd'], fraction=0.10, confidence=0.45)
-                            if k > 0: rp += f"   💰 شرط پیشنهادی: <code>{k:,}</code> ت\n"
-                            else: rp += f"   💡 ارزش دارد اگر سایت بالای {best['fair_odd']} بدهد.\n"
-                        else:
-                            rp += "   🎰 <b>بلیت بخت‌آزمایی</b> (ریسک بالا، مبلغ کم)\n"
-                            k = calculate_kelly(bet, best['prob'], best['fair_odd'], fraction=0.05, confidence=0.30)
-                            if k > 0: rp += f"   💰 شرط پیشنهادی: <code>{k:,}</code> ت\n"
                     rp += "➖➖➖➖➖➖➖➖\n"
             if not found_any: rp += "\n⚠️ برای این نوع دوقلو، گزینه مناسبی پیدا نشد.\n"
-            else: rp += "\n💡 <i>ضریب منصفانه یعنی اگر سایت بیشتر از این عدد بده، شرط شما سودده است.</i>"
             await send_long_message(c, chat_id, rp)
     except Exception as e:
         await c.bot.send_message(chat_id, f"❌ خطا:\n<code>{str(e)}</code>", parse_mode='HTML')
@@ -620,19 +583,6 @@ async def process_multileg(chat_id, c, leg_type, bet_amount=None):
                     details.append(res['w'])
                 else: picks.append("نامشخص")
             msg = f"🎯 <b>ترکیب {title}</b>\n\n🏇 <b>انتخاب‌ها:</b>\n<code>{' + '.join(picks)}</code>\n"
-            if len(details) == len(tr) and all(h['model_prob'] > 0 for h in details):
-                prob_product = 1.0
-                for h in details: prob_product *= h['model_prob'] / 100
-                prob_adj = min(prob_product * (1 + 0.06 * (len(details) - 1)), 0.95)
-                fair_odd = round(1 / prob_adj, 1) if prob_adj > 0 else 0
-                actual_odd = round(sum([h['w_odd'] for h in details]), 1)
-                msg += f"\n📊 <b>ضریب منصفانه:</b> <code>{fair_odd:,.1f}</code>\n📊 <b>ضریب تقریبی:</b> <code>{actual_odd:,.1f}</code>\n"
-                if fair_odd > 0 and actual_odd > fair_odd:
-                    msg += f"✅ <b>ارزشمند</b>\n"
-                    if bet_amount:
-                        k = calculate_kelly(bet_amount, 100/fair_odd, actual_odd, fraction=FRACTIONS['parlay'], max_pct=0.02, confidence=0.40)
-                        if k > 0: msg += f"💰 پیشنهاد: <code>{k:,}</code> ت\n"
-                else: msg += f"⚠️ <b>بدون ارزش</b>\n"
             await c.bot.send_message(chat_id, msg, parse_mode='HTML')
     except Exception as e:
         await c.bot.send_message(chat_id, f"❌ خطا: {str(e)}")
@@ -664,7 +614,7 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
                 if isinstance(res, dict):
                     if mode == 'sur_h':
                         sh = res['su']
-                        msg += f"🏁 <b>دور {r}:</b> {sh['num']}-{sh['n']} (ضریب {sh['w_odd']})\n"
+                        msg += f"🏁 <b>دور {r}:</b> {sh['num']}-{sh['n']}\n"
                     else:
                         msg += f"🏁 <b>دور {r}:</b> {res['qs']}\n"
             await c.bot.send_message(chat_id, msg, parse_mode='HTML')
@@ -690,20 +640,17 @@ async def process_value_bets(chat_id, c, bet_amount=None):
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
             await prepare_page(pg)
-            rp = f"💎 <b>شکار ارزش (تک‌اسب)</b>\n" + (f"💰 سرمایه: <code>{bet_amount:,}</code> ت\n" if bet_amount else "") + "➖➖➖➖➖➖➖➖\n"
+            rp = f"💎 <b>شکار ارزش (تک‌اسب)</b>\n➖➖➖➖➖➖➖➖\n"
             found_any = False
             for r in range(1, 8):
                 res = await ar(pg, r, c, chat_id, save_history=False)
                 if isinstance(res, dict):
-                    values = [h for h in res['horses'] if h['edge'] >= 5 and h['w_odd'] > 3]
+                    values = [h for h in res['horses'] if h['model_prob'] > 20]
                     if values:
                         found_any = True
                         rp += f"\n🏁 <b>دور R{r}:</b>\n"
                         for v in values[:3]:
-                            line = f"💎 {v['num']}-{v['n']} | ضریب {v['w_odd']} | مدل {v['model_prob']:.1f}% vs بازار {v['market_prob']:.1f}%"
-                            if bet_amount:
-                                k = calculate_kelly(bet_amount, v['model_prob'], v['w_odd'], fraction=FRACTIONS['win'])
-                                if k > 0: line += f" → <code>{k:,}</code> ت"
+                            line = f"💎 {v['num']}-{v['n']} | مدل {v['model_prob']:.1f}%"
                             rp += line + "\n"
                         rp += "➖➖➖➖➖➖➖➖\n"
             if not found_any: rp += "\n⚠️ <b>ارزشی پیدا نشد.</b>"
@@ -931,9 +878,6 @@ async def cmd_broadcast(u: Update, c: C):
         except: fail += 1
     await status_msg.edit_text(f"✅ ارسال به پایان رسید.\n\nموفق: {success}\nناموفق: {fail}")
 
-# ============================================================
-# 🆕 کامند /debug برای گرفتن HTML هر دور
-# ============================================================
 async def cmd_debug(u: Update, c: C):
     if str(u.effective_chat.id) != MY_ID:
         return await u.message.reply_text("⛔ فقط ادمین.")
@@ -991,7 +935,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.2 با اصلاح پارس جدول</b>\nهمچنین تمام تحلیل‌ها با سرمایه شما (Kelly) محاسبه می‌شوند."
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.3 (سازگار با ساختار جدید سایت)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
@@ -1000,7 +944,7 @@ async def main():
     app.add_handler(CH('approve', cmd_approve))
     app.add_handler(CH('remove', cmd_remove))
     app.add_handler(CH('broadcast', cmd_broadcast)) 
-    app.add_handler(CH('debug', cmd_debug))   # 🆕
+    app.add_handler(CH('debug', cmd_debug))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_inputs))
