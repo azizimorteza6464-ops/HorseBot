@@ -258,6 +258,27 @@ async def prepare_page(pg):
     except Exception as e:
         print(f"Prepare page error: {e}")
 
+async def click_round(pg, r_num):
+    """کلیک روی تب دور مورد نظر در صفحه برای لود شدن ضرایب جدید"""
+    try:
+        # پیدا کردن المان‌هایی که دقیقاً متن عدد دور را دارند و کلیک روی آن‌ها
+        clicked = await pg.evaluate(f"""
+            () => {{
+                let elements = Array.from(document.querySelectorAll('button, div, span, a'));
+                for (let el of elements) {{
+                    if (el.innerText && el.innerText.trim() === '{r_num}') {{
+                        el.click();
+                        return true;
+                    }}
+                }}
+                return false;
+            }}
+        """)
+        if clicked:
+            await pg.wait_for_timeout(2500) # صبر برای آپدیت ضرایب لحظه‌ای
+    except Exception as e:
+        print(f"Click round error: {e}")
+
 async def _dump_rendered_html(pg, c, chat_id, r_num):
     try:
         html = await pg.content()
@@ -278,96 +299,111 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# 🆕 Core Analysis (اصلاح شده برای صفحه اصلی عکس ۱)
+# 🆕 Core Analysis (نسخه ۴.۵ - استخراج ضرایب واقعی)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
         ts, cached_res = AR_CACHE[r_num]
         if time.time() - ts < CACHE_TTL: return cached_res
 
+    # کلیک روی دور مورد نظر برای اطمینان از لود شدن داده‌های درست
+    await click_round(p, r_num)
+    
     horses = {}
     try:
         await p.wait_for_timeout(2000)
 
-        # استخراج تمام جدول‌هایی که مربوط به اسب‌ها و وزن هستند
-        tables_data = await p.evaluate("""
+        # استخراج داده‌ها از دو جدول: جدول مشخصات اسب و جدول ضرایب
+        scraped_data = await p.evaluate("""
             () => {
-                let tables = Array.from(document.querySelectorAll('table, .v-data-table, [role="grid"]')).filter(t =>
-                    t.innerText.includes('اسب') && (t.innerText.includes('وزن') || t.innerText.includes('عملکرد'))
-                );
-                let allData = [];
+                let mainTableData = [];
+                let oddsTableData = [];
+
+                let tables = Array.from(document.querySelectorAll('table'));
+                
                 for (let table of tables) {
-                    let rows = table.querySelectorAll('tr, .v-data-table__tr');
-                    let tableData = [];
-                    for (let r of rows) {
-                        let cols = r.querySelectorAll('td, .v-data-table__td');
-                        if (cols.length >= 4) {
-                            let rowData = Array.from(cols).map(c => c.innerText.trim());
-                            tableData.push(rowData);
+                    let text = table.innerText;
+                    
+                    // 1. جدول اصلی (شامل اسب، وزن، عملکرد)
+                    if (text.includes('اسب') && text.includes('عملکرد') && text.includes('وزن')) {
+                        let rows = table.querySelectorAll('tr');
+                        for (let r of rows) {
+                            let cols = r.querySelectorAll('td, th');
+                            if (cols.length >= 6) {
+                                mainTableData.push(Array.from(cols).map(c => c.innerText.trim()));
+                            }
                         }
                     }
-                    if (tableData.length > 1) allData.push(tableData);
+                    
+                    // 2. جدول ضرایب (شامل پیش‌بر، میان‌بر، پی‌بر)
+                    if (text.includes('پیش‌بر') && text.includes('میان‌بر')) {
+                        let rows = table.querySelectorAll('tr');
+                        for (let r of rows) {
+                            let cols = r.querySelectorAll('td, th');
+                            if (cols.length >= 4) {
+                                oddsTableData.push(Array.from(cols).map(c => c.innerText.trim()));
+                            }
+                        }
+                    }
                 }
-                return allData;
+                return { mainTableData, oddsTableData };
             }
         """)
 
-        if not tables_data or len(tables_data) < r_num:
-            raise ValueError(f"جدول دور {r_num} پیدا نشد. (تعداد جداول یافت شده در صفحه: {len(tables_data) if tables_data else 0})")
+        main_rows = scraped_data.get('mainTableData', [])
+        odds_rows = scraped_data.get('oddsTableData', [])
 
-        target_table = tables_data[r_num - 1] # آرایه از 0 شروع می‌شود
+        if not main_rows:
+            raise ValueError(f"جدول مشخصات اسب‌ها پیدا نشد. (دور {r_num})")
 
-        # پردازش داده‌های استخراج شده
-        for row in target_table:
+        # پردازش جدول اصلی (مشخصات، وزن، عملکرد)
+        for row in main_rows:
             if any("اسب" in cell for cell in row): continue # فیلتر هدر
 
-            num = None
-            name = None
-            weight = None
-            ior = None
-            perf_str = "0"
-            jockey = "نامشخص"
-
             try:
-                # ستون 0: شماره (H)
-                if row[0].isdigit():
-                    num = int(row[0])
-
-                # ستون 1: نام اسب
+                if not row[0].isdigit(): continue
+                num = int(row[0])
                 name = row[1]
+                
+                # ستون 2: سن / وزن (مثلا "3\n58kg")
+                weight = None
+                weight_match = re.search(r'(\d+(?:\.\d+)?)\s*kg', row[2], re.IGNORECASE)
+                if weight_match:
+                    weight = float(weight_match.group(1))
 
-                # ستون 2: سن / وزن / IOR (مثلا "3\n58kg\n75")
-                col2_parts = row[2].split('\n')
-                for part in col2_parts:
-                    part = part.strip()
-                    if 'kg' in part.lower():
-                        weight = float(re.sub(r'[^\d.]', '', part.lower()))
-                    elif part.isdigit() and len(part) <= 3:
-                        ior = int(part)
+                # ستون 3: IOR
+                ior = int(row[3]) if row[3].isdigit() else 50
 
-                # ستون 3: عملکرد (مثلا "6-1-2-1-1")
-                perf_str = row[3].replace('\n', '').strip()
-                # تبدیل اعداد فارسی به انگلیسی برای محاسبات
-                perf_str = perf_str.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789'))
+                # ستون 4: عملکرد (مثلا "6-1-2-1-1")
+                perf_str = row[4].replace('\n', '').strip().translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789'))
                 perf_str = re.sub(r'[^\d\-]', '', perf_str)
 
-                # ستون 4: مالک / مربی / چابکسوار
-                if len(row) > 4:
-                    names = row[4].split('\n')
-                    if names:
-                        jockey = names[-1].strip() # آخرین نفر چابکسوار است
+                # ستون 5: مالک / مربی / چابکسوار (آخرین خط چابکسوار است)
+                jockey = "نامشخص"
+                if len(row) > 5:
+                    names = row[5].split('\n')
+                    if names: jockey = names[-1].strip()
 
-                if num and name:
-                    horses[num] = {
-                        "n": name, "num": num, 
-                        "ior": ior or 50, 
-                        "j": jockey, 
-                        "perf": perf_str, 
-                        "w_odd": 50.0,
-                        "weight": weight
-                    }
+                horses[num] = {
+                    "n": name, "num": num, "ior": ior, "j": jockey, 
+                    "perf": perf_str, "w_odd": 50.0, "weight": weight
+                }
             except Exception as e:
-                print(f"Error parsing row {row}: {e}")
+                continue
+
+        # پردازش جدول ضرایب و ادغام با جدول اصلی
+        for row in odds_rows:
+            if any("پیش‌بر" in cell for cell in row): continue # فیلتر هدر
+            try:
+                # در جدول ضرایب، ستون 1 شماره اسب است (ستون 0 مقام است)
+                # فرمت: [مقام, شماره(اسب), پیش‌بر, میان‌بر, پی‌بر, نام اسب]
+                if len(row) > 2 and row[1].isdigit():
+                    horse_num = int(row[1])
+                    if horse_num in horses:
+                        win_odd = row[2].strip().replace('۰','0').replace('۱','1').replace('۲','2').replace('۳','3').replace('۴','4').replace('۵','5').replace('۶','6').replace('۷','7').replace('۸','8').replace('۹','9')
+                        if win_odd and win_odd.replace('.', '', 1).isdigit():
+                            horses[horse_num]['w_odd'] = float(win_odd)
+            except:
                 continue
 
     except Exception as e: 
@@ -377,10 +413,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         return "ERROR"
 
     if not horses:
-        await p.screenshot(path="debug_parse_fail.png")
-        with open("debug_parse_fail.png", "rb") as f:
-            await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در پارس کردن جدول دور {r_num}</b>\nربات جدول را دید ولی نتوانست ردیف‌های اسب‌ها را تشخیص دهد.", parse_mode='HTML')
-        await _dump_rendered_html(p, c, chat_id, r_num)
         return "NOT_UPLOADED"
 
     if len(horses) < 2: return "NO_DATA"
@@ -388,19 +420,23 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     horse_list = list(horses.values())
     n = len(horse_list)
     
-    # محاسبه فرم بر اساس ستون عملکرد
+    # 1. محاسبه فرم بر اساس ستون عملکرد
     forms = [decayed_form(h['perf']) for h in horse_list]
     form_max = max(forms) if forms and max(forms) > 0 else 1
     
-    # استفاده از IOR برای شانس بازار (چون ضریب واقعی نداریم)
-    total_ior = sum(h['ior'] for h in horse_list)
-    market_probs = [h['ior'] / total_ior if total_ior > 0 else 1/n for h in horse_list]
+    # 2. محاسبه احتمال بازار با استفاده از ضریب واقعی (w_odd)
+    # ضریب بالاتر = احتمال کمتر
+    implied_probs = [1.0 / h['w_odd'] if h['w_odd'] > 1 else 0 for h in horse_list]
+    total_implied = sum(implied_probs) or 1
+    market_probs = [p / total_implied for p in implied_probs]
 
+    # 3. ترکیب فرم و شانس بازار
     for idx, h in enumerate(horse_list):
         form_norm = decayed_form(h['perf']) / form_max
         h['combined'] = (0.60 * form_norm + 0.40 * market_probs[idx])
         h['market_prob'] = market_probs[idx] * 100
 
+    # 4. محاسبه احتمال مدل
     model_raw = power_probs([h['combined'] for h in horse_list], power=1.8)
     ALPHA = 0.35
     for idx, h in enumerate(horse_list):
@@ -429,7 +465,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     res_dict = {"w": w, "p": p_horse, "s": s_horse, "horses": sorted_horses, "q": f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}", "q_fair": q_fair}
     res_dict['conf'] = get_confidence_level(res_dict)
     
-    long_shots = [h for h in sorted_horses if h['market_prob'] <= 10] # اسب‌های با شانس کمتر
+    long_shots = [h for h in sorted_horses if h['market_prob'] <= 10] 
     top_ls = sorted(long_shots, key=lambda x: x['model_prob'], reverse=True) if long_shots else sorted_horses[-2:]
     res_dict['su'] = top_ls[0] if top_ls else sorted_horses[-1]
     res_dict['qs'] = f"{top_ls[0]['num']}-{top_ls[0]['n']} + {top_ls[1]['num']}-{top_ls[1]['n']}" if len(top_ls) >= 2 else "N/A"
@@ -439,7 +475,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     return res_dict
 
 # ============================================================
-# توابع دیگر (بدون تغییر)
+# توابع دیگر
 # ============================================================
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
     if await get_github_var("AUTO_UPDATE", "true") == "false" and not is_reminder:
@@ -475,19 +511,23 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     w = res['w']
                     rp += f"\n🏁 <b>دور R{r}</b>\n"
                     rp += f"🥇 <b>پیش‌بر:</b> {w['num']}-{w['n']}\n"
-                    rp += f"   📊 مدل: {w['model_prob']:.1f}% | بازار: {w['market_prob']:.1f}%\n"
+                    rp += f"   📊 مدل: {w['model_prob']:.1f}% | بازار: {w['market_prob']:.1f}% (ضریب: {w['w_odd']})\n"
                     rp += f"🥈 <b>میان‌بر:</b> {res['p']['num']}-{res['p']['n']}\n"
                     rp += f"👥 <b>دوقلو (امن):</b> {res['q']}\n"
                     rp += f"🎯 <b>اطمینان:</b> {res['conf']}\n"
                     
                     if bet_amount and specific_round and r == specific_round:
-                        rp += f"\n💰 <b>مدیریت سرمایه</b>\n"
-                        rp += f"(به دلیل نبود ضرایب در سایت، شرط‌بندی پیشنهاد نمی‌شود.)\n"
+                        rp += f"\n💰 <b>مدیریت سرمایه (کِلی)</b>\n"
+                        bet_amt = calculate_kelly(bet_amount, w['model_prob'], w['w_odd'])
+                        if bet_amt > 0:
+                            rp += f"  پیشنهاد شرط روی {w['num']}-{w['n']}: <code>{bet_amt:,}</code> تومان\n"
+                        else:
+                            rp += f"  ⚠️ ارزش شرط‌بندی وجود ندارد (ریسک بالا).\n"
                     
                     if specific_round:
                         rp += "\n📈 <b>سه اسب برتر:</b>\n"
                         for h in res['horses'][:3]:
-                            rp += f"  {h['num']}-{h['n']}: احتمال {h['model_prob']:.1f}% (IOR: {h['ior']})\n"
+                            rp += f"  {h['num']}-{h['n']}: احتمال {h['model_prob']:.1f}% (ضریب: {h['w_odd']})\n"
                     rp += "➖➖➖➖➖➖➖➖\n"
                     
             if not found_any:
@@ -655,7 +695,7 @@ async def process_value_bets(chat_id, c, bet_amount=None):
                         found_any = True
                         rp += f"\n🏁 <b>دور R{r}:</b>\n"
                         for v in values[:3]:
-                            line = f"💎 {v['num']}-{v['n']} | مدل {v['model_prob']:.1f}% (IOR: {v['ior']})"
+                            line = f"💎 {v['num']}-{v['n']} | مدل {v['model_prob']:.1f}% (ضریب: {v['w_odd']})"
                             rp += line + "\n"
                         rp += "➖➖➖➖➖➖➖➖\n"
             if not found_any: rp += "\n⚠️ <b>ارزشی پیدا نشد.</b>"
@@ -905,6 +945,7 @@ async def cmd_debug(u: Update, c: C):
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
             await pg.wait_for_timeout(5000)
             await prepare_page(pg)
+            await click_round(pg, r_num)
             await _dump_rendered_html(pg, c, u.effective_chat.id, r_num)
     except Exception as e:
         await u.message.reply_text(f"❌ خطا: {e}")
@@ -932,7 +973,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.4 (استخراج دقیق جدول‌های اصلی)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.5 (استخراج ضرایب واقعی و کلیک هوشمند روی دورها)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
