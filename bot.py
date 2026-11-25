@@ -292,7 +292,7 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# Core Analysis with Cache
+# Core Analysis with Cache (Fixed Parsing)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -300,7 +300,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         if time.time() - ts < CACHE_TTL: return cached_res
 
     horses = {}
-    table_text = ""   # 🆕 مقداردهی اولیه
+    table_text = ""
     try:
         try: await p.get_by_text("جدول مسابقات", exact=False).first.click(timeout=5000, force=True)
         except: pass
@@ -322,33 +322,53 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         await p.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         await p.wait_for_timeout(2000)
         
+        # 🆕 1. پیدا کردن جدول درست (جستجو در تمام جدول‌ها برای کلمات کلیدی)
         try:
-            table_locator = p.locator('table').first
-            if await table_locator.count() > 0:
-                table_text = await table_locator.inner_text()
-            else:
+            tables = await p.locator('table').all()
+            for t in tables:
+                t_text = await t.inner_text()
+                if "اسب" in t_text and ("کیلو" in t_text or "Kg" in t_text or "وزن" in t_text):
+                    table_text = t_text
+                    break
+            
+            # اگر جدول با تگ <table> پیدا نشد، در ساختارهای Vue/React جستجو می‌کنیم
+            if not table_text:
+                grids = await p.locator('.v-data-table, .v-table, [role="grid"]').all()
+                for g in grids:
+                    g_text = await g.inner_text()
+                    if "اسب" in g_text and ("کیلو" in g_text or "Kg" in g_text or "وزن" in g_text):
+                        table_text = g_text
+                        break
+                        
+            if not table_text:
                 table_text = await p.locator('body').inner_text()
         except:
             table_text = await p.locator('body').inner_text()
 
         # 🚨 چک کردن خالی نبودن صفحه
-        if len(table_text.strip()) < 100 or ("اسب" not in table_text and "کیلو" not in table_text and "kg" not in table_text.lower()):
+        if len(table_text.strip()) < 100 or "اسب" not in table_text:
             await p.screenshot(path="debug_blank.png")
             with open("debug_blank.png", "rb") as f:
-                await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nربات صفحه را سفید/خالی می‌بیند.", parse_mode='HTML')
-            await _dump_rendered_html(p, c, chat_id, r_num)   # 🆕
+                await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در خواندن جدول دور {r_num}</b>\nربات صفحه را سفید/خالی یا بدون جدول اسب‌ها می‌بیند.", parse_mode='HTML')
+            await _dump_rendered_html(p, c, chat_id, r_num)
             return "NOT_UPLOADED"
 
-        pattern = r'([^\n\d]{3,30})\s*\n\s*(\d{1,2})\s*\n\s*(\d{2,3}(?:\s*[Kk]g)?)\s*\n\s*(\d{1,3})\s*\n\s*([\d\-]+)\s*\n\s*([^\n]+)'
-        pattern_alt = r'([^\n\d]{3,30})\s+(\d{1,2})\s+(\d{2,3}(?:\s*[Kk]g)?)\s+(\d{1,3})\s+([\d\-]+)\s+([^\n]+)'
+        # 🆕 2. تمیز کردن متن: تبدیل Tab های جدول به فاصله تا Regex بتواند بخواند
+        clean_text = re.sub(r'[\t]+', ' ', table_text)
         
-        matches = list(re.finditer(pattern, table_text))
+        # 🆕 3. Regex اصلاح شده (به جای \n از \s استفاده می‌کند تا فاصله‌ها و Tab ها را بگیرد)
+        pattern = r'([^\n\d]{3,30})\s+(\d{1,2})\s+(\d{2,3}(?:\s*[Kk]g)?)\s+(\d{1,3})\s+([\d\-]+)\s+([^\n]+)'
+        pattern_alt = r'([^\n\d]+?)\s+(\d{1,2})\s+(\d{2,3}(?:\s*[Kk]g)?)\s+(\d{1,3})\s+([\d\-]+)\s+([^\n]+)'
+        
+        matches = list(re.finditer(pattern, clean_text))
         if not matches:
-            matches = list(re.finditer(pattern_alt, table_text))
+            matches = list(re.finditer(pattern_alt, clean_text))
         
         for m in matches:
             name = m.group(1).strip()
-            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "مربی", "جیگه", "H", "دور", "R", "انتخاب", "هفته", "پاییز"]): continue
+            # فیلتر کردن هدرهای جدول
+            if any(k in name for k in ["مقام", "اسب", "سن", "عملکرد", "وزن", "مالک", "مربی", "جیگه", "H", "دور", "R", "انتخاب", "هفته", "پاییز"]): 
+                continue
             
             try:
                 num = int(m.group(2)); ior = int(m.group(4))
@@ -364,9 +384,9 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     if not horses:
         await p.screenshot(path="debug_parse_fail.png")
         with open("debug_parse_fail.png", "rb") as f:
-            await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در پارس کردن جدول دور {r_num}</b>\nربات جدول را دید ولی نتوانست آن را بخواند. (فایل HTML در پیام بعدی)", parse_mode='HTML')
+            await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در پارس کردن جدول دور {r_num}</b>\nربات جدول را دید ولی نتوانست ستون‌ها را تفکیک کند.", parse_mode='HTML')
         
-        await _dump_rendered_html(p, c, chat_id, r_num)   # 🆕
+        await _dump_rendered_html(p, c, chat_id, r_num)
         
         debug_text = table_text[:3000].replace('<', '&lt;').replace('>', '&gt;')
         await c.bot.send_message(chat_id, f"<b>متن خامی که ربات دید (برای دیباگ):</b>\n<code>{debug_text}</code>", parse_mode='HTML')
@@ -971,7 +991,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.1 با دیباگ HTML</b>\nهمچنین تمام تحلیل‌ها با سرمایه شما (Kelly) محاسبه می‌شوند."
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.2 با اصلاح پارس جدول</b>\nهمچنین تمام تحلیل‌ها با سرمایه شما (Kelly) محاسبه می‌شوند."
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
