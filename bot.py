@@ -7,7 +7,6 @@ from telegram.ext import (
     MessageHandler, filters
 )
 from playwright.async_api import async_playwright as ap
-from bs4 import BeautifulSoup
 
 T = os.environ.get("BOT_TOKEN")
 A = os.environ.get("USER_TOKEN")
@@ -26,13 +25,10 @@ SUB_PRICE = "250,000"
 REF_REWARD_DAYS = 3                   
 # ============================================================
 
-# ============================================================
-# Anti-Spam & Cache
-# ============================================================
 _last_call = {}
 COOLDOWN = 60
 AR_CACHE = {}
-CACHE_TTL = 300  # 5 دقیقه کش می‌شود تا سرعت بالا برود
+CACHE_TTL = 300
 
 # ============================================================
 # GitHub Variables & Auth
@@ -188,7 +184,7 @@ def get_main_menu(chat_id):
     return InlineKeyboardMarkup(keyboard)
 
 # ============================================================
-# 🆕 ارسال پیام طولانی (اصلاح شده و بدون باگ)
+# 🆕 ارسال پیام طولانی (اصلاح شده)
 # ============================================================
 async def send_long_message(c, chat_id, text, max_len=4000):
     if not text: return
@@ -271,7 +267,6 @@ async def click_round(pg, r_num):
                 let elements = Array.from(document.querySelectorAll('button, div, span, a'));
                 for (let el of elements) {{
                     let text = el.innerText ? el.innerText.trim() : '';
-                    // پیدا کردن تب‌های دور (دور ۲ یا R 2 یا فقط عدد ۲)
                     if ((text === 'دور {r_num}' || text === 'R {r_num}' || text === '{r_num}' || text === 'R{r_num}') 
                         && !el.closest('table') && !el.closest('.v-data-table') && !el.closest('tr')) {{
                         let rect = el.getBoundingClientRect();
@@ -305,7 +300,7 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# 🆕 Core Analysis (نسخه ۶.۰ - استخراج بصری از DOM)
+# 🆕 Core Analysis (نسخه ۶.۱ - بدون نیاز به bs4)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -319,7 +314,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         await p.wait_for_timeout(4000)
         full_text = await p.evaluate("() => document.body.innerText")
         
-        # 1. استخراج بصری (Visual Extraction) - ضدضربه‌ترین روش برای سایت‌های پیچیده
+        # 1. استخراج بصری (Visual Extraction)
         rows_data = await p.evaluate("""
             () => {
                 let elements = [];
@@ -336,12 +331,10 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                         }
                     }
                 });
-                // مرتب‌سازی بر اساس مختصات Y و سپس X (مثل چشم انسان)
                 elements.sort((a, b) => {
                     if (Math.abs(a.y - b.y) < 15) return a.x - b.x;
                     return a.y - b.y;
                 });
-                // گروه‌بندی در سطرها
                 let rows = [];
                 let currentRow = [];
                 let lastY = -1;
@@ -359,20 +352,22 @@ async def ar(p, r_num, c, chat_id, save_history=True):
             }
         """)
 
-        # اگر استخراج بصری داده‌ای برنگرداند، از BeautifulSoup استفاده می‌کنیم
+        # 2. اگر استخراج بصری داده‌ای برنگرداند، از Regex روی HTML خام استفاده می‌کنیم (بدون bs4)
         if not rows_data:
             html_content = await p.content()
-            soup = BeautifulSoup(html_content, 'html.parser')
-            for table in soup.find_all('table'):
-                for row in table.find_all('tr'):
-                    cols = row.find_all(['td', 'th'])
-                    if len(cols) >= 4:
-                        rows_data.append([col.get_text(strip=True) for col in cols])
+            # پیدا کردن تمام ردیف‌های جدول با Regex
+            table_rows = re.findall(r'<tr[^>]*>(.*?)</tr>', html_content, re.DOTALL | re.IGNORECASE)
+            for row_html in table_rows:
+                # پیدا کردن سلول‌ها
+                cells = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', row_html, re.DOTALL | re.IGNORECASE)
+                if len(cells) >= 4:
+                    # پاکسازی تگ‌های HTML از داخل سلول‌ها
+                    clean_cells = [re.sub(r'<[^>]+>', '', c).strip() for c in cells]
+                    rows_data.append(clean_cells)
 
-        # 2. پردازش داده‌های استخراج شده
+        # 3. پردازش داده‌های استخراج شده
         if rows_data:
             for cells in rows_data:
-                # پاکسازی اعداد و فیلدهای خالی
                 trans = str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')
                 cells = [c.translate(trans).strip() for c in cells if c.strip()]
                 
@@ -466,7 +461,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     return res_dict
 
 # ============================================================
-# توابع دیگر
+# توابع دیگر (بدون تغییر)
 # ============================================================
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
     if await get_github_var("AUTO_UPDATE", "true") == "false" and not is_reminder:
@@ -957,7 +952,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 6.0 (استخراج بصری - حل مشکل جدول)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 6.1 (بدون نیاز به bs4 - حل خطای نصب)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
