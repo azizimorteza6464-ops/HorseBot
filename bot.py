@@ -1,6 +1,5 @@
 import os, re, httpx, sys, asyncio, json, time
 from datetime import datetime, timedelta
-from html import escape
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import (
     ApplicationBuilder as AB, ContextTypes as C,
@@ -80,6 +79,8 @@ async def is_premium(chat_id):
         except: pass
     return False
 
+async def is_authorized(u: Update, c: C) -> bool: return True 
+
 # ============================================================
 # Weather & Math Helpers
 # ============================================================
@@ -96,9 +97,18 @@ async def get_weather():
         print(f"Weather error: {e}")
     return "⚠️ اطلاعات هوا در دسترس نیست."
 
+JOCKEY_TIERS = {'S': ['رحمانی', 'قهرمانی', 'نوروزی'], 'A': ['وحدانی', 'مرادی', 'صوفیان', 'خواجوی'],
+                'B': ['آقاجانی', 'حیدری', 'نصیری', 'مسعودی'], 'C': ['احمدی', 'رضایی']}
+JOCKEY_RATINGS = {'S': 0.95, 'A': 0.75, 'B': 0.55, 'C': 0.40, 'D': 0.28}
+
+def jockey_rating(name):
+    for tier, names in JOCKEY_TIERS.items():
+        if any(n in name for n in names): return JOCKEY_RATINGS[tier]
+    return JOCKEY_RATINGS['D']
+
+RANK_POINTS = {'1': 10, '2': 6, '3': 3, '4': 1, '5': 0.5}
 def decayed_form(perf_str, decay=0.85):
     if not perf_str: return 0
-    RANK_POINTS = {'1': 10, '2': 6, '3': 3, '4': 1, '5': 0.5}
     return sum(RANK_POINTS.get(str(int(r.strip())), 0) * (decay ** i) 
                for i, r in enumerate(perf_str.split('-')) if r.strip().isdigit())
 
@@ -108,6 +118,11 @@ def power_probs(scores, power=1.8):
     powered = [s ** power for s in scores]
     total = sum(powered) or 1
     return [p / total for p in powered]
+
+def normalize_market(odds_list):
+    implied = [1.0 / o if o > 0 else 0 for o in odds_list]
+    total = sum(implied) or 1
+    return [i / total for i in implied]
 
 def place_probability(probs, i, num_places=3):
     n = len(probs); p_i = probs[i]
@@ -168,6 +183,9 @@ def get_main_menu(chat_id):
         keyboard.append([InlineKeyboardButton("👑 پنل مدیریت", callback_data='admin_help')])
     return InlineKeyboardMarkup(keyboard)
 
+# ============================================================
+# ارسال پیام طولانی
+# ============================================================
 async def send_long_message(c, chat_id, text, max_len=4000):
     if not text: return
     parts = []
@@ -280,47 +298,34 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# Parsing Logic
+# Parsers & Core Analysis
 # ============================================================
 def parse_row_data(cells):
     rank, name, jockey, weight, ior, perf, w_odd = 0, "", "", 0.0, 0, "", 50.0
     for val in cells:
         val = val.strip()
         if not val: continue
-
-        # 1. رتبه
         if val.isdigit() and rank == 0 and 1 <= int(val) <= 20:
             rank = int(val)
             continue
-
-        # 2. فرم
         if re.match(r'^\d+(-\d+)*$', val) and len(val) < 15 and perf == "":
             perf = val
             continue
-
-        # 3. وزن
         num_val = val.replace('kg', '').replace('کیلو', '').strip()
         if re.match(r'^\d{2}(\.\d)?$', num_val) and weight == 0.0:
             weight = float(num_val)
             continue
-
-        # 4. ضریب
         if re.match(r'^\d+(\.\d+)?$', val) and w_odd == 50.0:
             f_val = float(val)
             if 1.0 < f_val < 200.0:
                 w_odd = f_val
                 continue
-
-        # 5. آی‌او‌آر / امتیاز
         if val.isdigit() and ior == 0 and 10 < int(val) < 200:
             ior = int(val)
             continue
-
-        # 6. اسم اسب و جوکی
         if len(val) > 2 and not re.match(r'^\d+(\.\d+)?$', val):
             if not name: name = val
             elif not jockey: jockey = val
-
     return rank, name, jockey, weight, ior, perf, w_odd
 
 async def ar(p, r_num, c, chat_id, save_history=True):
@@ -335,32 +340,22 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         await p.wait_for_timeout(4000)
         full_text = await p.evaluate("() => document.body.innerText")
         
+        # --- روش اول: خواندن از طریق DOM (جدول‌های استاندارد و گریدها) ---
         rows_data = await p.evaluate("""
             () => {
                 let rows = [];
-                // 1. جدول‌های استاندارد
-                let trs = document.querySelectorAll('table tr, .v-data-table tbody tr');
-                if (trs.length > 0) {
-                    trs.forEach(tr => {
-                        let tds = Array.from(tr.querySelectorAll('td, th')).map(td => td.innerText ? td.innerText.trim() : '');
-                        if (tds.length >= 4) rows.push(tds);
-                    });
-                    if (rows.length > 0) return rows;
-                }
+                document.querySelectorAll('table tr, .v-data-table tbody tr').forEach(tr => {
+                    let tds = Array.from(tr.querySelectorAll('td, th')).map(td => td.innerText.trim());
+                    if (tds.length >= 4) rows.push(tds);
+                });
+                if (rows.length > 0) return rows;
 
-                // 2. ساختارهای Div و Button (مخصوص سایت شما)
-                let containers = document.querySelectorAll('div');
-                for (let container of containers) {
-                    if (container.children.length >= 4 && container.children.length <= 12) {
-                        let texts = [];
-                        for (let child of container.children) {
-                            if (['DIV', 'BUTTON', 'SPAN'].includes(child.tagName)) {
-                                let text = child.innerText ? child.innerText.trim() : '';
-                                if (text) texts.push(text);
-                            }
-                        }
-                        // اگر اولین آیتم یک عدد بود (رتبه) و حداقل ۴ آیتم داشت
-                        if (texts.length >= 4 && /^\\d+$/.test(texts[0])) {
+                let divs = Array.from(document.querySelectorAll('div, ul'));
+                for (let d of divs) {
+                    let children = Array.from(d.children);
+                    if (children.length >= 4 && children.length <= 20) {
+                        let texts = children.map(c => c.innerText ? c.innerText.trim() : '');
+                        if (texts.filter(t => t.length > 0).length >= 4 && /^\\d+$/.test(texts[0])) {
                             rows.push(texts);
                         }
                     }
@@ -373,29 +368,48 @@ async def ar(p, r_num, c, chat_id, save_history=True):
             for cells in rows_data:
                 trans = str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')
                 cells = [c.translate(trans).strip() for c in cells if c.strip()]
-                
                 if len(cells) >= 3:
                     rank, name, jockey, weight, ior, perf, w_odd = parse_row_data(cells)
-
-                    if rank == 0 and name:
-                        rank = len(horses) + 1
-
+                    if rank == 0 and name: rank = len(horses) + 1
                     if rank > 0 and name and rank not in horses:
                         horses[rank] = {"n": name, "num": rank, "ior": ior, "j": jockey, "perf": perf, "w_odd": w_odd, "weight": weight}
+
+        # --- روش دوم (پلن B): پردازش متن خام اگر DOM جواب نداد ---
+        if not horses:
+            print(f"DOM failed for round {r_num}. Falling back to text parsing.")
+            parts = [p.strip() for p in full_text.replace('\n', ' | ').split('|') if p.strip()]
+            current_round = 0
+            horse_idx = 1
+            
+            ignore_words = ['H', '1405', '500,000', 'پی‌بر', 'پخش زنده', 'مشارکت', 'آد اسب', 
+                            'دوره‌ای', 'گزارش انتخاب‌ها', 'مالی', 'جدول مسابقات', 'اسبدوانی']
+            
+            for part in parts:
+                m = re.match(r'^(?:R|دور)\s*(\d+)$', part, re.IGNORECASE)
+                if m:
+                    current_round = int(m.group(1))
+                    horse_idx = 1
+                    continue
+                
+                if current_round == r_num:
+                    # فیلتر کردن کلمات اضافی
+                    if part.isdigit() or part in ignore_words or any(w in part for w in ['هفته', 'پاییز', 'قلا', 'نظر‌سنجی']):
+                        continue
+                    
+                    if len(part) > 1:
+                        # اختصاص ضریب پیش‌فرض 10.0 چون در متن اصلی ضریب وجود ندارد
+                        horses[horse_idx] = {"n": part, "num": horse_idx, "ior": 0, "j": "-", "perf": "", "w_odd": 10.0, "weight": 0.0}
+                        horse_idx += 1
 
     except Exception as e: 
         print(f"Error in ar: {e}")
         await _dump_rendered_html(p, c, chat_id, r_num)
-        await c.bot.send_message(chat_id, f"🚨 <b>خطای سیستمی در خواندن جدول دور {r_num}:</b>\n<code>{escape(str(e))}</code>", parse_mode='HTML')
+        await c.bot.send_message(chat_id, f"🚨 <b>خطای سیستمی در خواندن جدول دور {r_num}:</b>\n<code>{str(e)}</code>", parse_mode='HTML')
         return "ERROR"
 
     if not horses:
-        debug_info = "هیچ ردیفی پیدا نشد."
-        if rows_data:
-            debug_info = "\n".join([str(r)[:60] + "..." for r in rows_data[:3]])
-            
         snippet = full_text.replace('\n', ' | ')[:1000]
-        await c.bot.send_message(chat_id, f"⚠️ <b>ربات جدول را پیدا نکرد.</b>\n\n📝 <b>نمونه دیتای استخراج شده:</b>\n<code>{escape(debug_info)}</code>\n\n📄 <b>پیش‌نمایش متن:</b>\n<code>{escape(snippet)}</code>", parse_mode='HTML')
+        await c.bot.send_message(chat_id, f"⚠️ <b>ربات نتوانست دیتایی استخراج کند.</b>\n\n📄 <b>پیش‌نمایش متن صفحه:</b>\n<code>{snippet}</code>", parse_mode='HTML')
         await _dump_rendered_html(p, c, chat_id, r_num)
         return "NOT_UPLOADED"
 
@@ -489,24 +503,30 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     found_any = True
                     w = res['w']
                     rp += f"\n🏁 <b>دور R{r}</b>\n"
-                    rp += f"🥇 <b>پیش‌بر:</b> {w['num']}-{escape(w['n'])}\n"
+                    
+                    # بررسی اینکه آیا ضریب استخراج شده است یا خیر
+                    missing_odds = all(h.get('w_odd', 10.0) == 10.0 for h in res['horses'])
+                    if missing_odds:
+                        rp += "⚠️ <i>(ضریب در صفحه یافت نشد، تحلیل با شانس برابر انجام شد)</i>\n"
+
+                    rp += f"🥇 <b>پیش‌بر:</b> {w['num']}-{w['n']}\n"
                     rp += f"   📊 مدل: {w['model_prob']:.1f}% | بازار: {w['market_prob']:.1f}% (ضریب: {w['w_odd']})\n"
-                    rp += f"🥈 <b>میان‌بر:</b> {res['p']['num']}-{escape(res['p']['n'])}\n"
-                    rp += f"👥 <b>دوقلو (امن):</b> {escape(res['q'])}\n"
+                    rp += f"🥈 <b>میان‌بر:</b> {res['p']['num']}-{res['p']['n']}\n"
+                    rp += f"👥 <b>دوقلو (امن):</b> {res['q']}\n"
                     rp += f"🎯 <b>اطمینان:</b> {res['conf']}\n"
                     
                     if bet_amount and specific_round and r == specific_round:
                         rp += f"\n💰 <b>مدیریت سرمایه (کِلی)</b>\n"
                         bet_amt = calculate_kelly(bet_amount, w['model_prob'], w['w_odd'])
                         if bet_amt > 0:
-                            rp += f"  پیشنهاد شرط روی {w['num']}-{escape(w['n'])}: <code>{bet_amt:,}</code> تومان\n"
+                            rp += f"  پیشنهاد شرط روی {w['num']}-{w['n']}: <code>{bet_amt:,}</code> تومان\n"
                         else:
                             rp += f"  ⚠️ ارزش شرط‌بندی وجود ندارد (ریسک بالا).\n"
                     
                     if specific_round:
                         rp += "\n📈 <b>سه اسب برتر:</b>\n"
                         for h in res['horses'][:3]:
-                            rp += f"  {h['num']}-{escape(h['n'])}: احتمال {h['model_prob']:.1f}% (ضریب: {h['w_odd']})\n"
+                            rp += f"  {h['num']}-{h['n']}: احتمال {h['model_prob']:.1f}% (ضریب: {h['w_odd']})\n"
                     rp += "➖➖➖➖➖➖➖➖\n"
                     
             if not found_any:
@@ -516,7 +536,7 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                 await c.bot.send_message(chat_id, "می‌خواهید ربات چه زمانی دوباره چک کند؟", reply_markup=markup)
             else: await send_long_message(c, chat_id, rp)
     except Exception as e:
-        await c.bot.send_message(chat_id, f"❌ خطا:\n<code>{escape(str(e))}</code>", parse_mode='HTML')
+        await c.bot.send_message(chat_id, f"❌ خطا:\n<code>{str(e)}</code>", parse_mode='HTML')
     finally:
         if browser: await browser.close()
 
@@ -528,7 +548,7 @@ async def process_quinellas(chat_id, c, variant_type):
     try:
         async with ap() as p:
             browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
-            context = await browser.new_context(viewport={'width': 1440, 'height': 900})
+            context = await browser.new_context()
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
 
             pg = await context.new_page()
@@ -564,12 +584,12 @@ async def process_quinellas(chat_id, c, variant_type):
                     best = candidates[0]
                     found_any = True
                     rp += f"\n🏁 <b>دور R{r}</b>\n"
-                    rp += f"👥 <b>{best['h1']['num']}-{escape(best['h1']['n'])} + {best['h2']['num']}-{escape(best['h2']['n'])}</b>\n"
+                    rp += f"👥 <b>{best['h1']['num']}-{best['h1']['n']} + {best['h2']['num']}-{best['h2']['n']}</b>\n"
                     rp += f"   📊 احتمال برد: <b>{best['prob']:.1f}%</b>\n➖➖➖➖➖➖➖➖\n"
             if not found_any: rp += "\n⚠️ برای این نوع دوقلو، گزینه مناسبی پیدا نشد.\n"
             await send_long_message(c, chat_id, rp)
     except Exception as e:
-        await c.bot.send_message(chat_id, f"❌ خطا:\n<code>{escape(str(e))}</code>", parse_mode='HTML')
+        await c.bot.send_message(chat_id, f"❌ خطا:\n<code>{str(e)}</code>", parse_mode='HTML')
     finally:
         if browser: await browser.close()
 
@@ -579,7 +599,7 @@ async def process_multileg(chat_id, c, leg_type, bet_amount=None):
     try:
         async with ap() as p:
             browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
-            context = await browser.new_context(viewport={'width': 1440, 'height': 900})
+            context = await browser.new_context()
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
             pg = await context.new_page()
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000)
@@ -599,12 +619,12 @@ async def process_multileg(chat_id, c, leg_type, bet_amount=None):
             for r in tr:
                 res = res_7 if r == 7 and is_7 else await ar(pg, r, c, chat_id, save_history=False)
                 if isinstance(res, dict):
-                    picks.append(f"{res['w']['num']}-{escape(res['w']['n'])}")
+                    picks.append(f"{res['w']['num']}-{res['w']['n']}")
                 else: picks.append("نامشخص")
             msg = f"🎯 <b>ترکیب {title}</b>\n\n🏇 <b>انتخاب‌ها:</b>\n<code>{' + '.join(picks)}</code>\n"
             await c.bot.send_message(chat_id, msg, parse_mode='HTML')
     except Exception as e:
-        await c.bot.send_message(chat_id, f"❌ خطا: {escape(str(e))}")
+        await c.bot.send_message(chat_id, f"❌ خطا: {str(e)}")
     finally:
         if browser: await browser.close()
 
@@ -614,7 +634,7 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
     try:
         async with ap() as p:
             browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
-            context = await browser.new_context(viewport={'width': 1440, 'height': 900})
+            context = await browser.new_context()
             await context.add_cookies([{'name': 'auth_token', 'value': A, 'domain': '.asbdavani.app', 'path': '/'},{'name': 'device_id', 'value': D, 'domain': '.asbdavani.app', 'path': '/'},{'name': '_udi', 'value': U, 'domain': '.asbdavani.app', 'path': '/'}])
 
             pg = await context.new_page()
@@ -633,12 +653,12 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
                 if isinstance(res, dict):
                     if mode == 'sur_h':
                         sh = res['su']
-                        msg += f"🏁 <b>دور {r}:</b> {sh['num']}-{escape(sh['n'])}\n"
+                        msg += f"🏁 <b>دور {r}:</b> {sh['num']}-{sh['n']}\n"
                     else:
-                        msg += f"🏁 <b>دور {r}:</b> {escape(res['qs'])}\n"
+                        msg += f"🏁 <b>دور {r}:</b> {res['qs']}\n"
             await c.bot.send_message(chat_id, msg, parse_mode='HTML')
     except Exception as e:
-        await c.bot.send_message(chat_id, f"❌ خطا: {escape(str(e))}")
+        await c.bot.send_message(chat_id, f"❌ خطا: {str(e)}")
     finally:
         if browser: await browser.close()
 
@@ -669,12 +689,12 @@ async def process_value_bets(chat_id, c, bet_amount=None):
                         found_any = True
                         rp += f"\n🏁 <b>دور R{r}:</b>\n"
                         for v in values[:3]:
-                            rp += f"💎 {v['num']}-{escape(v['n'])} | مدل {v['model_prob']:.1f}% (ضریب: {v['w_odd']})\n"
+                            rp += f"💎 {v['num']}-{v['n']} | مدل {v['model_prob']:.1f}% (ضریب: {v['w_odd']})\n"
                         rp += "➖➖➖➖➖➖➖➖\n"
             if not found_any: rp += "\n⚠️ <b>ارزشی پیدا نشد.</b>"
             await send_long_message(c, chat_id, rp)
     except Exception as e:
-        await c.bot.send_message(chat_id, f"❌ خطا: {escape(str(e))}")
+        await c.bot.send_message(chat_id, f"❌ خطا: {str(e)}")
     finally:
         if browser: await browser.close()
 
@@ -685,7 +705,7 @@ async def cmd_history(chat_id, c):
     if not history: return await c.bot.send_message(chat_id, "📜 تاریخچه‌ای نیست.")
     txt = "📜 <b>۵ تحلیل آخر:</b>\n\n"
     for item in history:
-        txt += f"📅 {item['date']} | دور {item['round']}\n🥇 {escape(item['win'])}\n👥 {escape(item['quinella'])}\n🎯 {item['confidence']}\n➖➖➖➖\n"
+        txt += f"📅 {item['date']} | دور {item['round']}\n🥇 {item['win']}\n👥 {item['quinella']}\n🎯 {item['confidence']}\n➖➖➖➖\n"
     await c.bot.send_message(chat_id, txt, parse_mode='HTML')
 
 async def get_referrals():
@@ -920,7 +940,7 @@ async def cmd_debug(u: Update, c: C):
             await click_round(pg, r_num)
             await _dump_rendered_html(pg, c, u.effective_chat.id, r_num)
     except Exception as e:
-        await u.message.reply_text(f"❌ خطا: {escape(str(e))}")
+        await u.message.reply_text(f"❌ خطا: {e}")
     finally:
         if browser: await browser.close()
 
@@ -945,7 +965,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 6.3 (استخراج هوشمند DOM و رفع باگ جدول)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 6.3 (پردازش متنی هوشمند)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
@@ -961,7 +981,7 @@ async def main():
     asyncio.create_task(check_expirations(app.bot))
     await app.initialize(); await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-    await asyncio.sleep(17400) # اجرای 4.8 ساعته
+    await asyncio.sleep(17400)
     await app.updater.stop(); await app.stop(); await app.shutdown()
 
 if __name__ == "__main__":
