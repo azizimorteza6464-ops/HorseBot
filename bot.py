@@ -7,6 +7,7 @@ from telegram.ext import (
     MessageHandler, filters
 )
 from playwright.async_api import async_playwright as ap
+from bs4 import BeautifulSoup
 
 T = os.environ.get("BOT_TOKEN")
 A = os.environ.get("USER_TOKEN")
@@ -31,7 +32,7 @@ REF_REWARD_DAYS = 3
 _last_call = {}
 COOLDOWN = 60
 AR_CACHE = {}
-CACHE_TTL = 0 
+CACHE_TTL = 300  # 5 دقیقه کش می‌شود تا سرعت بالا برود
 
 # ============================================================
 # GitHub Variables & Auth
@@ -90,11 +91,15 @@ async def is_authorized(u: Update, c: C) -> bool: return True
 async def get_weather():
     try:
         url = "https://api.open-meteo.com/v1/forecast?latitude=37.25&longitude=55.16&current_weather=true"
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             res = await client.get(url)
-            data = res.json()
-            return f"🌡 دما: {data['current_weather']['temperature']}°C | 💨 باد: {data['current_weather']['windspeed']} km/h"
-    except: return "⚠️ اطلاعات هوا در دسترس نیست."
+            if res.status_code == 200:
+                data = res.json()
+                cw = data.get('current_weather', {})
+                return f"🌡 دما: {cw.get('temperature', '---')}°C | 💨 باد: {cw.get('windspeed', '---')} km/h"
+    except Exception as e: 
+        print(f"Weather error: {e}")
+    return "⚠️ اطلاعات هوا در دسترس نیست."
 
 JOCKEY_TIERS = {'S': ['رحمانی', 'قهرمانی', 'نوروزی'], 'A': ['وحدانی', 'مرادی', 'صوفیان', 'خواجوی'],
                 'B': ['آقاجانی', 'حیدری', 'نصیری', 'مسعودی'], 'C': ['احمدی', 'رضایی']}
@@ -152,8 +157,6 @@ def calculate_kelly(bankroll, model_prob, decimal_odds, fraction=0.25, min_bet=1
     raw = min(bankroll * f * fraction, bankroll * max_pct)
     return int(raw // 1000) * 1000 if raw >= min_bet else 0
 
-FRACTIONS = {'win': 0.25, 'place': 0.20, 'quinella': 0.15, 'exacta': 0.10, 'trifecta': 0.05, 'parlay': 0.08}
-
 def get_confidence_level(res_dict):
     w, p = res_dict['w'], res_dict['p']
     model_gap = w['model_prob'] - p['model_prob']
@@ -184,31 +187,28 @@ def get_main_menu(chat_id):
         keyboard.append([InlineKeyboardButton("👑 پنل مدیریت", callback_data='admin_help')])
     return InlineKeyboardMarkup(keyboard)
 
-def _split_safe(text, max_len=4000):
-    if len(text) <= max_len: return [text]
-    chunks, current = [], ""
-    for block in text.split('\n\n'):
-        if len(current) + len(block) + 2 > max_len:
-            if current: chunks.append(current)
-            if len(block) > max_len:
-                current = ""
-                for line in block.split('\n'):
-                    if len(current) + len(line) + 1 > max_len:
-                        if current: chunks.append(current)
-                        current = line
-                    else: current = current + '\n' + line if current else line
-            else: current = block
-        else: current = current + '\n\n' + block if current else block
-    if current: chunks.append(current)
-    return chunks
-
+# ============================================================
+# 🆕 ارسال پیام طولانی (اصلاح شده و بدون باگ)
+# ============================================================
 async def send_long_message(c, chat_id, text, max_len=4000):
-    for chunk in _split_safe(text, max_len):
+    if not text: return
+    parts = []
+    while len(text) > max_len:
+        split_idx = text.rfind('\n', 0, max_len)
+        if split_idx == -1:
+            split_idx = text.rfind(' ', 0, max_len)
+        if split_idx == -1:
+            split_idx = max_len
+        parts.append(text[:split_idx])
+        text = text[split_idx:].lstrip('\n')
+    parts.append(text)
+    
+    for chunk in parts:
         try: await c.bot.send_message(chat_id, chunk, parse_mode='HTML')
         except Exception:
             try: await c.bot.send_message(chat_id, re.sub(r'<[^>]+>', '', chunk))
             except Exception as e: print(f"Send error: {e}")
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.3)
 
 async def save_to_history(res_dict, r_num):
     history_str = await get_github_var("BOT_HISTORY", "[]")
@@ -238,8 +238,7 @@ async def cmd_admin_panel(chat_id, c):
                 exp_date = datetime.strptime(exp_str, "%Y-%m-%d %H:%M:%S")
                 days_left = (exp_date - now).days
                 user_status = f"({days_left} روز مانده)" if days_left >= 0 else "(منقضی شده)"
-            except: 
-                user_status = "(نامشخص)"
+            except: user_status = "(نامشخص)"
             
             keyboard.append([InlineKeyboardButton(f"👤 {display_name} {user_status}", callback_data='ignore')])
             keyboard.append([
@@ -251,33 +250,34 @@ async def cmd_admin_panel(chat_id, c):
 
 async def prepare_page(pg):
     try:
-        await pg.wait_for_timeout(4000)
+        await pg.wait_for_timeout(3000)
         try: await pg.keyboard.press("Escape")
         except: pass
     except Exception as e:
         print(f"Prepare page error: {e}")
 
 async def click_round(pg, r_num):
-    """کلیک روی تب دور مورد نظر در صفحه برای لود شدن ضرایب جدید"""
+    """کلیک هوشمندانه روی تب دور مورد نظر"""
     try:
         try:
             show_btn = pg.locator('text="نمایش دورها"').first
             if await show_btn.is_visible():
                 await show_btn.click()
-                await pg.wait_for_timeout(1500)
+                await pg.wait_for_timeout(1000)
         except: pass
 
         clicked = await pg.evaluate(f"""
             () => {{
                 let elements = Array.from(document.querySelectorAll('button, div, span, a'));
                 for (let el of elements) {{
-                    if (el.innerText && el.innerText.trim() === '{r_num}') {{
-                        if (!el.closest('table') && !el.closest('.v-data-table') && !el.closest('tr')) {{
-                            let rect = el.getBoundingClientRect();
-                            if (rect.width > 0 && rect.height > 0) {{
-                                el.click();
-                                return true;
-                            }}
+                    let text = el.innerText ? el.innerText.trim() : '';
+                    // پیدا کردن تب‌های دور (دور ۲ یا R 2 یا فقط عدد ۲)
+                    if ((text === 'دور {r_num}' || text === 'R {r_num}' || text === '{r_num}' || text === 'R{r_num}') 
+                        && !el.closest('table') && !el.closest('.v-data-table') && !el.closest('tr')) {{
+                        let rect = el.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {{
+                            el.click();
+                            return true;
                         }}
                     }}
                 }}
@@ -297,97 +297,107 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
             f.write(html)
         with open(fname, "rb") as f:
             await c.bot.send_document(
-                chat_id,
-                document=f,
-                filename=fname,
-                caption=(f"🔍 <b>دیباگ HTML دور {r_num}</b>\n"
-                         f"📏 حجم: {len(html):,} کاراکتر"),
+                chat_id, document=f, filename=fname,
+                caption=(f"🔍 <b>دیباگ HTML دور {r_num}</b>\n📏 حجم: {len(html):,} کاراکتر"),
                 parse_mode='HTML'
             )
     except Exception as e:
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# 🆕 Core Analysis (نسخه ۵.۱ - پارس متنی مقاوم و ضدضربه)
+# 🆕 Core Analysis (نسخه ۶.۰ - استخراج بصری از DOM)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
         ts, cached_res = AR_CACHE[r_num]
         if time.time() - ts < CACHE_TTL: return cached_res
 
-    # کلیک روی دور مورد نظر
     await click_round(p, r_num)
-    
     horses = {}
     full_text = ""
     try:
-        await p.wait_for_timeout(4000) # زمان بیشتر برای لود کامل جدول
-        # خواندن کل متن صفحه
+        await p.wait_for_timeout(4000)
         full_text = await p.evaluate("() => document.body.innerText")
         
-        # پاکسازی متن: حذف خطوط خالی اضافی و فاصله‌های اضافی
-        clean_text = re.sub(r'\n+', '\n', full_text)
-        clean_text = re.sub(r' +', ' ', clean_text)
-
-        # ۱. استخراج جدول اصلی (روش جدید و مقاوم‌تر)
-        # الگوی اول
-        pattern_main = re.compile(
-            r'(\d+)\s*\n\s*([^\n]+)\s*\n\s*([^\n]+)\s*\n\s*(\d+)\s*\n\s*(\d+(?:\.\d+)?)\s*kg\s*\n\s*(\d+)\s*\n\s*([^\n]+)\s*\n\s*([\d\-]+)', 
-            re.IGNORECASE
-        )
-        
-        matches = pattern_main.findall(clean_text)
-        
-        # اگر الگوی اول پیدا نکرد، الگوی دوم (انعطاف‌پذیرتر) اجرا می‌شود
-        if not matches:
-            pattern_main_2 = re.compile(
-                r'(\d+)\s+([^\n]+?)\s+([^\n]+?)\s+(\d+)\s+(\d+(?:\.\d+)?)\s*kg\s+(\d+)\s+([^\n]+?)\s+([\d\-]+)', 
-                re.IGNORECASE
-            )
-            matches = pattern_main_2.findall(clean_text)
-
-        for m in matches:
-            try:
-                rank = int(m[0])
-                name = m[1].strip()
-                jockey = m[2].strip()
-                weight = float(m[4])
-                ior = int(m[5])
-                perf = m[7].strip()
-                
-                # جلوگیری از افزودن اسب‌های تکراری یا نامعتبر
-                if rank > 0 and name and len(name) > 1:
-                    horses[rank] = {
-                        "n": name, "num": rank, "ior": ior, "j": jockey, 
-                        "perf": perf, "w_odd": 50.0, "weight": weight
+        # 1. استخراج بصری (Visual Extraction) - ضدضربه‌ترین روش برای سایت‌های پیچیده
+        rows_data = await p.evaluate("""
+            () => {
+                let elements = [];
+                let container = document.querySelector('.v-data-table') || document.querySelector('table') || document.body;
+                container.querySelectorAll('*').forEach(el => {
+                    if (el.children.length === 0 || el.tagName === 'INPUT') {
+                        let text = el.innerText ? el.innerText.trim() : '';
+                        if (el.tagName === 'INPUT') text = el.value;
+                        if (text.length > 0) {
+                            let rect = el.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {
+                                elements.push({ text: text, x: rect.x, y: rect.y });
+                            }
+                        }
                     }
-            except Exception as parse_err:
-                continue
+                });
+                // مرتب‌سازی بر اساس مختصات Y و سپس X (مثل چشم انسان)
+                elements.sort((a, b) => {
+                    if (Math.abs(a.y - b.y) < 15) return a.x - b.x;
+                    return a.y - b.y;
+                });
+                // گروه‌بندی در سطرها
+                let rows = [];
+                let currentRow = [];
+                let lastY = -1;
+                for (let el of elements) {
+                    if (lastY === -1 || Math.abs(el.y - lastY) < 15) {
+                        currentRow.push(el.text);
+                    } else {
+                        if (currentRow.length > 0) rows.push(currentRow);
+                        currentRow = [el.text];
+                    }
+                    lastY = el.y;
+                }
+                if (currentRow.length > 0) rows.push(currentRow);
+                return rows;
+            }
+        """)
 
-        # ۲. استخراج ضرایب
-        odds_block_match = re.search(r'پیش.?بر.*?نام اسب.*?\n(.*?)(?:بروزرسانی|$)', clean_text, re.DOTALL)
-        if odds_block_match:
-            odds_text = odds_block_match.group(1).strip()
-            odds_lines = [line.strip() for line in odds_text.split('\n') if line.strip()]
-            
-            # پردازش ردیف‌های ضرایب
-            for i in range(len(odds_lines)):
-                try:
-                    # تبدیل اعداد فارسی به انگلیسی
-                    translated_line = odds_lines[i].translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789'))
-                    if re.match(r'^\d+(\.\d+)?$', translated_line):
-                        win_odd = float(translated_line)
-                        
-                        # پیدا کردن نام اسب در خطوط بعدی (معمولا 3-4 خط پایین‌تر)
-                        for j in range(i+1, min(i+6, len(odds_lines))):
-                            horse_name_odd = odds_lines[j].strip()
-                            # تطبیق نام اسب
-                            for num, h in horses.items():
-                                if horse_name_odd in h['n'] or h['n'] in horse_name_odd:
-                                    h['w_odd'] = win_odd
-                                    break
-                except:
-                    continue
+        # اگر استخراج بصری داده‌ای برنگرداند، از BeautifulSoup استفاده می‌کنیم
+        if not rows_data:
+            html_content = await p.content()
+            soup = BeautifulSoup(html_content, 'html.parser')
+            for table in soup.find_all('table'):
+                for row in table.find_all('tr'):
+                    cols = row.find_all(['td', 'th'])
+                    if len(cols) >= 4:
+                        rows_data.append([col.get_text(strip=True) for col in cols])
+
+        # 2. پردازش داده‌های استخراج شده
+        if rows_data:
+            for cells in rows_data:
+                # پاکسازی اعداد و فیلدهای خالی
+                trans = str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')
+                cells = [c.translate(trans).strip() for c in cells if c.strip()]
+                
+                if len(cells) >= 4:
+                    rank, name, jockey, weight, ior, perf, w_odd = 0, "", "", 0.0, 0, "", 50.0
+                    
+                    for val in cells:
+                        if val.isdigit() and rank == 0:
+                            rank = int(val)
+                        elif len(val) > 2 and not val.replace('.','',1).isdigit() and not name:
+                            name = val
+                        elif len(val) > 2 and not val.replace('.','',1).isdigit() and not jockey:
+                            jockey = val
+                        elif ('kg' in val or val.replace('.','',1).isdigit()) and weight == 0.0:
+                            try: weight = float(val.replace('kg','').replace('کیلو','').strip())
+                            except: pass
+                        elif val.isdigit() and ior == 0 and 10 < int(val) < 200:
+                            ior = int(val)
+                        elif re.match(r'^\d+\-\d+', val) and not perf:
+                            perf = val
+                        elif re.match(r'^\d+(\.\d+)?$', val) and w_odd == 50.0:
+                            w_odd = float(val)
+
+                    if rank > 0 and name:
+                        horses[rank] = {"n": name, "num": rank, "ior": ior, "j": jockey, "perf": perf, "w_odd": w_odd, "weight": weight}
 
     except Exception as e: 
         print(f"Error in ar: {e}")
@@ -395,7 +405,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         await c.bot.send_message(chat_id, f"🚨 <b>خطای سیستمی در خواندن جدول دور {r_num}:</b>\n<code>{str(e)}</code>", parse_mode='HTML')
         return "ERROR"
 
-    # اگر هیچ اسبی پیدا نشد
     if not horses:
         snippet = full_text.replace('\n', ' | ')[:1500]
         await c.bot.send_message(chat_id, f"⚠️ <b>ربات جدول را پیدا نکرد. پیش‌نمایش متن صفحه:</b>\n<code>{snippet}</code>", parse_mode='HTML')
@@ -407,22 +416,18 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     horse_list = list(horses.values())
     n = len(horse_list)
     
-    # 1. محاسبه فرم بر اساس ستون عملکرد
     forms = [decayed_form(h['perf']) for h in horse_list]
     form_max = max(forms) if forms and max(forms) > 0 else 1
     
-    # 2. محاسبه احتمال بازار با استفاده از ضریب واقعی (w_odd)
     implied_probs = [1.0 / h['w_odd'] if h['w_odd'] > 1 else 0 for h in horse_list]
     total_implied = sum(implied_probs) or 1
     market_probs = [p / total_implied for p in implied_probs]
 
-    # 3. ترکیب فرم و شانس بازار
     for idx, h in enumerate(horse_list):
         form_norm = decayed_form(h['perf']) / form_max
         h['combined'] = (0.60 * form_norm + 0.40 * market_probs[idx])
         h['market_prob'] = market_probs[idx] * 100
 
-    # 4. محاسبه احتمال مدل
     model_raw = power_probs([h['combined'] for h in horse_list], power=1.8)
     ALPHA = 0.35
     for idx, h in enumerate(horse_list):
@@ -545,8 +550,7 @@ async def process_quinellas(chat_id, c, variant_type):
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
             await prepare_page(pg)
-            rp = f"{title}\n"
-            rp += "➖➖➖➖➖➖➖➖\n"
+            rp = f"{title}\n➖➖➖➖➖➖➖➖\n"
             found_any = False
             for r in range(1, 8):
                 res = await ar(pg, r, c, chat_id, save_history=False)
@@ -560,14 +564,12 @@ async def process_quinellas(chat_id, c, variant_type):
                         h1, h2 = horses[i], horses[j]
                         if variant_type == 'q_safe' and not (i == 0 and j == 1): continue
                         if variant_type == 'q_value':
-                            is_top = (i < 3) or (j < 3)
-                            if not is_top: continue
+                            if not ((i < 3) or (j < 3)): continue
                         if variant_type == 'q_lucky':
                             if not (i >= 3 and j >= 3): continue
                         q_p = quinella_prob(probs, i, j)
                         if q_p <= 0: continue
-                        fair_odd = round(1 / q_p, 2)
-                        candidates.append({"h1": h1, "h2": h2, "prob": q_p * 100, "fair_odd": fair_odd})
+                        candidates.append({"h1": h1, "h2": h2, "prob": q_p * 100, "fair_odd": round(1 / q_p, 2)})
                 if candidates:
                     if variant_type == 'q_safe': candidates.sort(key=lambda x: x['prob'], reverse=True)
                     else: candidates.sort(key=lambda x: x['fair_odd'], reverse=True)
@@ -575,8 +577,7 @@ async def process_quinellas(chat_id, c, variant_type):
                     found_any = True
                     rp += f"\n🏁 <b>دور R{r}</b>\n"
                     rp += f"👥 <b>{best['h1']['num']}-{best['h1']['n']} + {best['h2']['num']}-{best['h2']['n']}</b>\n"
-                    rp += f"   📊 احتمال برد: <b>{best['prob']:.1f}%</b>\n"
-                    rp += "➖➖➖➖➖➖➖➖\n"
+                    rp += f"   📊 احتمال برد: <b>{best['prob']:.1f}%</b>\n➖➖➖➖➖➖➖➖\n"
             if not found_any: rp += "\n⚠️ برای این نوع دوقلو، گزینه مناسبی پیدا نشد.\n"
             await send_long_message(c, chat_id, rp)
     except Exception as e:
@@ -606,12 +607,11 @@ async def process_multileg(chat_id, c, leg_type, bet_amount=None):
             elif leg_type == 'ml_3a': tr = [1,2,3]; title = "۳ پره اول"
             elif leg_type == 'ml_3b': tr = [5,6,7] if is_7 else [4,5,6]; title = "۳ پره دوم"
             else: return
-            picks, details = [], []
+            picks = []
             for r in tr:
                 res = res_7 if r == 7 and is_7 else await ar(pg, r, c, chat_id, save_history=False)
                 if isinstance(res, dict):
                     picks.append(f"{res['w']['num']}-{res['w']['n']}")
-                    details.append(res['w'])
                 else: picks.append("نامشخص")
             msg = f"🎯 <b>ترکیب {title}</b>\n\n🏇 <b>انتخاب‌ها:</b>\n<code>{' + '.join(picks)}</code>\n"
             await c.bot.send_message(chat_id, msg, parse_mode='HTML')
@@ -681,8 +681,7 @@ async def process_value_bets(chat_id, c, bet_amount=None):
                         found_any = True
                         rp += f"\n🏁 <b>دور R{r}:</b>\n"
                         for v in values[:3]:
-                            line = f"💎 {v['num']}-{v['n']} | مدل {v['model_prob']:.1f}% (ضریب: {v['w_odd']})"
-                            rp += line + "\n"
+                            rp += f"💎 {v['num']}-{v['n']} | مدل {v['model_prob']:.1f}% (ضریب: {v['w_odd']})\n"
                         rp += "➖➖➖➖➖➖➖➖\n"
             if not found_any: rp += "\n⚠️ <b>ارزشی پیدا نشد.</b>"
             await send_long_message(c, chat_id, rp)
@@ -732,7 +731,7 @@ async def check_expirations(bot):
                     days_left = (exp_date - now).days
                     if days_left == 2:
                         try:
-                            await bot.send_message(int(uid), "⚠️ <b>هشدار انقضای اشتراک</b>\n\nاشتراک شما ۲ روز دیگر به پایان می‌رسد.\nبرای جلوگیری از قطع دسترسی به تحلیل‌ها، از دکمه «💳 خرید اشتراک» استفاده کنید.", parse_mode='HTML')
+                            await bot.send_message(int(uid), "⚠️ <b>هشدار انقضای اشتراک</b>\n\nاشتراک شما ۲ روز دیگر به پایان می‌رسد.\nبرای جلوگیری از قطع دسترسی، از دکمه «💳 خرید اشتراک» استفاده کنید.", parse_mode='HTML')
                         except: pass
                 except: pass
         except: pass
@@ -764,7 +763,7 @@ async def button_callback(u: Update, c: C):
     _last_call[key] = now
 
     if data == 'buy_sub':
-        txt = f"💳 <b>خرید اشتراک ویژه</b>\n\nبرای دسترسی به تمام امکانات ربات، مبلغ <b>{SUB_PRICE} تومان</b> را به شماره کارت زیر واریز کنید:\n\n💳 <code>{CARD_NUMBER}</code>\n👤 به نام: {CARD_HOLDER}\n\n📸 <b>پس از واریز، عکس رسید پرداخت را همین‌جا ارسال کنید.</b>\nپس از تایید توسط مدیریت، اشتراک شما فعال می‌شود."
+        txt = f"💳 <b>خرید اشتراک ویژه</b>\n\nبرای دسترسی به تمام امکانات ربات، مبلغ <b>{SUB_PRICE} تومان</b> را به شماره کارت زیر واریز کنید:\n\n💳 <code>{CARD_NUMBER}</code>\n👤 به نام: {CARD_HOLDER}\n\n📸 <b>پس از واریز، عکس رسید پرداخت را همین‌جا ارسال کنید.</b>"
         await query.message.reply_text(txt, parse_mode='HTML')
         return
     elif data == 'my_status':
@@ -780,7 +779,7 @@ async def button_callback(u: Update, c: C):
         link = f"https://t.me/{bot_info.username}?start=ref_{chat_id}"
         referrals = await get_referrals()
         invited = len(referrals.get(str(chat_id), []))
-        txt = f"🎁 <b>دعوت از دوستان</b>\n\nبا دعوت از دوستان خود، به ازای هر نفر <b>{REF_REWARD_DAYS} روز</b> اشتراک رایگان دریافت کنید!\n\n🔗 <b>لینک اختصاصی شما:</b>\n<code>{link}</code>\n\n👤 <b>تعداد دعوت شدگان:</b> {invited} نفر\n🎁 (معادل {invited * REF_REWARD_DAYS} روز اشتراک هدیه گرفته‌اید)"
+        txt = f"🎁 <b>دعوت از دوستان</b>\n\nبا دعوت از دوستان خود، به ازای هر نفر <b>{REF_REWARD_DAYS} روز</b> اشتراک رایگان دریافت کنید!\n\n🔗 <b>لینک اختصاصی شما:</b>\n<code>{link}</code>\n\n👤 <b>تعداد دعوت شدگان:</b> {invited} نفر"
         await query.message.reply_text(txt, parse_mode='HTML')
         return
     elif data.startswith('adm_'):
@@ -860,7 +859,7 @@ async def handle_photo(u: Update, c: C):
     if str(chat_id) == MY_ID: return
     user_name = u.effective_chat.first_name or "کاربر"
     await c.bot.forward_message(chat_id=MY_ID, from_chat_id=chat_id, message_id=u.message.message_id)
-    admin_msg = f"🔔 <b>رسید جدید!</b>\n\n👤 نام: {user_name}\nآیدی عددی: <code>{chat_id}</code>\n\nبرای تایید ۳۰ روزه، روی این متن کلیک کنید تا کپی شود و سپس ارسال کنید:\n<code>/approve {chat_id} 30</code>\n<i>(اگر می‌خواهید تعداد روز دیگری باشد، عدد ۳۰ را تغییر دهید)</i>"
+    admin_msg = f"🔔 <b>رسید جدید!</b>\n\n👤 نام: {user_name}\nآیدی عددی: <code>{chat_id}</code>\n\nبرای تایید ۳۰ روزه، روی این متن کلیک کنید تا کپی شود و سپس ارسال کنید:\n<code>/approve {chat_id} 30</code>"
     await c.bot.send_message(MY_ID, admin_msg, parse_mode='HTML')
     await u.message.reply_text("✅ رسید شما دریافت شد.\nپس از بررسی توسط پشتیبانی، اشتراک شما فعال خواهد شد.")
 
@@ -914,8 +913,7 @@ async def cmd_debug(u: Update, c: C):
         return await u.message.reply_text("⛔ فقط ادمین.")
     try:
         r_num = int(c.args[0]) if c.args else 1
-    except:
-        r_num = 1
+    except: r_num = 1
     await u.message.reply_text(f"⏳ در حال گرفتن HTML دور {r_num}...")
     browser = None
     try:
@@ -959,7 +957,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 5.1 (پارس متنی مقاوم و ضدضربه)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 6.0 (استخراج بصری - حل مشکل جدول)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
