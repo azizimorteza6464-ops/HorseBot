@@ -392,12 +392,10 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                     continue
                 
                 if current_round == r_num:
-                    # فیلتر کردن کلمات اضافی
                     if part.isdigit() or part in ignore_words or any(w in part for w in ['هفته', 'پاییز', 'قلا', 'نظر‌سنجی']):
                         continue
                     
                     if len(part) > 1:
-                        # اختصاص ضریب پیش‌فرض 10.0 چون در متن اصلی ضریب وجود ندارد
                         horses[horse_idx] = {"n": part, "num": horse_idx, "ior": 0, "j": "-", "perf": "", "w_odd": 10.0, "weight": 0.0}
                         horse_idx += 1
 
@@ -504,7 +502,6 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     w = res['w']
                     rp += f"\n🏁 <b>دور R{r}</b>\n"
                     
-                    # بررسی اینکه آیا ضریب استخراج شده است یا خیر
                     missing_odds = all(h.get('w_odd', 10.0) == 10.0 for h in res['horses'])
                     if missing_odds:
                         rp += "⚠️ <i>(ضریب در صفحه یافت نشد، تحلیل با شانس برابر انجام شد)</i>\n"
