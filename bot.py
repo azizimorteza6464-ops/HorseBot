@@ -308,7 +308,7 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# 🆕 Core Analysis (نسخه ۵.۰ - پارس متنی ضدضربه)
+# 🆕 Core Analysis (نسخه ۵.۱ - پارس متنی مقاوم و ضدضربه)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -321,47 +321,71 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     horses = {}
     full_text = ""
     try:
-        await p.wait_for_timeout(3000)
-        # خواندن کل متن صفحه، بدون توجه به ساختار HTML
+        await p.wait_for_timeout(4000) # زمان بیشتر برای لود کامل جدول
+        # خواندن کل متن صفحه
         full_text = await p.evaluate("() => document.body.innerText")
         
-        # ۱. استخراج جدول اصلی (رتبه، نام، چابکسوار، سن، وزن، IOR، روزها، عملکرد)
-        # این الگو دقیقاً مثل چشم انسان متن‌ها را می‌خواند
-        pattern_main = re.compile(r'(\d+)\s*\n\s*(.*?)\s*\n\s*(.*?)\s*\n\s*(\d+)\s*\n\s*(\d+(?:\.\d+)?)\s*kg\s*\n\s*(\d+)\s*\n\s*(.*?)\s*\n\s*([\d\-]+)', re.IGNORECASE)
-        matches = pattern_main.findall(full_text)
-        
-        for m in matches:
-            rank = int(m[0])
-            name = m[1].strip()
-            jockey = m[2].strip()
-            weight = float(m[4])
-            ior = int(m[5])
-            perf = m[7].strip()
-            
-            horses[rank] = {
-                "n": name, "num": rank, "ior": ior, "j": jockey, 
-                "perf": perf, "w_odd": 50.0, "weight": weight
-            }
+        # پاکسازی متن: حذف خطوط خالی اضافی و فاصله‌های اضافی
+        clean_text = re.sub(r'\n+', '\n', full_text)
+        clean_text = re.sub(r' +', ' ', clean_text)
 
-        # ۲. استخراج ضرایب با استفاده از خواندن متن
-        # پیدا کردن بلوکی که با "پیش‌بر" شروع می‌شود و تا کلمه "بروزرسانی" ادامه دارد
-        odds_block_match = re.search(r'پیش.?بر.*?نام اسب.*?\n(.*?)(?:بروزرسانی|$)', full_text, re.DOTALL)
+        # ۱. استخراج جدول اصلی (روش جدید و مقاوم‌تر)
+        # الگوی اول
+        pattern_main = re.compile(
+            r'(\d+)\s*\n\s*([^\n]+)\s*\n\s*([^\n]+)\s*\n\s*(\d+)\s*\n\s*(\d+(?:\.\d+)?)\s*kg\s*\n\s*(\d+)\s*\n\s*([^\n]+)\s*\n\s*([\d\-]+)', 
+            re.IGNORECASE
+        )
+        
+        matches = pattern_main.findall(clean_text)
+        
+        # اگر الگوی اول پیدا نکرد، الگوی دوم (انعطاف‌پذیرتر) اجرا می‌شود
+        if not matches:
+            pattern_main_2 = re.compile(
+                r'(\d+)\s+([^\n]+?)\s+([^\n]+?)\s+(\d+)\s+(\d+(?:\.\d+)?)\s*kg\s+(\d+)\s+([^\n]+?)\s+([\d\-]+)', 
+                re.IGNORECASE
+            )
+            matches = pattern_main_2.findall(clean_text)
+
+        for m in matches:
+            try:
+                rank = int(m[0])
+                name = m[1].strip()
+                jockey = m[2].strip()
+                weight = float(m[4])
+                ior = int(m[5])
+                perf = m[7].strip()
+                
+                # جلوگیری از افزودن اسب‌های تکراری یا نامعتبر
+                if rank > 0 and name and len(name) > 1:
+                    horses[rank] = {
+                        "n": name, "num": rank, "ior": ior, "j": jockey, 
+                        "perf": perf, "w_odd": 50.0, "weight": weight
+                    }
+            except Exception as parse_err:
+                continue
+
+        # ۲. استخراج ضرایب
+        odds_block_match = re.search(r'پیش.?بر.*?نام اسب.*?\n(.*?)(?:بروزرسانی|$)', clean_text, re.DOTALL)
         if odds_block_match:
             odds_text = odds_block_match.group(1).strip()
             odds_lines = [line.strip() for line in odds_text.split('\n') if line.strip()]
             
-            # پردازش ردیف‌های ضرایب (هر ۶ خط یک اسب)
-            for i in range(0, len(odds_lines) - 5, 6):
+            # پردازش ردیف‌های ضرایب
+            for i in range(len(odds_lines)):
                 try:
-                    win_odd_str = odds_lines[i+2].translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789'))
-                    win_odd = float(win_odd_str)
-                    horse_name_odd = odds_lines[i+5].strip()
-                    
-                    # تطبیق نام اسب از جدول ضرایب با جدول اصلی
-                    for num, h in horses.items():
-                        if horse_name_odd in h['n'] or h['n'] in horse_name_odd:
-                            h['w_odd'] = win_odd
-                            break
+                    # تبدیل اعداد فارسی به انگلیسی
+                    translated_line = odds_lines[i].translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789'))
+                    if re.match(r'^\d+(\.\d+)?$', translated_line):
+                        win_odd = float(translated_line)
+                        
+                        # پیدا کردن نام اسب در خطوط بعدی (معمولا 3-4 خط پایین‌تر)
+                        for j in range(i+1, min(i+6, len(odds_lines))):
+                            horse_name_odd = odds_lines[j].strip()
+                            # تطبیق نام اسب
+                            for num, h in horses.items():
+                                if horse_name_odd in h['n'] or h['n'] in horse_name_odd:
+                                    h['w_odd'] = win_odd
+                                    break
                 except:
                     continue
 
@@ -371,9 +395,9 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         await c.bot.send_message(chat_id, f"🚨 <b>خطای سیستمی در خواندن جدول دور {r_num}:</b>\n<code>{str(e)}</code>", parse_mode='HTML')
         return "ERROR"
 
+    # اگر هیچ اسبی پیدا نشد
     if not horses:
-        # اگر هیچ اسبی پیدا نشد، یک تکه از متن را برای دیباگ می‌فرستیم
-        snippet = full_text.replace('\n', ' | ')[:1000]
+        snippet = full_text.replace('\n', ' | ')[:1500]
         await c.bot.send_message(chat_id, f"⚠️ <b>ربات جدول را پیدا نکرد. پیش‌نمایش متن صفحه:</b>\n<code>{snippet}</code>", parse_mode='HTML')
         await _dump_rendered_html(p, c, chat_id, r_num)
         return "NOT_UPLOADED"
@@ -935,7 +959,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 5.0 (پارس متنی ضدضربه و بدون خطا)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 5.1 (پارس متنی مقاوم و ضدضربه)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
