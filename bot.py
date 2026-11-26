@@ -298,34 +298,54 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# Parsers & Core Analysis
+# Parsers & Core Analysis (اصلاح شده)
 # ============================================================
 def parse_row_data(cells):
-    rank, name, jockey, weight, ior, perf, w_odd = 0, "", "", 0.0, 0, "", 50.0
+    rank, name, jockey, weight, ior, perf, w_odd = 0, "", "", 0.0, 0, "", 0.0
+    
     for val in cells:
-        val = val.strip()
+        val = str(val).strip()
         if not val: continue
+        
+        # 1. Performance (e.g., 1-2-3-4, 0-0-5)
+        if re.match(r'^\d+(-\d+)+$', val) and len(val) < 15 and perf == "":
+            perf = val
+            continue
+            
+        # 2. Odds (Typically float like 4.5, 12.0)
+        if re.match(r'^\d+\.\d+$', val):
+            f_val = float(val)
+            if 1.0 < f_val < 300.0:
+                w_odd = f_val
+                continue
+                
+        # 3. Weight (e.g., 54.5, 56)
+        num_val = val.replace('kg', '').replace('کیلو', '').strip()
+        if re.match(r'^\d{2}(\.\d)?$', num_val):
+            f_val = float(num_val)
+            if 40.0 <= f_val <= 65.0 and weight == 0.0:
+                weight = f_val
+                continue
+        
+        # 4. IOR / Rating (e.g., 85, 90)
+        if val.isdigit():
+            i_val = int(val)
+            if ior == 0 and 40 < i_val < 200:
+                if not (40 <= i_val <= 65 and weight == 0.0 and rank > 0):
+                    ior = i_val
+                    continue
+        
+        # 5. Rank (1-20)
         if val.isdigit() and rank == 0 and 1 <= int(val) <= 20:
             rank = int(val)
             continue
-        if re.match(r'^\d+(-\d+)*$', val) and len(val) < 15 and perf == "":
-            perf = val
-            continue
-        num_val = val.replace('kg', '').replace('کیلو', '').strip()
-        if re.match(r'^\d{2}(\.\d)?$', num_val) and weight == 0.0:
-            weight = float(num_val)
-            continue
-        if re.match(r'^\d+(\.\d+)?$', val) and w_odd == 50.0:
-            f_val = float(val)
-            if 1.0 < f_val < 200.0:
-                w_odd = f_val
-                continue
-        if val.isdigit() and ior == 0 and 10 < int(val) < 200:
-            ior = int(val)
-            continue
+            
+        # 6. Text (Name, Jockey)
         if len(val) > 2 and not re.match(r'^\d+(\.\d+)?$', val):
+            if any(kw in val for kw in ['دور', 'مشارکت', 'پخش', 'زنده', 'جدول']): continue
             if not name: name = val
             elif not jockey: jockey = val
+            
     return rank, name, jockey, weight, ior, perf, w_odd
 
 async def ar(p, r_num, c, chat_id, save_history=True):
@@ -337,30 +357,55 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     horses = {}
     full_text = ""
     try:
-        await p.wait_for_timeout(4000)
+        # افزایش زمان انتظار برای لود کامل جداول جدید
+        await p.wait_for_timeout(5000)
         full_text = await p.evaluate("() => document.body.innerText")
         
-        # --- روش اول: خواندن از طریق DOM (جدول‌های استاندارد و گریدها) ---
+        # --- روش اول: خواندن از طریق DOM با سلکتورهای بسیار قوی‌تر ---
         rows_data = await p.evaluate("""
             () => {
                 let rows = [];
-                document.querySelectorAll('table tr, .v-data-table tbody tr').forEach(tr => {
+                // 1. Standard Tables
+                document.querySelectorAll('table tr').forEach(tr => {
                     let tds = Array.from(tr.querySelectorAll('td, th')).map(td => td.innerText.trim());
                     if (tds.length >= 4) rows.push(tds);
                 });
-                if (rows.length > 0) return rows;
 
-                let divs = Array.from(document.querySelectorAll('div, ul'));
-                for (let d of divs) {
-                    let children = Array.from(d.children);
-                    if (children.length >= 4 && children.length <= 20) {
-                        let texts = children.map(c => c.innerText ? c.innerText.trim() : '');
-                        if (texts.filter(t => t.length > 0).length >= 4 && /^\\d+$/.test(texts[0])) {
-                            rows.push(texts);
+                // 2. Vuetify / ElementUI / Grids
+                if (rows.length === 0) {
+                    document.querySelectorAll('tr, .v-data-table tbody tr, .v-data-table__wrapper tbody tr, .el-table__row, [role="row"], .row').forEach(tr => {
+                        let tds = Array.from(tr.querySelectorAll('td, .v-data-table__mobile-row__cell, .cell, span, div')).map(td => td.innerText.trim()).filter(t => t);
+                        let uniqueTds = [...new Set(tds)];
+                        if (uniqueTds.length >= 4 && /^\\d+$/.test(uniqueTds[0])) {
+                            rows.push(uniqueTds);
                         }
+                    });
+                }
+
+                // 3. Generic Div Row structures (Fallback)
+                if (rows.length === 0) {
+                    document.querySelectorAll('div').forEach(div => {
+                        let children = Array.from(div.children);
+                        if (children.length >= 4 && children.length <= 15) {
+                            let texts = children.map(c => c.innerText ? c.innerText.trim() : '');
+                            if (texts.length > 0 && /^\\d+$/.test(texts[0]) && texts.some(t => t.length > 2)) {
+                                rows.push(texts);
+                            }
+                        }
+                    });
+                }
+                
+                // Deduplicate
+                let uniqueRows = [];
+                let seen = new Set();
+                for (let r of rows) {
+                    let key = r.join('|');
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        uniqueRows.push(r);
                     }
                 }
-                return rows;
+                return uniqueRows;
             }
         """)
 
@@ -396,7 +441,8 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                         continue
                     
                     if len(part) > 1:
-                        horses[horse_idx] = {"n": part, "num": horse_idx, "ior": 0, "j": "-", "perf": "", "w_odd": 10.0, "weight": 0.0}
+                        # ضریب به صورت پیش‌فرض 0.0 است تا باگ تحلیل مساوی رخ ندهد
+                        horses[horse_idx] = {"n": part, "num": horse_idx, "ior": 0, "j": "-", "perf": "", "w_odd": 0.0, "weight": 0.0}
                         horse_idx += 1
 
     except Exception as e: 
@@ -419,9 +465,14 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     forms = [decayed_form(h['perf']) for h in horse_list]
     form_max = max(forms) if forms and max(forms) > 0 else 1
     
-    implied_probs = [1.0 / h['w_odd'] if h['w_odd'] > 1 else 0 for h in horse_list]
-    total_implied = sum(implied_probs) or 1
-    market_probs = [p / total_implied for p in implied_probs]
+    implied_probs = [1.0 / h['w_odd'] if h['w_odd'] > 1.0 else 0 for h in horse_list]
+    total_implied = sum(implied_probs)
+    
+    if total_implied > 0:
+        market_probs = [p / total_implied for p in implied_probs]
+    else:
+        # اگر ضریب اصلا پیدا نشد، به همه شانس مساوی بده تا برنامه کرش نکند
+        market_probs = [1.0 / len(horse_list)] * len(horse_list)
 
     for idx, h in enumerate(horse_list):
         form_norm = decayed_form(h['perf']) / form_max
@@ -502,7 +553,8 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     w = res['w']
                     rp += f"\n🏁 <b>دور R{r}</b>\n"
                     
-                    missing_odds = all(h.get('w_odd', 10.0) == 10.0 for h in res['horses'])
+                    # اصلاح شرط بررسی نبود ضریب (چون حالا پیش‌فرض 0.0 است)
+                    missing_odds = all(h.get('w_odd', 0.0) == 0.0 for h in res['horses'])
                     if missing_odds:
                         rp += "⚠️ <i>(ضریب در صفحه یافت نشد، تحلیل با شانس برابر انجام شد)</i>\n"
 
@@ -962,7 +1014,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 6.3 (پردازش متنی هوشمند)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 6.4 (پردازش DOM هوشمند)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
