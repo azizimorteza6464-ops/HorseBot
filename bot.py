@@ -184,7 +184,7 @@ def get_main_menu(chat_id):
     return InlineKeyboardMarkup(keyboard)
 
 # ============================================================
-# 🆕 ارسال پیام طولانی
+# ارسال پیام طولانی
 # ============================================================
 async def send_long_message(c, chat_id, text, max_len=4000):
     if not text: return
@@ -253,16 +253,13 @@ async def prepare_page(pg):
         print(f"Prepare page error: {e}")
 
 async def click_round(pg, r_num):
-    """کلیک هوشمندانه روی تب دور مورد نظر"""
     try:
-        # تلاش ۱: استفاده از Locator دقیق
         locator = pg.locator(f"text=/^(R|دور)\\s*{r_num}$/i").first
         if await locator.is_visible():
             await locator.click()
             await pg.wait_for_timeout(3000)
             return True
             
-        # تلاش ۲: جاوااسکریپت برای پیدا کردن المان
         clicked = await pg.evaluate(f"""
             () => {{
                 let elements = Array.from(document.querySelectorAll('button, div, span, a'));
@@ -301,7 +298,7 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# 🆕 Core Analysis (نسخه ۶.۲ - استخراج DOM بر اساس Tailwind)
+# Core Analysis (استخراج DOM بر اساس Tailwind)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -315,19 +312,15 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         await p.wait_for_timeout(4000)
         full_text = await p.evaluate("() => document.body.innerText")
         
-        # 🆕 استخراج مستقیم داده‌ها از DOM (بدون نیاز به جدول استاندارد)
         rows_data = await p.evaluate("""
             () => {
                 let rows = [];
-                // پیدا کردن تمام دکمه‌هایی که در بخش جدول هستند
                 let buttons = Array.from(document.querySelectorAll('button'));
                 
                 for (let btn of buttons) {
                     let text = btn.innerText ? btn.innerText.trim() : '';
-                    // فیلتر کردن دکمه‌های منو
                     if (text.length < 2 || text.includes('دور') || text.includes('نمایش') || text.includes('R ')) continue;
                     
-                    // استخراج متن از تمام divهای داخل دکمه
                     let divs = btn.querySelectorAll('div');
                     let texts = [];
                     divs.forEach(d => {
@@ -335,7 +328,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                         if (t.length > 0 && !texts.includes(t)) texts.push(t);
                     });
                     
-                    // اگر حداقل ۳ فیلد داشت (نام اسب، نام چابک‌سوار، وزن/ضریب)
                     if (texts.length >= 3) {
                         rows.push(texts);
                     }
@@ -344,7 +336,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
             }
         """)
 
-        # پردازش داده‌های استخراج شده
         if rows_data:
             for cells in rows_data:
                 trans = str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')
@@ -353,7 +344,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                 if len(cells) >= 3:
                     rank, name, jockey, weight, ior, perf, w_odd = 0, "", "", 0.0, 0, "", 50.0
                     
-                    # چون ساختار دقیق ستون‌ها مشخص نیست، از منطق ترتیبی استفاده می‌کنیم
                     for val in cells:
                         if val.isdigit() and rank == 0 and int(val) < 20:
                             rank = int(val)
@@ -371,7 +361,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                         elif re.match(r'^\d+(\.\d+)?$', val) and w_odd == 50.0:
                             w_odd = float(val)
 
-                    # اگر رتبه پیدا نشد، بر اساس ترتیب اضافه می‌کنیم
                     if rank == 0 and name:
                         rank = len(horses) + 1
 
@@ -445,7 +434,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     return res_dict
 
 # ============================================================
-# توابع دیگر (بدون تغییر)
+# توابع پردازش ربات
 # ============================================================
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
     if await get_github_var("AUTO_UPDATE", "true") == "false" and not is_reminder:
@@ -555,4 +544,13 @@ async def process_quinellas(chat_id, c, variant_type):
                     best = candidates[0]
                     found_any = True
                     rp += f"\n🏁 <b>دور R{r}</b>\n"
-                    rp += f"👥 <b>{best['h1']['num
+                    rp += f"👥 <b>{best['h1']['num']}-{best['h1']['n']} + {best['h2']['num']}-{best['h2']['n']}</b>\n"
+                    rp += f"   📊 احتمال برد: <b>{best['prob']:.1f}%</b>\n➖➖➖➖➖➖➖➖\n"
+            if not found_any: rp += "\n⚠️ برای این نوع دوقلو، گزینه مناسبی پیدا نشد.\n"
+            await send_long_message(c, chat_id, rp)
+    except Exception as e:
+        await c.bot.send_message(chat_id, f"❌ خطا:\n<code>{str(e)}</code>", parse_mode='HTML')
+    finally:
+        if browser: await browser.close()
+
+async def process_multile
