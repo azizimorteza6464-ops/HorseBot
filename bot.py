@@ -87,7 +87,6 @@ async def is_authorized(u: Update, c: C) -> bool: return True
 async def get_weather():
     try:
         url = "https://api.open-meteo.com/v1/forecast?latitude=37.25&longitude=55.16&current_weather=true"
-        # افزایش تایم اوت به 15 ثانیه برای جلوگیری از قطعی
         async with httpx.AsyncClient(timeout=15.0) as client:
             res = await client.get(url)
             if res.status_code == 200:
@@ -255,31 +254,24 @@ async def prepare_page(pg):
 
 async def click_round(pg, r_num):
     try:
-        locator = pg.locator(f"text=/^(R|دور)\\s*{r_num}$/i").first
-        if await locator.is_visible():
-            await locator.click()
-            await pg.wait_for_timeout(3000)
-            return True
-            
+        # پیدا کردن و کلیک کردن دقیق روی تب دور مورد نظر
         clicked = await pg.evaluate(f"""
             () => {{
-                let elements = Array.from(document.querySelectorAll('button, div, span, a'));
+                let elements = Array.from(document.querySelectorAll('button, div, span, a, [role="tab"]'));
                 for (let el of elements) {{
                     let text = el.innerText ? el.innerText.trim() : '';
-                    if ((text === 'دور {r_num}' || text === 'R {r_num}' || text === '{r_num}' || text === 'R{r_num}') 
-                        && !el.closest('table') && !el.closest('.v-data-table') && !el.closest('tr')) {{
-                        let rect = el.getBoundingClientRect();
-                        if (rect.width > 0 && rect.height > 0) {{
-                            el.click();
-                            return true;
-                        }}
+                    if ((text === 'دور {r_num}' || text === 'R {r_num}' || text === '{r_num}' || text === 'R{r_num}')) {{
+                        // اسکرول کردن به عنصر برای اطمینان از لود شدن
+                        el.scrollIntoView({{block: "center"}});
+                        el.click();
+                        return true;
                     }}
                 }}
                 return false;
             }}
         """)
         if clicked:
-            await pg.wait_for_timeout(3000) 
+            await pg.wait_for_timeout(3500) # زمان برای لود شدن جدول جدید
     except Exception as e:
         print(f"Click round error: {e}")
 
@@ -299,55 +291,51 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# Parsers & Core Analysis
+# Parsers & Core Analysis (نسخه قدرتمند)
 # ============================================================
 def parse_row_data(cells):
     rank, name, jockey, weight, ior, perf, w_odd = 0, "", "", 0.0, 0, "", 0.0
-    
-    # تبدیل اعداد فارسی به انگلیسی
     trans = str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')
     
     for val in cells:
         val = str(val).translate(trans).strip()
         if not val: continue
         
-        # 1. Performance (e.g., 1-2-3-4, 0-0-5)
+        # 1. تشخیص رتبه و اسم به صورت ترکیبی (مثل 1-اوچر ولد)
+        if '-' in val and len(val) > 3:
+            parts = val.split('-')
+            if parts[0].isdigit() and rank == 0:
+                rank = int(parts[0])
+                val = '-'.join(parts[1:]).strip()
+                
+        # 2. رکورد عملکرد (مثل 1-2-3-4)
         if re.match(r'^\d+(-\d+)+$', val) and len(val) < 15 and perf == "":
             perf = val
             continue
             
-        # 2. Odds (float or int like 4.5, 12, 10.0)
-        if re.match(r'^\d+(\.\d+)?$', val):
-            f_val = float(val)
+        # 3. پیدا کردن ضریب (اعداد اعشاری مثل 4.5)
+        floats = re.findall(r'\d+\.\d+', val)
+        if floats:
+            f_val = float(floats[-1])
             if 1.0 < f_val < 300.0:
-                # اگر عدد صحیح است و شبیه امتیاز (IOR) نیست، پس ضریب است
-                if "." in val or (w_odd == 0.0 and f_val < 100):
-                    w_odd = f_val
-                    continue
+                w_odd = f_val
                 
-        # 3. Weight (e.g., 54.5, 56)
-        num_val = val.replace('kg', '').replace('کیلو', '').strip()
-        if re.match(r'^\d{2}(\.\d)?$', num_val):
-            f_val = float(num_val)
+        # 4. تشخیص وزن (اعداد بین 40 تا 65)
+        nums = re.findall(r'\d+(?:\.\d+)?', val)
+        for n in nums:
+            f_val = float(n)
             if 40.0 <= f_val <= 65.0 and weight == 0.0:
                 weight = f_val
-                continue
-        
-        # 4. IOR / Rating (e.g., 85, 90)
-        if val.isdigit():
-            i_val = int(val)
-            if ior == 0 and 40 < i_val < 200:
-                if not (40 <= i_val <= 65 and weight == 0.0 and rank > 0):
-                    ior = i_val
-                    continue
-        
-        # 5. Rank (1-20)
+            elif 40 < f_val < 200 and ior == 0 and '.' not in n:
+                ior = int(f_val)
+                
+        # 5. تشخیص رتبه (اعداد صحیح 1 تا 20)
         if val.isdigit() and rank == 0 and 1 <= int(val) <= 20:
             rank = int(val)
             continue
             
-        # 6. Text (Name, Jockey) - حذف کلمات مزاحم
-        if len(val) > 2 and not re.match(r'^\d+(\.\d+)?$', val):
+        # 6. متن (اسم اسب یا چوکی)
+        if len(val) > 2 and not re.match(r'^[\d\.\-\s]+$', val):
             if any(kw in val for kw in ['دور', 'مشارکت', 'پخش', 'زنده', 'جدول', 'هفته', 'نظرسنجی']): continue
             if not name: name = val
             elif not jockey: jockey = val
@@ -363,48 +351,45 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     horses = {}
     full_text = ""
     try:
-        # افزایش زمان انتظار برای لود جداول سنگین
-        await p.wait_for_timeout(6000)
+        await p.wait_for_timeout(4000)
         full_text = await p.evaluate("() => document.body.innerText")
         
-        # --- روش اول: خواندن از طریق DOM (سلکتورهای فوق‌پیشرفته) ---
+        # --- استخراج DOM تهاجمی برای پیدا کردن ضرایب ---
         rows_data = await p.evaluate("""
             () => {
                 let rows = [];
                 // 1. جداول استاندارد
-                document.querySelectorAll('table tr').forEach(tr => {
+                document.querySelectorAll('table tr, .v-data-table tbody tr').forEach(tr => {
                     let tds = Array.from(tr.querySelectorAll('td, th')).map(td => td.innerText.trim());
                     if (tds.length >= 4) rows.push(tds);
                 });
 
-                // 2. ساختارهای Vuetify / ElementUI / Grid
-                if (rows.length === 0) {
-                    document.querySelectorAll('.v-data-table__wrapper tbody tr, .el-table__row, [role="row"], .row').forEach(tr => {
-                        let tds = Array.from(tr.querySelectorAll('td, .cell, span, div')).map(td => td.innerText.trim()).filter(t => t);
-                        let uniqueTds = [...new Set(tds)];
-                        if (uniqueTds.length >= 4 && /^\\d+$/.test(uniqueTds[0])) {
-                            rows.push(uniqueTds);
-                        }
-                    });
-                }
-
-                // 3. ساختارهای Div تو در تو (بسیار تهاجمی)
+                // 2. دیوهای تو در تو که شامل عدد اعشاری (ضریب) و متن هستند
                 if (rows.length === 0) {
                     document.querySelectorAll('div').forEach(div => {
                         let children = Array.from(div.children);
-                        if (children.length >= 4 && children.length <= 15) {
+                        if (children.length >= 3 && children.length <= 15) {
                             let texts = children.map(c => c.innerText ? c.innerText.trim() : '');
-                            // چک کردن اینکه آیا این ردیف شامل اسم و عدد است؟
+                            let hasNum = texts.some(t => /^\\d+\\.\\d+$/.test(t));
                             let hasText = texts.some(t => t.length > 2 && isNaN(t));
-                            let hasNum = texts.some(t => !isNaN(parseFloat(t)));
-                            if (texts.length > 0 && /^\\d+$/.test(texts[0]) && hasText && hasNum) {
+                            if (hasNum && hasText) {
                                 rows.push(texts);
                             }
                         }
                     });
                 }
                 
-                // حذف ردیف‌های تکراری
+                // 3. شکار هر عنصری که شامل ضریب است
+                if (rows.length === 0) {
+                    document.querySelectorAll('[class*="row"], [class*="item"], [class*="horse"]').forEach(el => {
+                        let text = el.innerText || '';
+                        if (text.length > 5 && /\\d+\\.\\d+/.test(text)) {
+                            let parts = text.split('\\n').map(t => t.trim()).filter(t => t);
+                            if (parts.length >= 3) rows.push(parts);
+                        }
+                    });
+                }
+                
                 let uniqueRows = [];
                 let seen = new Set();
                 for (let r of rows) {
@@ -427,17 +412,16 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                     if rank > 0 and name and rank not in horses:
                         horses[rank] = {"n": name, "num": rank, "ior": ior, "j": jockey, "perf": perf, "w_odd": w_odd, "weight": weight}
 
-        # --- روش دوم (پلن B): پردازش متن خام ---
+        # --- پلن B: پردازش متن خام ---
         if not horses:
             print(f"DOM failed for round {r_num}. Falling back to text parsing.")
-            # جایگزینی خطوط جدید با | برای یکدست سازی
             parts = [p.strip() for p in full_text.replace('\n', ' | ').split('|') if p.strip()]
             current_round = 0
+            idx = 0
             
             ignore_words = ['H', '1405', '500,000', 'پی‌بر', 'پخش زنده', 'مشارکت', 'آد اسب', 
                             'دوره‌ای', 'گزارش انتخاب‌ها', 'مالی', 'جدول مسابقات', 'اسبدوانی']
             
-            idx = 0
             while idx < len(parts):
                 part = parts[idx]
                 m = re.match(r'^(?:R|دور)\s*(\d+)$', part, re.IGNORECASE)
@@ -456,7 +440,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                     if match_name:
                         rank = int(match_name.group(1))
                         name = match_name.group(2).strip()
-                        # جستجوی ۵ عنصر بعدی برای پیدا کردن ضریب
+                        # جستجو در ۵ عنصر بعدی برای یافتن ضریب
                         w_odd = 0.0
                         for lookahead in range(1, 6):
                             if idx + lookahead < len(parts):
@@ -551,7 +535,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     return res_dict
 
 # ============================================================
-# توابع پردازش ربات (بدون تغییر)
+# توابع پردازش ربات
 # ============================================================
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
     if await get_github_var("AUTO_UPDATE", "true") == "false" and not is_reminder:
@@ -589,7 +573,7 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     
                     missing_odds = all(h.get('w_odd', 0.0) == 0.0 for h in res['horses'])
                     if missing_odds:
-                        rp += "⚠️ <i>(ضریب در صفحه یافت نشد، تحلیل با شانس برابر انجام شد)</i>\n"
+                        rp += "⚠️ <i>(ضرایب در سایت هنوز منتشر نشده‌اند، تحلیل با شانس برابر انجام شد)</i>\n"
 
                     rp += f"🥇 <b>پیش‌بر:</b> {w['num']}-{w['n']}\n"
                     rp += f"   📊 مدل: {w['model_prob']:.1f}% | بازار: {w['market_prob']:.1f}% (ضریب: {w['w_odd']})\n"
@@ -1047,7 +1031,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 6.5 (استخراج هوشمند دیتا)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 6.6 (استخراج دقیق ضرایب)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
