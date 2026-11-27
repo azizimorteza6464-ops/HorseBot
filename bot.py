@@ -41,6 +41,7 @@ CACHE_TTL = 45
 COOLDOWN = 60
 _last_call = {}
 AR_CACHE = {}
+SITE_WEATHER_CACHE = None
 RUN_SECONDS = int(os.environ.get("RUN_SECONDS", "17400"))
 
 RANK_POINTS = {"1": 10, "2": 6, "3": 3, "4": 1, "5": 0.5}
@@ -209,21 +210,40 @@ async def get_referrals():
 # ======================== هوا و مدل آماری ========================
 
 async def get_weather():
+    """Return weather captured from the racing site; use Open-Meteo as fallback."""
+    global SITE_WEATHER_CACHE
+    if SITE_WEATHER_CACHE:
+        return SITE_WEATHER_CACHE
     try:
         url = (
             "https://api.open-meteo.com/v1/forecast"
-            "?latitude=37.25&longitude=55.16&current_weather=true"
+            "?latitude=37.25&longitude=55.16"
+            "&current=temperature_2m,wind_speed_10m"
+            "&timezone=auto"
         )
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=18) as client:
             res = await client.get(url)
             res.raise_for_status()
-            weather = res.json()["current_weather"]
-        return (
-            f"🌡 دما: {weather['temperature']}°C"
-            f" | 💨 باد: {weather['windspeed']} km/h"
-        )
-    except Exception:
-        return "⚠️ اطلاعات هوا در دسترس نیست."
+            current = res.json().get("current", {})
+        temp = current.get("temperature_2m")
+        wind = current.get("wind_speed_10m")
+        if temp is not None and wind is not None:
+            return f"🌡 دما: {temp}°C | 💨 باد: {wind} km/h"
+    except Exception as e:
+        print("weather fallback failed:", repr(e))
+    return "🌤 اطلاعات هوا از سایت/سرویس هواشناسی دریافت نشد."
+
+
+def extract_site_weather(body_text):
+    """Extract visible temperature/wind from the site's own weather strip."""
+    text = clean_text(body_text)
+    temp = re.search(r"(?:دما|temperature|temp)\s*[:：]?\s*(-?\d+(?:[.,]\d+)?)\s*°?\s*C", text, re.I)
+    wind = re.search(r"(?:باد|wind)\s*[:：]?\s*(\d+(?:[.,]\d+)?)\s*(?:km\s*/\s*h|kmh|کیلومتر\s*/?\s*ساعت)", text, re.I)
+    if temp and wind:
+        t = temp.group(1).replace(",", ".")
+        w = wind.group(1).replace(",", ".")
+        return f"🌡 دما: {t}°C | 💨 باد: {w} km/h"
+    return None
 
 
 def decayed_form(perf_str, decay=0.85):
@@ -852,6 +872,8 @@ async def fetch_api_races(pg):
 
 
 async def fetch_races_for_chat(chat_id, c):
+    global SITE_WEATHER_CACHE
+    SITE_WEATHER_CACHE = None
     if not all([A, D, U]):
         await c.bot.send_message(chat_id, "⚠️ اطلاعات ورود سایت در تنظیمات ربات کامل نیست.")
         return None
@@ -863,6 +885,7 @@ async def fetch_races_for_chat(chat_id, c):
             await pg.goto(SITE_URL, timeout=90000, wait_until="domcontentloaded")
             await pg.wait_for_timeout(4500)
             body = clean_text(await pg.locator("body").inner_text())
+            SITE_WEATHER_CACHE = extract_site_weather(body) or SITE_WEATHER_CACHE
             if "ورود" in body[:500] or "login" in body[:500].lower():
                 await c.bot.send_message(chat_id, "⚠️ نشست ورود سایت منقضی شده است.")
                 return None
@@ -917,7 +940,9 @@ def format_round_result(round_no, res, detailed=False):
         )
     else:
         msg += "ناموجود\n"
-    msg += f"🎯 اطمینان مدل: {res['conf']}\n"
+    msg += f"🎯 اطمینان تحلیل: {res['conf']}\n"
+    if not res.get("model_signal"):
+        msg += "ℹ️ سابقه فرم/چابکسوار در این دریافت کامل نبود؛ احتمال‌ها عمدتاً ترکیب ضرایب و مشارکت هستند.\n"
     if not res["market_available"]:
         msg += "ℹ️ ضرایب پیش‌بر کامل دریافت نشد؛ رتبه‌بندی فقط از داده‌های قابل‌دسترس ساخته شده است.\n"
     if detailed:
@@ -947,10 +972,10 @@ async def process_odds(
         return await c.bot.send_message(chat_id, "🛑 ربات توسط مدیریت خاموش شده است.")
     if not is_reminder:
         await c.bot.send_message(chat_id, "⏳ در حال دریافت و تحلیل جدول مسابقات...")
-    weather = await get_weather()
     races = await fetch_races_for_chat(chat_id, c)
     if not races:
         return
+    weather = await get_weather()
     available = sorted(races.keys())
     if specific_round is not None:
         selected = [specific_round] if specific_round in races else []
