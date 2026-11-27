@@ -1,5 +1,5 @@
 import os
-import re
+ re
 import sys
 import json
 import time
