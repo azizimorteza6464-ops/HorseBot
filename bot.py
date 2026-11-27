@@ -82,19 +82,32 @@ async def is_premium(chat_id):
 async def is_authorized(u: Update, c: C) -> bool: return True 
 
 # ============================================================
-# Weather & Math Helpers
+# Weather Helpers (اصلاح شده)
 # ============================================================
 async def get_weather():
+    # تلاش اول: open-meteo
     try:
         url = "https://api.open-meteo.com/v1/forecast?latitude=37.25&longitude=55.16&current_weather=true"
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             res = await client.get(url)
             if res.status_code == 200:
                 data = res.json()
                 cw = data.get('current_weather', {})
                 return f"🌡 دما: {cw.get('temperature', '---')}°C | 💨 باد: {cw.get('windspeed', '---')} km/h"
-    except Exception as e: 
-        print(f"Weather error: {e}")
+    except: pass
+    
+    # تلاش دوم: wttr.in (مناسب برای گیت‌هاب)
+    try:
+        url = "https://wttr.in/Gonbad-e-Qabus?format=j1"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.get(url)
+            if res.status_code == 200:
+                data = res.json()
+                temp = data['current_condition'][0]['temp_C']
+                wind = data['current_condition'][0]['windspeedKmph']
+                return f"🌡 دما: {temp}°C | 💨 باد: {wind} km/h"
+    except: pass
+    
     return "⚠️ اطلاعات هوا در دسترس نیست."
 
 JOCKEY_TIERS = {'S': ['رحمانی', 'قهرمانی', 'نوروزی'], 'A': ['وحدانی', 'مرادی', 'صوفیان', 'خواجوی'],
@@ -254,14 +267,18 @@ async def prepare_page(pg):
 
 async def click_round(pg, r_num):
     try:
-        # پیدا کردن و کلیک کردن دقیق روی تب دور مورد نظر
+        # تلاش برای کلیک روی تب "مشارکت" یا "پیش‌بینی" در صورت وجود
+        participation = pg.locator("text=/^(مشارکت|پیش‌بینی|پیش بینی)$/i").first
+        if await participation.is_visible():
+            await participation.click()
+            await pg.wait_for_timeout(2000)
+
         clicked = await pg.evaluate(f"""
             () => {{
                 let elements = Array.from(document.querySelectorAll('button, div, span, a, [role="tab"]'));
                 for (let el of elements) {{
                     let text = el.innerText ? el.innerText.trim() : '';
                     if ((text === 'دور {r_num}' || text === 'R {r_num}' || text === '{r_num}' || text === 'R{r_num}')) {{
-                        // اسکرول کردن به عنصر برای اطمینان از لود شدن
                         el.scrollIntoView({{block: "center"}});
                         el.click();
                         return true;
@@ -271,7 +288,10 @@ async def click_round(pg, r_num):
             }}
         """)
         if clicked:
-            await pg.wait_for_timeout(3500) # زمان برای لود شدن جدول جدید
+            await pg.wait_for_timeout(4000)
+            try:
+                await pg.wait_for_load_state("networkidle", timeout=3000)
+            except: pass
     except Exception as e:
         print(f"Click round error: {e}")
 
@@ -291,7 +311,7 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# Parsers & Core Analysis (نسخه قدرتمند)
+# Parsers & Core Analysis (نسخه 6.7)
 # ============================================================
 def parse_row_data(cells):
     rank, name, jockey, weight, ior, perf, w_odd = 0, "", "", 0.0, 0, "", 0.0
@@ -301,26 +321,22 @@ def parse_row_data(cells):
         val = str(val).translate(trans).strip()
         if not val: continue
         
-        # 1. تشخیص رتبه و اسم به صورت ترکیبی (مثل 1-اوچر ولد)
         if '-' in val and len(val) > 3:
             parts = val.split('-')
             if parts[0].isdigit() and rank == 0:
                 rank = int(parts[0])
                 val = '-'.join(parts[1:]).strip()
                 
-        # 2. رکورد عملکرد (مثل 1-2-3-4)
         if re.match(r'^\d+(-\d+)+$', val) and len(val) < 15 and perf == "":
             perf = val
             continue
             
-        # 3. پیدا کردن ضریب (اعداد اعشاری مثل 4.5)
         floats = re.findall(r'\d+\.\d+', val)
         if floats:
             f_val = float(floats[-1])
             if 1.0 < f_val < 300.0:
                 w_odd = f_val
                 
-        # 4. تشخیص وزن (اعداد بین 40 تا 65)
         nums = re.findall(r'\d+(?:\.\d+)?', val)
         for n in nums:
             f_val = float(n)
@@ -329,12 +345,10 @@ def parse_row_data(cells):
             elif 40 < f_val < 200 and ior == 0 and '.' not in n:
                 ior = int(f_val)
                 
-        # 5. تشخیص رتبه (اعداد صحیح 1 تا 20)
         if val.isdigit() and rank == 0 and 1 <= int(val) <= 20:
             rank = int(val)
             continue
             
-        # 6. متن (اسم اسب یا چوکی)
         if len(val) > 2 and not re.match(r'^[\d\.\-\s]+$', val):
             if any(kw in val for kw in ['دور', 'مشارکت', 'پخش', 'زنده', 'جدول', 'هفته', 'نظرسنجی']): continue
             if not name: name = val
@@ -351,55 +365,29 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     horses = {}
     full_text = ""
     try:
-        await p.wait_for_timeout(4000)
+        await p.wait_for_timeout(3000)
         full_text = await p.evaluate("() => document.body.innerText")
         
-        # --- استخراج DOM تهاجمی برای پیدا کردن ضرایب ---
+        # --- روش 1: استخراج از DOM ---
         rows_data = await p.evaluate("""
             () => {
                 let rows = [];
-                // 1. جداول استاندارد
                 document.querySelectorAll('table tr, .v-data-table tbody tr').forEach(tr => {
                     let tds = Array.from(tr.querySelectorAll('td, th')).map(td => td.innerText.trim());
                     if (tds.length >= 4) rows.push(tds);
                 });
-
-                // 2. دیوهای تو در تو که شامل عدد اعشاری (ضریب) و متن هستند
                 if (rows.length === 0) {
                     document.querySelectorAll('div').forEach(div => {
                         let children = Array.from(div.children);
                         if (children.length >= 3 && children.length <= 15) {
                             let texts = children.map(c => c.innerText ? c.innerText.trim() : '');
-                            let hasNum = texts.some(t => /^\\d+\\.\\d+$/.test(t));
+                            let hasNum = texts.some(t => /\\d+\\.\\d+/.test(t));
                             let hasText = texts.some(t => t.length > 2 && isNaN(t));
-                            if (hasNum && hasText) {
-                                rows.push(texts);
-                            }
+                            if (hasNum && hasText) rows.push(texts);
                         }
                     });
                 }
-                
-                // 3. شکار هر عنصری که شامل ضریب است
-                if (rows.length === 0) {
-                    document.querySelectorAll('[class*="row"], [class*="item"], [class*="horse"]').forEach(el => {
-                        let text = el.innerText || '';
-                        if (text.length > 5 && /\\d+\\.\\d+/.test(text)) {
-                            let parts = text.split('\\n').map(t => t.trim()).filter(t => t);
-                            if (parts.length >= 3) rows.push(parts);
-                        }
-                    });
-                }
-                
-                let uniqueRows = [];
-                let seen = new Set();
-                for (let r of rows) {
-                    let key = r.join('|');
-                    if (!seen.has(key)) {
-                        seen.add(key);
-                        uniqueRows.push(r);
-                    }
-                }
-                return uniqueRows;
+                return rows;
             }
         """)
 
@@ -412,9 +400,33 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                     if rank > 0 and name and rank not in horses:
                         horses[rank] = {"n": name, "num": rank, "ior": ior, "j": jockey, "perf": perf, "w_odd": w_odd, "weight": weight}
 
-        # --- پلن B: پردازش متن خام ---
+        # --- روش 2: استخراج از JSON های مخفی در سورس ---
         if not horses:
-            print(f"DOM failed for round {r_num}. Falling back to text parsing.")
+            script_data = await p.evaluate("""
+                () => {
+                    let scripts = Array.from(document.querySelectorAll('script'));
+                    for (let s of scripts) {
+                        if (s.type === 'application/json' || s.innerHTML.includes('"odds"') || s.innerHTML.includes('"price"') || s.innerHTML.includes('"horses"')) {
+                            return s.innerHTML;
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if script_data:
+                print("JSON script found in HTML! Attempting to extract...")
+                matches = re.findall(r'"name"\s*:\s*"([^"]+)".*?"(?:odds|price|coefficient)"\s*:\s*([\d\.]+)', script_data)
+                for name, odd in matches:
+                    try:
+                        val = float(odd)
+                        if val > 1.0:
+                            rank = len(horses) + 1
+                            horses[rank] = {"n": name, "num": rank, "ior": 0, "j": "-", "perf": "", "w_odd": val, "weight": 0.0}
+                    except: pass
+
+        # --- روش 3: پردازش متن خام (پلن B) ---
+        if not horses:
+            print(f"DOM/JSON failed for round {r_num}. Falling back to text parsing.")
             parts = [p.strip() for p in full_text.replace('\n', ' | ').split('|') if p.strip()]
             current_round = 0
             idx = 0
@@ -435,13 +447,12 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                         idx += 1
                         continue
                     
-                    # پیدا کردن الگوی "رتبه-نام" مثل "1-اوچر ولد"
                     match_name = re.match(r'^(\d+)-(.*)$', part)
                     if match_name:
                         rank = int(match_name.group(1))
                         name = match_name.group(2).strip()
-                        # جستجو در ۵ عنصر بعدی برای یافتن ضریب
                         w_odd = 0.0
+                        # جستجو در ۵ عنصر بعدی برای یافتن ضریب
                         for lookahead in range(1, 6):
                             if idx + lookahead < len(parts):
                                 try:
@@ -457,7 +468,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                         idx += 1
                         continue
                     
-                    # اگر اسم بدون رتبه بود
                     if len(part) > 2 and not re.match(r'^\d+(\.\d+)?$', part) and not part.isdigit():
                         rank = len(horses) + 1
                         horses[rank] = {"n": part, "num": rank, "ior": 0, "j": "-", "perf": "", "w_odd": 0.0, "weight": 0.0}
@@ -573,7 +583,7 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     
                     missing_odds = all(h.get('w_odd', 0.0) == 0.0 for h in res['horses'])
                     if missing_odds:
-                        rp += "⚠️ <i>(ضرایب در سایت هنوز منتشر نشده‌اند، تحلیل با شانس برابر انجام شد)</i>\n"
+                        rp += "⚠️ <i>(ضرایب در این دور یافت نشدند. لطفاً مطمئن شوید ضرایب در سایت منتشر شده‌اند)</i>\n"
 
                     rp += f"🥇 <b>پیش‌بر:</b> {w['num']}-{w['n']}\n"
                     rp += f"   📊 مدل: {w['model_prob']:.1f}% | بازار: {w['market_prob']:.1f}% (ضریب: {w['w_odd']})\n"
@@ -1031,7 +1041,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 6.6 (استخراج دقیق ضرایب)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 6.7 (استخراج از JSON و تب مشارکت)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
