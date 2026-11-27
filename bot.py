@@ -29,9 +29,9 @@ G = os.environ.get("GH_PAT")
 R = os.environ.get("GITHUB_REPOSITORY")
 
 MY_ID = "184149177"
-CARD_NUMBER = "6219-8618-0229-0089"
-CARD_HOLDER = "مرتضی عزیزی"
-SUB_PRICE = "250,000"
+CARD_NUMBER = os.environ.get("CARD_NUMBER", "")
+CARD_HOLDER = os.environ.get("CARD_HOLDER", "")
+SUB_PRICE = os.environ.get("SUB_PRICE", "250,000")
 REF_REWARD_DAYS = 3
 TRIAL_DAYS = 1
 
@@ -273,7 +273,7 @@ def decayed_form(perf_str, decay=0.85):
     if not perf_str:
         return 0.0
     text = normalize_digits(str(perf_str))
-    ranks = re.findall(r"(?<!\\d)([1-5])(?!\\d)", text)
+    ranks = re.findall(r"(?<!\d)([1-5])(?!\d)", text)
     return sum(RANK_POINTS.get(rank, 0) * (decay ** i)
                for i, rank in enumerate(ranks))
 
@@ -293,17 +293,13 @@ def career_form_score(horse):
 
 
 def has_horse_form_data(horse):
-    perf = normalize_digits(str(horse.get("perf") or "")).strip()
-    if decayed_form(perf) > 0:
+    """True only when at least one numeric performance feature is usable."""
+    if decayed_form(horse.get("perf")) > 0:
         return True
-    starts = safe_float(horse.get("starts"))
-    if starts and starts > 0 and any(
-        safe_float(horse.get(k)) is not None for k in ("p1", "p2", "p3")
-    ):
+    if career_form_score(horse) > 0:
         return True
-    if safe_float(horse.get("ior")) is not None:
-        return True
-    return False
+    ior = safe_float(horse.get("ior"))
+    return ior is not None and ior > 0
 
 
 def jockey_score(name):
@@ -590,52 +586,39 @@ async def fetch_racecard_performance(pg):
 # ======================== تحلیل هر دور ========================
 
 def _normalized_inverse_odds(horses, field="pishbar_odd"):
+    """Normalize a pool only when every active runner has a valid decimal odd."""
     values = [safe_float(h.get(field)) for h in horses]
-    valid = [1.0 / x if x and x > 1e-9 else 0.0 for x in values]
-    total = sum(valid)
-    if total <= 0 or sum(x > 0 for x in valid) < 2:
+    if not values or any(x is None or x <= 1.0 for x in values):
         return [None] * len(horses)
-    return [x / total if x > 0 else None for x in valid]
+    inverse = [1.0 / x for x in values]
+    total = sum(inverse)
+    if total <= 0:
+        return [None] * len(horses)
+    return [x / total for x in inverse]
 
 
 def _combined_market_probabilities(horses):
-    """Combine available inverse-odds pools; pishbar has highest priority."""
-    pools = (
-        ("pishbar_odd", 0.60),
-        ("miyanbar_odd", 0.25),
-        ("paybar_odd", 0.15),
-    )
-    normalized = [(field, weight, _normalized_inverse_odds(horses, field))
-                  for field, weight in pools]
-    combined = []
-    for i in range(len(horses)):
-        parts = [(weight, probs[i]) for _, weight, probs in normalized if probs[i] is not None]
-        weight_sum = sum(weight for weight, _ in parts)
-        combined.append(sum(weight * value for weight, value in parts) / weight_sum
-                        if weight_sum else None)
-    total = sum(x for x in combined if x is not None)
-    if total > 0:
-        combined = [x / total if x is not None else None for x in combined]
-    return combined
+    """Derive win probabilities from the win (pishbar) pool only.
+
+    Place/show pools represent different events and must never be mixed into
+    win probabilities. Incomplete win pools are ignored for whole-field ranking.
+    """
+    return _normalized_inverse_odds(horses, "pishbar_odd")
 
 
 def _normalized_percentages(horses, field="survey_percent"):
+    """Use survey shares only when all active runners are represented."""
     vals = [safe_float(h.get(field)) for h in horses]
-    vals = [x if x is not None and x >= 0 else 0.0 for x in vals]
-    total = sum(vals)
-    if total <= 0 or sum(x > 0 for x in vals) < 2:
+    if not vals or any(x is None or x < 0 or x > 100 for x in vals):
         return [None] * len(horses)
-    return [x / total if x > 0 else None for x in vals]
+    total = sum(vals)
+    if total <= 0:
+        return [None] * len(horses)
+    return [x / total for x in vals]
 
 
 def _has_form_signal(horses):
-    for h in horses:
-        if has_horse_form_data(h):
-            return True
-        # Unknown riders are recognized as received data, but get no invented score.
-        if clean_text(h.get("j", "")) not in ("", "نامشخص", "ناموجود"):
-            return True
-    return False
+    return any(has_horse_form_data(h) for h in horses)
 
 def analyze_horses(horses):
     horses = [dict(h) for h in (horses or [])]
@@ -649,59 +632,65 @@ def analyze_horses(horses):
 
     recent_forms = [decayed_form(h.get("perf")) for h in horses]
     career_forms = [career_form_score(h) for h in horses]
-    forms = [
-        recent_forms[i] if recent_forms[i] > 0 else career_forms[i]
-        for i in range(len(horses))
-    ]
-    max_form = max(forms) if forms and max(forms) > 0 else 1.0
+    form_values = [recent_forms[i] if recent_forms[i] > 0 else career_forms[i]
+                   for i in range(len(horses))]
+    max_form = max(form_values) if max(form_values, default=0) > 0 else 1.0
+    ior_values = [safe_float(h.get("ior")) for h in horses]
+    valid_ior = [x for x in ior_values if x is not None and x > 0]
+    max_ior = max(valid_ior) if valid_ior else 1.0
+
     raw_scores = []
     for i, h in enumerate(horses):
-        form = forms[i] / max_form
-        jockey_points = jockey_score(h.get("j", ""))
-        jockey = jockey_points / 10.0 if jockey_points else 0.0
-        # Neutral baseline; weight alone is not treated as an advantage.
-        raw_scores.append(max(0.03, 0.72 * form + 0.18 * jockey + 0.10))
+        # IOR is used only when the source supplies a positive numeric rating.
+        form_component = form_values[i] / max_form if form_values[i] > 0 else None
+        ior_component = (ior_values[i] / max_ior
+                         if ior_values[i] is not None and ior_values[i] > 0 else None)
+        components = []
+        if form_component is not None:
+            components.append((0.75, form_component))
+        if ior_component is not None:
+            components.append((0.25, ior_component))
+        score = (sum(w * value for w, value in components) / sum(w for w, _ in components)
+                 if components else 0.10)
+        raw_scores.append(max(0.03, score))
 
     model = power_probs(raw_scores, power=1.8)
     model_signal = _has_form_signal(horses)
-    # Use all three official pools, not only pishbar. Some rounds publish
-    # miyanbar/paybar earlier or without a complete pishbar pool.
+
+    # Only complete pools can influence a whole-field probability distribution.
+    # Partial odds/survey are retained in raw runner fields for diagnostics, not scored.
     market = _combined_market_probabilities(horses)
     survey = _normalized_percentages(horses, "survey_percent")
-    has_full_market = all(x is not None for x in market)
-    has_any_market = any(x is not None for x in market)
-    has_full_survey = all(x is not None for x in survey)
-    has_any_survey = any(x is not None for x in survey)
+    has_full_market = bool(market) and all(x is not None for x in market)
+    has_full_survey = bool(survey) and all(x is not None for x in survey)
+    has_partial_market = any(
+        safe_float(h.get("pishbar_odd")) is not None and safe_float(h.get("pishbar_odd")) > 1.0
+        for h in horses
+    ) and not has_full_market
+    has_partial_survey = any(safe_float(h.get("survey_percent")) is not None for h in horses) and not has_full_survey
 
-    # Do not abort a whole race when only some runners have odds/survey data.
-    # Each runner is scored from the signals actually available for that runner;
-    # missing signals are not fabricated. If there is no usable signal at all,
-    # stop rather than present a random ranking as a prediction.
-    if not has_any_market and not has_any_survey and not model_signal:
-        raise ValueError("برای این دور هیچ ضریب معتبر، مشارکت یا سابقه عملکرد قابل استخراج نیست.")
+    if not has_full_market and not has_full_survey and not model_signal:
+        raise ValueError("داده کامل و معتبر برای این دور موجود نیست؛ ضرایب/نظرسنجی ناقص به‌عنوان پیش‌بینی استفاده نشد.")
 
-    final_raw = []
-    for i in range(len(horses)):
-        components = []
-        if market[i] is not None:
-            components.append((0.72 if has_full_market else 0.65, market[i]))
-        if survey[i] is not None:
-            components.append((0.13 if has_full_market else 0.15, survey[i]))
-        # Model is always a small neutral fallback; it becomes stronger when
-        # genuine form/jockey data exists and no market/survey data is present.
-        model_weight = 0.15 if (has_any_market or has_any_survey) else 1.0
-        if model_signal and not has_any_market and has_any_survey:
-            model_weight = 0.30
-        elif model_signal and has_any_market and not has_any_survey:
-            model_weight = 0.18 if has_full_market else 0.20
-        elif not model_signal and (has_any_market or has_any_survey):
-            model_weight = 0.10
-        components.append((model_weight, model[i]))
-        weight_total = sum(w for w, _ in components)
-        final_raw.append(sum(w * value for w, value in components) / weight_total if weight_total else model[i])
+    if has_full_market and has_full_survey and model_signal:
+        final = [0.72 * market[i] + 0.13 * survey[i] + 0.15 * model[i]
+                 for i in range(len(horses))]
+    elif has_full_market and has_full_survey:
+        final = [0.85 * market[i] + 0.15 * survey[i] for i in range(len(horses))]
+    elif has_full_market and model_signal:
+        final = [0.82 * market[i] + 0.18 * model[i] for i in range(len(horses))]
+    elif has_full_market:
+        final = market[:]
+    elif has_full_survey and model_signal:
+        final = [0.70 * survey[i] + 0.30 * model[i] for i in range(len(horses))]
+    elif has_full_survey:
+        final = survey[:]
+    else:
+        # No complete market/survey: use genuine form/IOR only.
+        final = model[:]
 
-    total = sum(final_raw) or 1.0
-    final = [x / total for x in final_raw]
+    total = sum(final) or 1.0
+    final = [x / total for x in final]
 
     for i, h in enumerate(horses):
         h["market_prob"] = market[i] * 100 if market[i] is not None else None
@@ -726,7 +715,7 @@ def analyze_horses(horses):
         longshots = ranked[2:] or ranked[-1:]
 
     confidence = get_confidence_level(ranked)
-    if (not has_full_market and not has_full_survey) or not model_signal:
+    if (not has_full_market and not has_full_survey) or not model_signal or has_partial_market or has_partial_survey:
         confidence = "⚠️ پایین"
 
     return {
@@ -740,9 +729,9 @@ def analyze_horses(horses):
                if len(longshots) > 1 else "N/A"),
         "conf": confidence,
         "market_available": has_full_market,
-        "market_partial": has_any_market and not has_full_market,
+        "market_partial": has_partial_market,
         "survey_available": has_full_survey,
-        "survey_partial": has_any_survey and not has_full_survey,
+        "survey_partial": has_partial_survey,
         "model_signal": model_signal,
     }
 
@@ -974,7 +963,7 @@ def _odds_by_runner(odds_payload):
 
     def add(ids, market, odd):
         value = safe_float(odd)
-        if not market or value is None or value <= 1:
+        if not market or value is None or value <= 1.0:
             return
         for token in _id_tokens(*ids):
             result.setdefault(token, {})[market] = value
@@ -1839,10 +1828,15 @@ async def button_callback(u: Update, c: C):
     _last_call[key] = now
 
     if data == "buy_sub":
+        if not CARD_NUMBER or not CARD_HOLDER:
+            await query.message.reply_text(
+                "⚠️ اطلاعات پرداخت در تنظیمات محیطی ربات ثبت نشده است؛ با پشتیبانی تماس بگیرید."
+            )
+            return
         await query.message.reply_text(
-            f"💳 اشتراک ویژه\nمبلغ: {SUB_PRICE} تومان\n"
-            f"شماره کارت: <code>{CARD_NUMBER}</code>\n"
-            f"به نام: {CARD_HOLDER}\n\nپس از پرداخت، تصویر رسید را ارسال کنید.",
+            f"💳 اشتراک ویژه\nمبلغ: {html.escape(SUB_PRICE)} تومان\n"
+            f"شماره کارت: <code>{html.escape(CARD_NUMBER)}</code>\n"
+            f"به نام: {html.escape(CARD_HOLDER)}\n\nپس از پرداخت، تصویر رسید را ارسال کنید.",
             parse_mode="HTML",
         )
     elif data == "my_status":
