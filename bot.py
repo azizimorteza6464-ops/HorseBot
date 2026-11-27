@@ -82,10 +82,9 @@ async def is_premium(chat_id):
 async def is_authorized(u: Update, c: C) -> bool: return True 
 
 # ============================================================
-# Weather Helpers (اصلاح شده)
+# Weather Helpers
 # ============================================================
 async def get_weather():
-    # تلاش اول: open-meteo
     try:
         url = "https://api.open-meteo.com/v1/forecast?latitude=37.25&longitude=55.16&current_weather=true"
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -96,7 +95,6 @@ async def get_weather():
                 return f"🌡 دما: {cw.get('temperature', '---')}°C | 💨 باد: {cw.get('windspeed', '---')} km/h"
     except: pass
     
-    # تلاش دوم: wttr.in (مناسب برای گیت‌هاب)
     try:
         url = "https://wttr.in/Gonbad-e-Qabus?format=j1"
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -267,7 +265,6 @@ async def prepare_page(pg):
 
 async def click_round(pg, r_num):
     try:
-        # تلاش برای کلیک روی تب "مشارکت" یا "پیش‌بینی" در صورت وجود
         participation = pg.locator("text=/^(مشارکت|پیش‌بینی|پیش بینی)$/i").first
         if await participation.is_visible():
             await participation.click()
@@ -288,7 +285,8 @@ async def click_round(pg, r_num):
             }}
         """)
         if clicked:
-            await pg.wait_for_timeout(4000)
+            # افزایش زمان انتظار برای لود ضرایب
+            await pg.wait_for_timeout(5000)
             try:
                 await pg.wait_for_load_state("networkidle", timeout=3000)
             except: pass
@@ -311,14 +309,14 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# Parsers & Core Analysis (نسخه 6.7)
+# Parsers & Core Analysis (اصلاح شده برای پیدا کردن ضرایب)
 # ============================================================
 def parse_row_data(cells):
     rank, name, jockey, weight, ior, perf, w_odd = 0, "", "", 0.0, 0, "", 0.0
-    trans = str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')
+    trans = str.maketrans('۰۱۲۳۴۵۶۷۸۹٫', '0123456789.')
     
     for val in cells:
-        val = str(val).translate(trans).strip()
+        val = str(val).translate(trans).replace(',', '').strip()
         if not val: continue
         
         if '-' in val and len(val) > 3:
@@ -331,11 +329,14 @@ def parse_row_data(cells):
             perf = val
             continue
             
-        floats = re.findall(r'\d+\.\d+', val)
+        # جستجوی قوی‌تر برای ضریب (اعداد اعشاری بین 1.0 تا 300.0)
+        floats = re.findall(r'\b\d+\.\d+\b', val)
         if floats:
-            f_val = float(floats[-1])
-            if 1.0 < f_val < 300.0:
-                w_odd = f_val
+            for f_str in floats:
+                f_val = float(f_str)
+                if 1.0 < f_val < 300.0:
+                    w_odd = f_val
+                    break # اولین عدد اعشاری معتبر به عنوان ضریب انتخاب می‌شود
                 
         nums = re.findall(r'\d+(?:\.\d+)?', val)
         for n in nums:
@@ -350,9 +351,9 @@ def parse_row_data(cells):
             continue
             
         if len(val) > 2 and not re.match(r'^[\d\.\-\s]+$', val):
-            if any(kw in val for kw in ['دور', 'مشارکت', 'پخش', 'زنده', 'جدول', 'هفته', 'نظرسنجی']): continue
+            if any(kw in val for kw in ['دور', 'مشارکت', 'پخش', 'زنده', 'جدول', 'هفته', 'نظرسنجی', 'سرمایه', 'تومان']): continue
             if not name: name = val
-            elif not jockey: jockey = val
+            elif not jockey and len(val) < 20: jockey = val
             
     return rank, name, jockey, weight, ior, perf, w_odd
 
@@ -372,8 +373,9 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         rows_data = await p.evaluate("""
             () => {
                 let rows = [];
-                document.querySelectorAll('table tr, .v-data-table tbody tr').forEach(tr => {
-                    let tds = Array.from(tr.querySelectorAll('td, th')).map(td => td.innerText.trim());
+                // اضافه کردن کلاس‌های مخصوص Vuetify
+                document.querySelectorAll('table tr, .v-data-table tbody tr, .v-data-table__tr').forEach(tr => {
+                    let tds = Array.from(tr.querySelectorAll('td, th, .v-data-table__td')).map(td => td.innerText.trim());
                     if (tds.length >= 4) rows.push(tds);
                 });
                 if (rows.length === 0) {
@@ -393,7 +395,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
 
         if rows_data:
             for cells in rows_data:
-                cells = [c.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')).strip() for c in cells if c.strip()]
+                cells = [c.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹٫', '0123456789.')).strip() for c in cells if c.strip()]
                 if len(cells) >= 3:
                     rank, name, jockey, weight, ior, perf, w_odd = parse_row_data(cells)
                     if rank == 0 and name: rank = len(horses) + 1
@@ -401,12 +403,12 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                         horses[rank] = {"n": name, "num": rank, "ior": ior, "j": jockey, "perf": perf, "w_odd": w_odd, "weight": weight}
 
         # --- روش 2: استخراج از JSON های مخفی در سورس ---
-        if not horses:
+        if not horses or all(h.get('w_odd', 0) == 0.0 for h in horses.values()):
             script_data = await p.evaluate("""
                 () => {
                     let scripts = Array.from(document.querySelectorAll('script'));
                     for (let s of scripts) {
-                        if (s.type === 'application/json' || s.innerHTML.includes('"odds"') || s.innerHTML.includes('"price"') || s.innerHTML.includes('"horses"')) {
+                        if (s.type === 'application/json' || s.innerHTML.includes('"odds"') || s.innerHTML.includes('"price"') || s.innerHTML.includes('"horses"') || s.innerHTML.includes('"coefficient"')) {
                             return s.innerHTML;
                         }
                     }
@@ -414,18 +416,27 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                 }
             """)
             if script_data:
-                print("JSON script found in HTML! Attempting to extract...")
-                matches = re.findall(r'"name"\s*:\s*"([^"]+)".*?"(?:odds|price|coefficient)"\s*:\s*([\d\.]+)', script_data)
+                print("JSON script found! Attempting to extract...")
+                # رجکس قوی‌تر برای پیدا کردن نام و ضریب در JSON
+                matches = re.findall(r'"name"\s*:\s*"([^"]+)"[^}]*?"(?:odds|price|coefficient|wage)"\s*:\s*"?([\d\.]+)"?', script_data)
                 for name, odd in matches:
                     try:
                         val = float(odd)
                         if val > 1.0:
                             rank = len(horses) + 1
-                            horses[rank] = {"n": name, "num": rank, "ior": 0, "j": "-", "perf": "", "w_odd": val, "weight": 0.0}
+                            # اگر اسب قبلا پیدا شده بود، فقط ضریبش را آپدیت کن
+                            found = False
+                            for k, v in horses.items():
+                                if v['n'] == name:
+                                    v['w_odd'] = val
+                                    found = True
+                                    break
+                            if not found:
+                                horses[rank] = {"n": name, "num": rank, "ior": 0, "j": "-", "perf": "", "w_odd": val, "weight": 0.0}
                     except: pass
 
         # --- روش 3: پردازش متن خام (پلن B) ---
-        if not horses:
+        if not horses or all(h.get('w_odd', 0) == 0.0 for h in horses.values()):
             print(f"DOM/JSON failed for round {r_num}. Falling back to text parsing.")
             parts = [p.strip() for p in full_text.replace('\n', ' | ').split('|') if p.strip()]
             current_round = 0
@@ -447,24 +458,39 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                         idx += 1
                         continue
                     
-                    match_name = re.match(r'^(\d+)-(.*)$', part)
+                    # تلاش برای پیدا کردن نام اسب و ضریب در یک رشته
+                    match_name = re.match(r'^(\d+)[-\.\s]+(.+?)(?:\s+([\d\.]+))?$', part)
                     if match_name:
                         rank = int(match_name.group(1))
                         name = match_name.group(2).strip()
                         w_odd = 0.0
-                        # جستجو در ۵ عنصر بعدی برای یافتن ضریب
-                        for lookahead in range(1, 6):
-                            if idx + lookahead < len(parts):
-                                try:
-                                    val = float(parts[idx + lookahead])
-                                    if 1.0 < val < 300.0 and "." in parts[idx + lookahead]:
-                                        w_odd = val
-                                        break
-                                except ValueError:
-                                    pass
+                        
+                        # اگر ضریب همراه نام بود
+                        if match_name.group(3):
+                            try:
+                                val = float(match_name.group(3).replace('٫', '.'))
+                                if 1.0 < val < 300.0:
+                                    w_odd = val
+                            except: pass
+                        
+                        # اگر پیدا نشد، در ۱۰ عنصر بعدی بگرد
+                        if w_odd == 0.0:
+                            for lookahead in range(1, 10):
+                                if idx + lookahead < len(parts):
+                                    try:
+                                        val_str = parts[idx + lookahead].replace('٫', '.')
+                                        val = float(val_str)
+                                        if 1.0 < val < 300.0 and "." in val_str:
+                                            w_odd = val
+                                            break
+                                    except ValueError:
+                                        pass
                         
                         if rank not in horses:
                             horses[rank] = {"n": name, "num": rank, "ior": 0, "j": "-", "perf": "", "w_odd": w_odd, "weight": 0.0}
+                        elif horses[rank]['w_odd'] == 0.0 and w_odd > 0.0:
+                            horses[rank]['w_odd'] = w_odd
+                        
                         idx += 1
                         continue
                     
@@ -1041,7 +1067,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 6.7 (استخراج از JSON و تب مشارکت)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 6.8 (استخراج بهبودیافته ضرایب)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
