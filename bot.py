@@ -28,7 +28,7 @@ U = os.environ.get("USER_UDI")
 G = os.environ.get("GH_PAT")
 R = os.environ.get("GITHUB_REPOSITORY")
 
-MY_ID = "184149177"
+MY_ID = os.environ.get("ADMIN_ID", "184149177")
 CARD_NUMBER = os.environ.get("CARD_NUMBER", "")
 CARD_HOLDER = os.environ.get("CARD_HOLDER", "")
 SUB_PRICE = os.environ.get("SUB_PRICE", "250,000")
@@ -42,7 +42,7 @@ COOLDOWN = 60
 _last_call = {}
 AR_CACHE = {}
 SITE_WEATHER_CACHE = None
-RUN_SECONDS = int(os.environ.get("RUN_SECONDS", "0"))
+RUN_SECONDS = max(60, int(os.environ.get("RUN_SECONDS", "17400")))
 
 RANK_POINTS = {"1": 10, "2": 6, "3": 3, "4": 1, "5": 0.5}
 JOCKEY_TIERS = {
@@ -62,28 +62,19 @@ def clean_text(value):
 
 
 def normalize_digits(value):
-    """Convert Persian/Arabic digits to ASCII without changing other text."""
-    table = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
-    return str(value).translate(table)
-
-
-def normalize_horse_name(value):
-    """Normalize Persian/Arabic horse names for reliable cross-page matching."""
-    value = normalize_digits(clean_text(value)).lower()
-    value = value.replace("ي", "ی").replace("ك", "ک").replace("ة", "ه")
-    value = re.sub(r"[^0-9a-z؀-ۿ]+", "", value)
-    return value
+    """Convert Persian/Arabic digits and decimal separators to ASCII."""
+    table = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫٬", "01234567890123456789.,")
+    return str(value or "").translate(table)
 
 
 def safe_float(value):
     if value is None:
         return None
-    s = normalize_digits(value).replace("٫", ".").replace("٬", "")
-    s = s.replace(",", ".")
+    s = normalize_digits(value).replace(",", ".")
     m = re.search(r"-?\d+(?:\.\d+)?", s)
     try:
         return float(m.group()) if m else None
-    except (TypeError, ValueError):
+    except Exception:
         return None
 
 
@@ -93,26 +84,26 @@ def safe_int(value):
 
 
 def _split_safe(text, max_len=3900):
-    if len(text) <= max_len:
-        return [text]
+    """Split messages safely, including a single unusually long line."""
+    text = str(text)
     chunks, current = [], ""
-    for line in text.split("\n"):
-        if len(line) > max_len:
+    for line in text.splitlines() or [""]:
+        while len(line) > max_len:
             if current:
                 chunks.append(current)
                 current = ""
-            for start in range(0, len(line), max_len):
-                chunks.append(line[start:start + max_len])
-            continue
-        if len(current) + len(line) + 1 > max_len:
+            chunks.append(line[:max_len])
+            line = line[max_len:]
+        candidate = current + ("\n" if current else "") + line
+        if len(candidate) > max_len:
             if current:
                 chunks.append(current)
             current = line
         else:
-            current = current + "\n" + line if current else line
+            current = candidate
     if current:
         chunks.append(current)
-    return chunks
+    return chunks or [""]
 
 
 async def send_long_message(c, chat_id, text, max_len=3900):
@@ -269,37 +260,14 @@ def extract_site_weather(body_text):
 
 
 def decayed_form(perf_str, decay=0.85):
-    """Score recent finishing positions; accept Persian digits and common separators."""
     if not perf_str:
         return 0.0
-    text = normalize_digits(str(perf_str))
-    ranks = re.findall(r"(?<!\d)([1-5])(?!\d)", text)
-    return sum(RANK_POINTS.get(rank, 0) * (decay ** i)
-               for i, rank in enumerate(ranks))
-
-
-def career_form_score(horse):
-    """Use official career podium counts when recent-form text is absent."""
-    starts = safe_float(horse.get("starts"))
-    wins = safe_float(horse.get("p1"))
-    seconds = safe_float(horse.get("p2"))
-    thirds = safe_float(horse.get("p3"))
-    if starts is None or starts <= 0:
-        return 0.0
-    wins = max(0.0, wins or 0.0)
-    seconds = max(0.0, seconds or 0.0)
-    thirds = max(0.0, thirds or 0.0)
-    return min(1.0, (wins + 0.60 * seconds + 0.35 * thirds) / starts)
-
-
-def has_horse_form_data(horse):
-    """True only when at least one numeric performance feature is usable."""
-    if decayed_form(horse.get("perf")) > 0:
-        return True
-    if career_form_score(horse) > 0:
-        return True
-    ior = safe_float(horse.get("ior"))
-    return ior is not None and ior > 0
+    total = 0.0
+    for i, item in enumerate(str(perf_str).split("-")):
+        rank = item.strip()
+        if rank.isdigit():
+            total += RANK_POINTS.get(rank, 0) * (decay ** i)
+    return total
 
 
 def jockey_score(name):
@@ -329,48 +297,37 @@ def quinella_prob(probs, i, j):
 
 
 def place_probability(probs, index, places=3):
-    # تقریب Plackett-Luce برای احتمال قرار گرفتن در سه رتبه اول
-    if not probs or index < 0 or index >= len(probs) or len(probs) < 1:
+    """Exact Plackett-Luce probability of finishing in the first N places."""
+    if not probs or index < 0 or index >= len(probs):
         return 0.0
-    p = probs[index]
-    if p <= 0:
-        return 0.0
-    n = len(probs)
-    result = p
-    if places >= 2:
-        for j in range(n):
-            if j == index:
-                continue
-            pj = probs[j]
-            if pj < 1:
-                result += pj * p / max(1e-9, 1 - pj)
-    if places >= 3:
-        for j in range(n):
-            if j == index:
-                continue
-            pj = probs[j]
-            for k in range(n):
-                if k in (index, j):
-                    continue
-                pk = probs[k]
-                den = 1 - pj - pk
-                if den > 1e-9:
-                    result += pj * pk / max(1e-9, 1 - pj) * p / den
-    return min(1.0, result)
+    places = max(1, min(int(places), len(probs)))
+    # Sum over all ordered selections of the other horses before the target.
+    others = [i for i in range(len(probs)) if i != index]
+    total = 0.0
+    for n_before in range(places):
+        for order in itertools.permutations(others, n_before):
+            remaining = 1.0
+            probability = 1.0
+            for j in order:
+                probability *= probs[j] / max(1e-12, remaining)
+                remaining -= probs[j]
+            probability *= probs[index] / max(1e-12, remaining)
+            total += probability
+    return min(1.0, max(0.0, total))
 
 
-def get_confidence_level(horses):
+def get_confidence_level(horses, sources=None):
+    """Confidence is a data-quality label, not a guarantee of winning."""
     if not horses:
         return "⚠️ پایین"
-    top = horses[0]
-    second = horses[1] if len(horses) > 1 else top
-    gap = top["model_prob"] - second["model_prob"]
-    data_count = sum(1 for h in horses if has_horse_form_data(h))
-    if data_count == 0:
-        return "⚠️ پایین"
-    if gap >= 12 and data_count >= max(2, len(horses) // 2):
-        return "🔥 بالا"
-    if gap >= 5:
+    gap = horses[0].get("model_prob", 0) - (
+        horses[1].get("model_prob", 0) if len(horses) > 1 else 0
+    )
+    sources = sources or {}
+    quality = sum(bool(sources.get(k)) for k in ("market", "survey", "form", "stats"))
+    if quality >= 3 and gap >= 10:
+        return "🔥 نسبتاً بالا"
+    if quality >= 2 and gap >= 5:
         return "⚖️ متوسط"
     return "⚠️ پایین"
 
@@ -522,6 +479,8 @@ async def get_all_races(pg):
                 "ior": d.get("ior"),
                 "perf": d.get("perf") or "ناموجود",
                 "j": "نامشخص",
+                "pishbar_odd": None, "miyanbar_odd": None, "paybar_odd": None,
+                "survey_percent": None, "scratched": False,
             })
         all_data[race["round"]] = horses
     return all_data
@@ -586,153 +545,166 @@ async def fetch_racecard_performance(pg):
 # ======================== تحلیل هر دور ========================
 
 def _normalized_inverse_odds(horses, field="pishbar_odd"):
-    """Normalize a pool only when every active runner has a valid decimal odd."""
     values = [safe_float(h.get(field)) for h in horses]
-    if not values or any(x is None or x <= 1.0 for x in values):
+    valid = [1.0 / x if x is not None and x > 1.0 else 0.0 for x in values]
+    total = sum(valid)
+    if total <= 0 or sum(x > 0 for x in valid) < 2:
         return [None] * len(horses)
-    inverse = [1.0 / x for x in values]
-    total = sum(inverse)
-    if total <= 0:
-        return [None] * len(horses)
-    return [x / total for x in inverse]
-
-
-def _combined_market_probabilities(horses):
-    """Derive win probabilities from the win (pishbar) pool only.
-
-    Place/show pools represent different events and must never be mixed into
-    win probabilities. Incomplete win pools are ignored for whole-field ranking.
-    """
-    return _normalized_inverse_odds(horses, "pishbar_odd")
+    return [(x / total) if x > 0 else None for x in valid]
 
 
 def _normalized_percentages(horses, field="survey_percent"):
-    """Use survey shares only when all active runners are represented."""
     vals = [safe_float(h.get(field)) for h in horses]
-    if not vals or any(x is None or x < 0 or x > 100 for x in vals):
+    if sum(x is not None and x > 0 for x in vals) < 2:
         return [None] * len(horses)
-    total = sum(vals)
+    clean = [max(0.0, x) if x is not None else 0.0 for x in vals]
+    total = sum(clean)
     if total <= 0:
         return [None] * len(horses)
-    return [x / total for x in vals]
+    return [(x / total) if vals[i] is not None else None for i, x in enumerate(clean)]
+
+
+def _has_stats_signal(horses):
+    return any(
+        safe_float(h.get("starts")) and safe_float(h.get("starts")) > 0
+        for h in horses
+    )
+
+
+def _history_score(horse):
+    """Combine recent finishing form and published career podium stats."""
+    form = decayed_form(horse.get("perf"))
+    starts = safe_float(horse.get("starts"))
+    wins = safe_float(horse.get("p1"))
+    seconds = safe_float(horse.get("p2"))
+    thirds = safe_float(horse.get("p3"))
+    career = 0.0
+    if starts and starts > 0:
+        # Light Bayesian shrinkage prevents tiny samples from dominating.
+        career = (
+            0.55 * ((wins or 0) + 1.0) / (starts + 4.0)
+            + 0.30 * ((seconds or 0) + 1.0) / (starts + 4.0)
+            + 0.15 * ((thirds or 0) + 1.0) / (starts + 4.0)
+        )
+    jockey = jockey_score(horse.get("j", "")) / 10.0
+    return 0.58 * form + 0.27 * career + 0.15 * jockey
 
 
 def _has_form_signal(horses):
-    return any(has_horse_form_data(h) for h in horses)
+    for h in horses:
+        perf = str(h.get("perf") or "").strip()
+        if perf and perf != "ناموجود" and re.search(r"(?:^|-)\s*[1-5](?:\s*-|$)", perf):
+            return True
+        if clean_text(h.get("j", "")) not in ("", "نامشخص", "ناموجود") and jockey_score(h.get("j", "")) > 0:
+            return True
+    return False
+
 
 def analyze_horses(horses):
-    horses = [dict(h) for h in (horses or [])]
+    if not horses:
+        raise ValueError("فهرست اسب‌ها خالی است.")
+    horses = [dict(h) for h in horses if not h.get("scratched")]
     if len(horses) < 2:
-        raise ValueError("برای تحلیل حداقل دو اسب لازم است.")
+        raise ValueError("برای تحلیل حداقل دو اسب فعال لازم است.")
 
-    # Remove scratched runners from calculations.
-    horses = [h for h in horses if not h.get("scratched")]
-    if len(horses) < 2:
-        raise ValueError("کمتر از دو اسب فعال در این دور وجود دارد.")
+    forms = [decayed_form(h.get("perf")) for h in horses]
+    raw_scores = [_history_score(h) for h in horses]
+    has_form = _has_form_signal(horses)
+    has_stats = _has_stats_signal(horses)
 
-    recent_forms = [decayed_form(h.get("perf")) for h in horses]
-    career_forms = [career_form_score(h) for h in horses]
-    form_values = [recent_forms[i] if recent_forms[i] > 0 else career_forms[i]
-                   for i in range(len(horses))]
-    max_form = max(form_values) if max(form_values, default=0) > 0 else 1.0
-    ior_values = [safe_float(h.get("ior")) for h in horses]
-    valid_ior = [x for x in ior_values if x is not None and x > 0]
-    max_ior = max(valid_ior) if valid_ior else 1.0
+    # A uniform baseline is used when no historical signal exists. It is not
+    # presented as a learned prediction and confidence remains low.
+    if has_form or has_stats:
+        base = power_probs([max(0.02, x) for x in raw_scores], power=1.65)
+    else:
+        base = [1.0 / len(horses)] * len(horses)
 
-    raw_scores = []
-    for i, h in enumerate(horses):
-        # IOR is used only when the source supplies a positive numeric rating.
-        form_component = form_values[i] / max_form if form_values[i] > 0 else None
-        ior_component = (ior_values[i] / max_ior
-                         if ior_values[i] is not None and ior_values[i] > 0 else None)
-        components = []
-        if form_component is not None:
-            components.append((0.75, form_component))
-        if ior_component is not None:
-            components.append((0.25, ior_component))
-        score = (sum(w * value for w, value in components) / sum(w for w, _ in components)
-                 if components else 0.10)
-        raw_scores.append(max(0.03, score))
-
-    model = power_probs(raw_scores, power=1.8)
-    model_signal = _has_form_signal(horses)
-
-    # Only complete pools can influence a whole-field probability distribution.
-    # Partial odds/survey are retained in raw runner fields for diagnostics, not scored.
-    market = _combined_market_probabilities(horses)
+    market = _normalized_inverse_odds(horses, "pishbar_odd")
     survey = _normalized_percentages(horses, "survey_percent")
-    has_full_market = bool(market) and all(x is not None for x in market)
-    has_full_survey = bool(survey) and all(x is not None for x in survey)
-    has_partial_market = any(
-        safe_float(h.get("pishbar_odd")) is not None and safe_float(h.get("pishbar_odd")) > 1.0
-        for h in horses
-    ) and not has_full_market
-    has_partial_survey = any(safe_float(h.get("survey_percent")) is not None for h in horses) and not has_full_survey
+    has_market = market is not None and all(x is not None for x in market)
+    has_survey = survey is not None and all(x is not None for x in survey)
 
-    if not has_full_market and not has_full_survey and not model_signal:
-        raise ValueError("داده کامل و معتبر برای این دور موجود نیست؛ ضرایب/نظرسنجی ناقص به‌عنوان پیش‌بینی استفاده نشد.")
-
-    if has_full_market and has_full_survey and model_signal:
-        final = [0.72 * market[i] + 0.13 * survey[i] + 0.15 * model[i]
+    # Consensus ranking uses observable sources, but the history-only estimate
+    # is kept separately so value checks do not compare a market-blended model
+    # against the same market a second time.
+    if has_market and has_survey and (has_form or has_stats):
+        final = [0.58 * market[i] + 0.14 * survey[i] + 0.28 * base[i]
                  for i in range(len(horses))]
-    elif has_full_market and has_full_survey:
-        final = [0.85 * market[i] + 0.15 * survey[i] for i in range(len(horses))]
-    elif has_full_market and model_signal:
-        final = [0.82 * market[i] + 0.18 * model[i] for i in range(len(horses))]
-    elif has_full_market:
+    elif has_market and (has_form or has_stats):
+        final = [0.68 * market[i] + 0.32 * base[i] for i in range(len(horses))]
+    elif has_market and has_survey:
+        final = [0.82 * market[i] + 0.18 * survey[i] for i in range(len(horses))]
+    elif has_market:
         final = market[:]
-    elif has_full_survey and model_signal:
-        final = [0.70 * survey[i] + 0.30 * model[i] for i in range(len(horses))]
-    elif has_full_survey:
+    elif has_survey and (has_form or has_stats):
+        final = [0.55 * survey[i] + 0.45 * base[i] for i in range(len(horses))]
+    elif has_survey:
         final = survey[:]
     else:
-        # No complete market/survey: use genuine form/IOR only.
-        final = model[:]
+        final = base[:]
 
     total = sum(final) or 1.0
     final = [x / total for x in final]
 
     for i, h in enumerate(horses):
-        h["market_prob"] = market[i] * 100 if market[i] is not None else None
-        h["survey_prob"] = survey[i] * 100 if survey[i] is not None else None
+        h["market_prob"] = market[i] * 100 if has_market else None
+        h["survey_prob"] = survey[i] * 100 if has_survey else None
+        h["form_prob"] = base[i] * 100
         h["model_prob"] = final[i] * 100
-        h["edge"] = h["model_prob"] - h["market_prob"] if h["market_prob"] is not None else None
+        h["edge"] = (
+            h["form_prob"] - h["market_prob"]
+            if h["market_prob"] is not None and (has_form or has_stats) else None
+        )
+        h["win_fair_odd"] = round(1.0 / base[i], 2) if base[i] > 0 else None
         h["place_prob"] = place_probability(final, i, 3) * 100
-        h["place_fair_odd"] = round(100 / h["place_prob"], 2) if h["place_prob"] > 0 else None
+        independent_place = place_probability(base, i, 3) * 100
+        h["form_place_prob"] = independent_place
+        h["place_fair_odd"] = (
+            round(100.0 / h["place_prob"], 2) if h["place_prob"] > 0 else None
+        )
+        win_odd = safe_float(h.get("pishbar_odd"))
+        place_odd = safe_float(h.get("paybar_odd"))
+        h["win_ev"] = (base[i] * win_odd - 1.0) * 100 if win_odd and win_odd > 1 and (has_form or has_stats) else None
+        h["place_ev"] = (independent_place / 100.0 * place_odd - 1.0) * 100 if place_odd and place_odd > 1 and (has_form or has_stats) else None
 
     ranked = sorted(horses, key=lambda x: x["model_prob"], reverse=True)
-    probs = [h["model_prob"] / 100 for h in ranked]
+    probs = [h["model_prob"] / 100.0 for h in ranked]
     q_candidates = []
     for i, j in itertools.combinations(range(len(ranked)), 2):
         qp = quinella_prob(probs, i, j)
         q_candidates.append({
-            "h1": ranked[i], "h2": ranked[j], "prob": qp * 100,
-            "fair_odd": round(1 / qp, 2) if qp > 0 else None,
+            "h1": ranked[i], "h2": ranked[j],
+            "prob": qp * 100,
+            "fair_odd": round(1.0 / qp, 2) if qp > 0 else None,
         })
     q_candidates.sort(key=lambda x: x["prob"], reverse=True)
-    longshots = [h for h in ranked[2:] if h["model_prob"] >= 5]
-    if not longshots:
-        longshots = ranked[2:] or ranked[-1:]
 
-    confidence = get_confidence_level(ranked)
-    if (not has_full_market and not has_full_survey) or not model_signal or has_partial_market or has_partial_survey:
-        confidence = "⚠️ پایین"
+    outsiders = [h for h in ranked[2:] if h["model_prob"] >= 4.0]
+    if not outsiders:
+        outsiders = ranked[2:] or ranked[-1:]
 
+    sources = {
+        "market": has_market, "survey": has_survey,
+        "form": has_form, "stats": has_stats,
+    }
     return {
         "horses": ranked,
-        "w": ranked[0], "p": ranked[1],
+        "w": ranked[0],
+        "p": ranked[1],
         "s": ranked[2] if len(ranked) > 2 else ranked[1],
         "q": q_candidates[0] if q_candidates else None,
         "q_candidates": q_candidates,
-        "su": longshots[0],
-        "qs": (f"{longshots[0]['num']}-{longshots[0]['n']} + {longshots[1]['num']}-{longshots[1]['n']}"
-               if len(longshots) > 1 else "N/A"),
-        "conf": confidence,
-        "market_available": has_full_market,
-        "market_partial": has_partial_market,
-        "survey_available": has_full_survey,
-        "survey_partial": has_partial_survey,
-        "model_signal": model_signal,
+        "su": outsiders[0],
+        "qs": (
+            f"{outsiders[0]['num']}-{outsiders[0]['n']} + "
+            f"{outsiders[1]['num']}-{outsiders[1]['n']}"
+            if len(outsiders) > 1 else "N/A"
+        ),
+        "conf": get_confidence_level(ranked, sources),
+        "market_available": has_market,
+        "survey_available": has_survey,
+        "model_signal": has_form or has_stats,
+        "sources": sources,
     }
 
 
@@ -818,6 +790,7 @@ def get_main_menu(chat_id):
             InlineKeyboardButton("🔥 دوقلوی شگفتی", callback_data="sur_d"),
         ],
         [InlineKeyboardButton("💰 تعیین مبلغ شرط", callback_data="bet_set")],
+        [InlineKeyboardButton("⏰ تنظیم یادآوری", callback_data="rem_start")],
         [
             InlineKeyboardButton("💳 خرید اشتراک / تمدید", callback_data="buy_sub"),
             InlineKeyboardButton("👤 وضعیت اشتراک من", callback_data="my_status"),
@@ -825,7 +798,7 @@ def get_main_menu(chat_id):
         [InlineKeyboardButton("🎁 دعوت از دوستان", callback_data="invite")],
         [
             InlineKeyboardButton("🌤 وضعیت هوا", callback_data="weather"),
-            InlineKeyboardButton("🏙 تغییر مسیر/شهر", callback_data="change_city"),
+            InlineKeyboardButton("🏙 محل مسابقه", callback_data="change_city"),
         ],
     ])
     if str(chat_id) == MY_ID:
@@ -896,179 +869,50 @@ async def api_get_json(pg, path):
 
 
 def _api_data(payload):
-    """Unwrap common API envelopes while preserving list responses."""
-    value = payload
-    for _ in range(5):
-        if isinstance(value, dict):
-            next_value = None
-            for key in ("data", "result", "payload"):
-                candidate = value.get(key)
-                if isinstance(candidate, (dict, list)):
-                    next_value = candidate
-                    break
-            if next_value is None:
-                return value
-            value = next_value
-        else:
-            return value
-    return value
-
-
-def _norm_api_key(value):
-    value = normalize_digits(str(value or "")).lower()
-    value = value.replace("ي", "ی").replace("ك", "ک")
-    return re.sub(r"[^a-z0-9؀-ۿ]", "", value)
-
-
-def _id_tokens(*values):
-    tokens = set()
-    for value in values:
-        if value is None or isinstance(value, (dict, list, tuple)):
-            continue
-        raw = clean_text(value)
-        if not raw:
-            continue
-        tokens.add(raw)
-        tokens.add(_norm_api_key(raw))
-        number = safe_int(raw)
-        if number is not None:
-            tokens.add(number)
-            tokens.add(str(number))
-    return {x for x in tokens if x not in (None, "")}
-
-
-def _market_name(value):
-    key = _norm_api_key(value)
-    aliases = {
-        "pishbar": ("pishbar", "prebar", "win", "winner", "first", "برنده", "پیشبر"),
-        "miyanbar": ("miyanbar", "place", "second", "دوم", "میانبر"),
-        "paybar": ("paybar", "show", "third", "سوم", "پیبر"),
-    }
-    for market, words in aliases.items():
-        if any(_norm_api_key(word) in key for word in words):
-            return market
-    return None
+    return payload.get("data", payload) if isinstance(payload, dict) else {}
 
 
 def _odds_by_runner(odds_payload):
-    """Parse market odds from nested-market, row-list, or runner-keyed API JSON."""
     data = _api_data(odds_payload)
+    odds = data.get("odds", data)
     result = {}
-    id_fields = (
-        "runnerId", "runner_id", "horseId", "horse_id", "horseNumber",
-        "horse_number", "horse_num", "number", "num", "external_id",
-        "externalId", "id",
-    )
-    odd_fields = ("odd", "odds", "value", "price", "coefficient", "rate")
-
-    def add(ids, market, odd):
-        value = safe_float(odd)
-        if not market or value is None or value <= 1.0:
-            return
-        for token in _id_tokens(*ids):
-            result.setdefault(token, {})[market] = value
-
-    def walk(node, path=(), parent_key=None):
-        if isinstance(node, list):
-            for child in node:
-                walk(child, path, None)
-            return
-        if not isinstance(node, dict):
-            market = next((_market_name(x) for x in reversed(path) if _market_name(x)), None)
-            if market and parent_key is not None:
-                add((parent_key,), market, node)
-            return
-
-        ids = [node.get(k) for k in id_fields if node.get(k) is not None]
-        market = None
-        for field in ("pool", "pool_name", "market", "market_name", "type", "type_name", "title"):
-            market = _market_name(node.get(field))
-            if market:
-                break
-        if not market:
-            market = next((_market_name(x) for x in reversed(path) if _market_name(x)), None)
-        odd = next((node.get(k) for k in odd_fields if node.get(k) is not None), None)
-        if market and odd is not None and (ids or parent_key is not None):
-            add(ids + ([parent_key] if parent_key is not None else []), market, odd)
-
-        # Shape: {runner_number: {pishbar: 2.2, ...}}
-        if parent_key is not None:
-            for key, value in node.items():
-                child_market = _market_name(key)
-                if child_market and not isinstance(value, (dict, list)):
-                    add(ids + [parent_key], child_market, value)
-
-        for key, value in node.items():
-            child_market = _market_name(key)
-            if child_market and isinstance(value, dict):
-                # Shape: {pishbar: {runner_id: odd}} or rows under a pool.
-                for runner_key, runner_value in value.items():
-                    if isinstance(runner_value, dict):
-                        row_ids = [runner_value.get(k) for k in id_fields if runner_value.get(k) is not None]
-                        row_odd = next((runner_value.get(k) for k in odd_fields if runner_value.get(k) is not None), None)
-                        add(row_ids + [runner_key], child_market, row_odd)
-                    else:
-                        add((runner_key,), child_market, runner_value)
-            elif isinstance(value, (dict, list)):
-                walk(value, path + (str(key),), str(key))
-            elif child_market:
-                add(ids + [parent_key, key], child_market, value)
-
-    walk(data)
+    if not isinstance(odds, dict):
+        return result
+    for market_name in ("pishbar", "miyanbar", "paybar"):
+        market = odds.get(market_name) or {}
+        if not isinstance(market, dict):
+            continue
+        for key, item in market.items():
+            if not isinstance(item, dict):
+                continue
+            runner = safe_int(item.get("runnerId", key))
+            odd = safe_float(item.get("odd"))
+            if runner is None or odd is None or odd <= 1:
+                continue
+            result.setdefault(runner, {})[market_name] = odd
     return result
 
 
 def _survey_by_runner(survey_payload):
-    """Read survey values from common statistics/participants API layouts."""
     data = _api_data(survey_payload)
     result = {}
-    id_fields = (
-        "horse_num", "horse_number", "horseNumber", "number", "num",
-        "runner_number", "runnerNumber", "runner_id", "runnerId",
-        "horse_id", "horseId", "external_id", "id",
-    )
-    value_fields = ("percent", "percentage", "survey_percent", "share", "value", "rate")
-
-    def walk(node, parent_key=None):
-        if isinstance(node, list):
-            for row in node:
-                walk(row)
-            return
-        if not isinstance(node, dict):
-            if parent_key is not None:
-                value = safe_float(node)
-                if value is not None and 0 <= value <= 100:
-                    for token in _id_tokens(parent_key):
-                        result[token] = value
-            return
-        ids = [node.get(k) for k in id_fields if node.get(k) is not None]
-        raw_value = next((node.get(k) for k in value_fields if node.get(k) is not None), None)
-        value = safe_float(raw_value)
-        if value is not None and 0 <= value <= 100:
-            for token in _id_tokens(*(ids + ([parent_key] if parent_key is not None else []))):
-                result[token] = value
-        for key, child in node.items():
-            if isinstance(child, (dict, list)):
-                walk(child, key)
-            elif parent_key is None and key not in id_fields:
-                numeric = safe_float(child)
-                if numeric is not None and 0 <= numeric <= 100:
-                    for token in _id_tokens(key):
-                        result[token] = numeric
-
-    walk(data)
+    for item in data.get("statistics", []) if isinstance(data, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        num = safe_int(item.get("horse_num"))
+        percent = safe_float(item.get("percent"))
+        if num is not None and percent is not None:
+            result[num] = percent
     return result
 
 
 async def fetch_api_races(pg):
     """Fetch current racecard, actual pool odds and survey percentages from API."""
     days_payload = await api_get_json(pg, "/races/days?limit=50&offset=0&has_races=true")
-    day_data = _api_data(days_payload)
-    days = (day_data.get("race_days") or day_data.get("days") or day_data.get("items") or []) if isinstance(day_data, dict) else []
+    days = _api_data(days_payload).get("race_days", [])
     if not days:
         days_payload = await api_get_json(pg, "/races/days?featured=true&limit=50")
-        day_data = _api_data(days_payload)
-        days = (day_data.get("race_days") or day_data.get("days") or day_data.get("items") or []) if isinstance(day_data, dict) else []
+        days = _api_data(days_payload).get("race_days", [])
     if not days:
         raise RuntimeError("روز مسابقه از API دریافت نشد")
 
@@ -1084,82 +928,50 @@ async def fetch_api_races(pg):
 
     race_payload = await api_get_json(pg, f"/races/racecard?day_id={day_id}")
     race_data = _api_data(race_payload)
-    api_races = (race_data.get("races") or race_data.get("items") or
-                 race_data.get("race_list") or []) if isinstance(race_data, dict) else []
-    if isinstance(api_races, dict):
-        api_races = list(api_races.values())
-    if not isinstance(api_races, list) or not api_races:
-        raise RuntimeError("جدول مسابقات در API خالی یا نامعتبر است")
+    api_races = race_data.get("races", [])
+    if not api_races:
+        raise RuntimeError("جدول مسابقات در API خالی است")
 
     all_data = {}
     sem = asyncio.Semaphore(4)
 
     async def enrich(race):
         rid = safe_int(race.get("id"))
-        rno = safe_int(race.get("number", race.get("race_number", race.get("raceNo"))))
-        if rid is None or rno is None or rno < 1:
+        rno = safe_int(race.get("number"))
+        if rid is None or rno is None:
             return rno, []
         async with sem:
             odds_task = api_get_json(pg, f"/pools/race/{rid}/odds")
             survey_task = api_get_json(pg, f"/races/{rid}/survey-statistics")
             odds_payload, survey_payload = await asyncio.gather(odds_task, survey_task, return_exceptions=True)
-        if isinstance(odds_payload, Exception):
-            print(f"R{rno} odds API failed:", repr(odds_payload))
-        if isinstance(survey_payload, Exception):
-            print(f"R{rno} survey API failed:", repr(survey_payload))
         odds_map = _odds_by_runner(odds_payload) if not isinstance(odds_payload, Exception) else {}
         survey_map = _survey_by_runner(survey_payload) if not isinstance(survey_payload, Exception) else {}
         entries = []
-        runners = (race.get("race_horses") or race.get("horses") or
-                   race.get("runners") or race.get("participants") or [])
-        if isinstance(runners, dict):
-            runners = list(runners.values())
-        for runner in runners:
-            if not isinstance(runner, dict):
-                continue
-            num = safe_int(runner.get("number", runner.get("horse_number", runner.get("horse_num"))))
+        for runner in race.get("race_horses", []) or []:
+            num = safe_int(runner.get("number"))
             if num is None:
                 continue
-            runner_id = runner.get("runner_id", runner.get("runnerId", runner.get("id")))
-            horse_id = runner.get("horse_id", runner.get("horseId"))
-            external_id = runner.get("external_id", runner.get("externalId"))
-            identifiers = _id_tokens(runner_id, horse_id, external_id, num)
-            horse_odds = {}
-            for token in identifiers:
-                horse_odds.update(odds_map.get(token, {}))
-            survey_percent = next((survey_map[token] for token in identifiers if token in survey_map), None)
-            horse_name = runner.get("horse_name") or runner.get("name")
-            if not horse_name and isinstance(runner.get("horse"), dict):
-                horse_name = runner["horse"].get("name")
+            runner_id = safe_int(runner.get("id"))
+            # Odds API may key runners by runnerId while the racecard uses horse number.
+            horse_odds = odds_map.get(num) or odds_map.get(runner_id) or {}
             entries.append({
                 "num": num,
-                "n": clean_text(horse_name or f"اسب {num}"),
+                "n": clean_text(runner.get("horse_name") or f"اسب {num}"),
                 "race_id": rid,
-                "horse_id": safe_int(horse_id if horse_id is not None else runner_id),
-                "runner_id": safe_int(runner_id),
-                "external_id": clean_text(external_id or ""),
-                "scratched": bool(runner.get("scratched") or runner.get("is_scratched")),
+                "horse_id": safe_int(runner.get("id")),
+                "external_id": clean_text(runner.get("external_id") or ""),
+                "scratched": bool(runner.get("scratched")),
                 "not_finished": bool(runner.get("not_finished")),
                 "pishbar_odd": horse_odds.get("pishbar"),
                 "miyanbar_odd": horse_odds.get("miyanbar"),
                 "paybar_odd": horse_odds.get("paybar"),
-                "survey_percent": survey_percent,
-                "weight": safe_float(runner.get("weight")),
-                "ior": safe_float(runner.get("ior")),
-                "perf": runner.get("perf") or runner.get("form") or "ناموجود",
-                "j": runner.get("jockey_name") or runner.get("jockey") or "نامشخص",
+                "survey_percent": survey_map.get(num),
+                "weight": None, "ior": None, "perf": "ناموجود", "j": "نامشخص",
             })
-        odds_runner_count = sum(1 for h in entries if any(h.get(k) is not None for k in ("pishbar_odd", "miyanbar_odd", "paybar_odd")))
-        survey_runner_count = sum(1 for h in entries if h.get("survey_percent") is not None)
-        print(f"R{rno}: runners={len(entries)}, odds_matched={odds_runner_count}, survey_matched={survey_runner_count}")
         return rno, entries
 
-    results = await asyncio.gather(*(enrich(r) for r in api_races), return_exceptions=True)
-    for item in results:
-        if isinstance(item, Exception):
-            print("race enrichment failed:", repr(item))
-            continue
-        rno, entries = item
+    results = await asyncio.gather(*(enrich(r) for r in api_races))
+    for rno, entries in results:
         if rno is not None and entries:
             all_data[rno] = entries
     return all_data
@@ -1196,14 +1008,10 @@ async def fetch_races_for_chat(chat_id, c):
             try:
                 performance_rows = await fetch_racecard_performance(pg)
                 perf_by_id = {clean_text(x.get("horse_id")): x for x in performance_rows if x.get("horse_id")}
-                perf_by_name = {normalize_horse_name(x.get("name")): x for x in performance_rows if x.get("name")}
-                perf_by_id = {clean_text(x.get("horse_id")): x for x in performance_rows if x.get("horse_id")}
-                perf_by_name = {normalize_horse_name(x.get("name")): x for x in performance_rows if x.get("name")}
+                perf_by_name = {clean_text(x.get("name")): x for x in performance_rows if x.get("name")}
                 for horses in races.values():
                     for horse in horses:
-                        perf = (perf_by_id.get(clean_text(horse.get("external_id")))
-                                or perf_by_id.get(clean_text(horse.get("horse_id")))
-                                or perf_by_name.get(normalize_horse_name(horse.get("n"))))
+                        perf = perf_by_id.get(clean_text(horse.get("external_id"))) or perf_by_name.get(clean_text(horse.get("n")))
                         if not perf:
                             continue
                         for dest, srcfield in (("weight","weight"),("ior","ior"),("perf","perf"),
@@ -1227,8 +1035,7 @@ async def fetch_races_for_chat(chat_id, c):
                         extra = dom_by_num.get(safe_int(horse.get("num")), {})
                         for field in ("weight", "ior", "perf", "j"):
                             value = extra.get(field)
-                            current = horse.get(field)
-                            if value not in (None, "", "ناموجود", "نامشخص") and current in (None, "", "ناموجود", "نامشخص"):
+                            if value not in (None, "", "ناموجود", "نامشخص") and horse.get(field) in (None, "", "ناموجود", "نامشخص"):
                                 horse[field] = value
             except Exception as dom_error:
                 print("DOM enrichment skipped:", repr(dom_error))
@@ -1266,12 +1073,7 @@ def format_round_result(round_no, res, detailed=False):
     if not res.get("model_signal"):
         msg += "ℹ️ سابقه فرم/چابکسوار در این دریافت کامل نبود؛ احتمال‌ها عمدتاً ترکیب ضرایب و مشارکت هستند.\n"
     if not res["market_available"]:
-        if res.get("market_partial"):
-            msg += "ℹ️ ضرایب بازار فقط برای بخشی از اسب‌ها دریافت شد؛ رتبه‌بندی با داده ناقص انجام شده و اطمینان پایین است.\n"
-        else:
-            msg += "ℹ️ ضرایب بازار برای همه اسب‌ها کامل نبود؛ رتبه‌بندی فقط از داده‌های قابل‌دسترس ساخته شده است.\n"
-    if res.get("survey_partial"):
-        msg += "ℹ️ آمار مشارکت فقط برای بخشی از اسب‌ها موجود بود.\n"
+        msg += "ℹ️ ضرایب پیش‌بر کامل دریافت نشد؛ رتبه‌بندی فقط از داده‌های قابل‌دسترس ساخته شده است.\n"
     if detailed:
         msg += "\n📊 <b>رتبه‌بندی اسب‌ها:</b>\n"
         for rank, h in enumerate(res["horses"], 1):
@@ -1285,6 +1087,9 @@ def format_round_result(round_no, res, detailed=False):
                 f" | مدل {h['model_prob']:.1f}% | پیش‌بر {odd}"
                 f" | میان‌بر {mid_odd} | پی‌بر {place_odd}"
                 f" | بازار {market} | مشارکت {survey}"
+                f" | احتمال مستقل {h.get('form_prob', 0):.1f}%"
+                f" | ارزش برد {('%.1f%%' % h['win_ev']) if h.get('win_ev') is not None else 'ناموجود'}"
+                f" | ارزش مکان {('%.1f%%' % h['place_ev']) if h.get('place_ev') is not None else 'ناموجود'}"
                 f" | فرم {html.escape(str(h.get('perf') or 'ناموجود'))}"
                 f" | وزن {html.escape(str(h.get('weight') or 'ناموجود'))}"
                 f" | IOR {html.escape(str(h.get('ior') if h.get('ior') is not None else 'ناموجود'))}"
@@ -1344,49 +1149,47 @@ async def process_odds(
 
 async def process_quinellas(chat_id, c, variant_type):
     titles = {
-        "q_safe": "🟢 دوقلوی امن",
-        "q_value": "💎 دوقلوی ارزش",
-        "q_lucky": "🍀 دوقلوی شانسی",
+        "q_safe": "🟢 دوقلوی با احتمال بالاتر",
+        "q_value": "💎 دوقلوی ارزش (نیازمند ضریب واقعی)",
+        "q_lucky": "🍀 دوقلوی پرریسک",
     }
     await c.bot.send_message(chat_id, "⏳ در حال بررسی دوقلوها...")
     races = await fetch_races_for_chat(chat_id, c)
     if not races:
         return
     msg = f"<b>{titles[variant_type]}</b>\n━━━━━━━━━━━━━━\n"
+    found = False
     for r in sorted(races):
         try:
-            res = analyze_horses([dict(x) for x in races[r]])
-        except Exception as exc:
-            msg += f"\n🏁 دور R{r}: ⚠️ تحلیل نشد ({html.escape(clean_text(exc))})\n━━━━━━━━━━━━━━\n"
-            continue
-        candidates = res["q_candidates"]
-        if not candidates:
-            continue
-        if variant_type == "q_safe":
-            chosen = candidates[0]
-        elif variant_type == "q_value":
-            # بدون ضریب واقعی بازار، ارزش شرط قابل محاسبه نیست.
-            # بهترین ترکیب رتبه‌های 2 تا 4 فقط به عنوان گزینه پرریسک معرفی می‌شود.
-            subset = [
-                x for x in candidates
-                if x["h1"]["model_prob"] < 35 or x["h2"]["model_prob"] < 35
-            ]
-            chosen = max(subset, key=lambda x: x["prob"]) if subset else candidates[0]
-        else:
-            subset = [
-                x for x in candidates
-                if x["h1"]["model_prob"] < 20 and x["h2"]["model_prob"] < 20
-            ]
-            chosen = max(subset, key=lambda x: x["prob"]) if subset else candidates[-1]
-        msg += (
-            f"\n🏁 <b>دور R{r}</b>\n"
-            f"👥 {chosen['h1']['num']}-{chosen['h1']['n']} + "
-            f"{chosen['h2']['num']}-{html.escape(str(chosen['h2']['n']))}\n"
-            f"📊 احتمال تخمینی: {chosen['prob']:.1f}%\n"
-        )
-        if variant_type == "q_value":
-            msg += "ℹ️ ارزش واقعی فقط با ضریب پرداختی بازار قابل محاسبه است.\n"
-        msg += "━━━━━━━━━━━━━━\n"
+            res = analyze_horses(races[r])
+            candidates = res["q_candidates"]
+            if not candidates:
+                continue
+            if variant_type == "q_safe":
+                chosen = candidates[0]
+            elif variant_type == "q_value":
+                # The API currently supplies runner win/place odds, not a confirmed
+                # quinella payout. Never label a pair as profitable without that payout.
+                chosen = candidates[0]
+            else:
+                # Select a lower-ranked pair only when its estimated chance is nonzero.
+                pool = [x for x in candidates if x["h1"]["model_prob"] < 35 or x["h2"]["model_prob"] < 35]
+                chosen = min(pool, key=lambda x: x["prob"]) if pool else candidates[-1]
+            found = True
+            msg += (
+                f"\n🏁 <b>دور R{r}</b>\n"
+                f"👥 {chosen['h1']['num']}-{html.escape(str(chosen['h1']['n']))} + "
+                f"{chosen['h2']['num']}-{html.escape(str(chosen['h2']['n']))}\n"
+                f"📊 احتمال تخمینی: {chosen['prob']:.1f}%"
+                f" | ضریب منصفانه: {chosen['fair_odd']}\n"
+            )
+            if variant_type == "q_value":
+                msg += "⚠️ ضریب پرداخت دوقلو از API تأیید نشده؛ این گزینه توصیه سودآور قطعی نیست.\n"
+            msg += "━━━━━━━━━━━━━━\n"
+        except Exception as e:
+            msg += f"\n🏁 دور R{r}: قابل تحلیل نیست ({html.escape(clean_text(e))})\n"
+    if not found:
+        msg += "\nداده کافی برای ساخت ترکیب وجود ندارد."
     await send_long_message(c, chat_id, msg)
 
 
@@ -1396,40 +1199,26 @@ async def process_multileg(chat_id, c, leg_type, bet_amount=None):
     if not races:
         return
     available = sorted(races)
-    if leg_type == "ml_6":
-        selected = available[-6:]
-        title = "۶ پره"
-    elif leg_type == "ml_5":
-        selected = available[-5:]
-        title = "۵ پره"
-    elif leg_type == "ml_3a":
-        selected = available[:3]
-        title = "۳ پره اول"
-    elif leg_type == "ml_3b":
-        selected = available[-3:]
-        title = "۳ پره دوم"
-    else:
+    count = {"ml_6": 6, "ml_5": 5, "ml_3a": 3, "ml_3b": 3}.get(leg_type)
+    if not count:
         return
-    picks = []
-    details = []
+    selected = available[:count] if leg_type == "ml_3a" else available[-count:]
+    title = {"ml_6": "۶ پره", "ml_5": "۵ پره", "ml_3a": "۳ پره اول", "ml_3b": "۳ پره آخر"}[leg_type]
+    if len(selected) < count:
+        await c.bot.send_message(chat_id, f"⚠️ فقط {len(selected)} دور در جدول موجود است.")
+    details, picks = [], []
     for r in selected:
         try:
-            res = analyze_horses([dict(x) for x in races[r]])
-        except Exception as exc:
-            details.append(f"R{r}: تحلیل نشد ({html.escape(clean_text(exc))})")
-            continue
-        picks.append(f"R{r}: {res['w']['num']}-{html.escape(str(res['w']['n']))}")
-        details.append(
-            f"R{r}: {res['w']['num']}-{html.escape(str(res['w']['n']))} "
-            f"({res['w']['model_prob']:.1f}%)"
-        )
+            res = analyze_horses(races[r])
+            h = res["w"]
+            picks.append(f"R{r}: {h['num']}-{h['n']}")
+            details.append(f"R{r}: {h['num']}-{html.escape(str(h['n']))} ({h['model_prob']:.1f}%)")
+        except Exception as e:
+            details.append(f"R{r}: تحلیل نشد ({html.escape(clean_text(e))})")
     msg = (
-        f"🎯 <b>ترکیب {title}</b>\n\n"
-        + "\n".join(details)
-        + "\n\n<code>"
-        + " | ".join(picks)
-        + "</code>\n\n"
-        "⚠️ ترکیب چندپره ریسک بالایی دارد و هیچ تضمینی برای برد ندارد."
+        f"🎯 <b>ترکیب {title}</b>\n\n" + "\n".join(details)
+        + ("\n\n<code>" + " | ".join(picks) + "</code>" if picks else "")
+        + "\n\n⚠️ احتمال برد ترکیبی حاصل‌ضرب تقریبی احتمال‌هاست و با وابستگی‌ها/شرایط مسابقه تغییر می‌کند؛ تضمینی نیست."
     )
     await send_long_message(c, chat_id, msg)
 
@@ -1441,58 +1230,75 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
         return
     title = "🎲 اسب شگفتی" if mode == "sur_h" else "🔥 دوقلوی شگفتی"
     msg = f"<b>{title}</b>\n━━━━━━━━━━━━━━\n"
+    found = False
     for r in sorted(races):
         try:
-            res = analyze_horses([dict(x) for x in races[r]])
-        except Exception as exc:
-            msg += f"\n🏁 دور R{r}: ⚠️ تحلیل نشد ({html.escape(clean_text(exc))})\n"
-            continue
-        if mode == "sur_h":
-            h = res["su"]
-            msg += (
-                f"\n🏁 دور R{r}: {h['num']}-{h['n']} "
-                f"({h['model_prob']:.1f}٪)\n"
-            )
-        else:
-            msg += f"\n🏁 دور R{r}: {res['qs']}\n"
-    msg += "\n⚠️ این گزینه‌ها پرریسک هستند."
+            res = analyze_horses(races[r])
+            if mode == "sur_h":
+                ranked = res["horses"]
+                # A surprise must be an actual outsider, not simply the third favourite.
+                candidates = [h for h in ranked[2:] if h["model_prob"] >= 3.0]
+                if not candidates:
+                    candidates = ranked[2:]
+                if not candidates:
+                    msg += f"\n🏁 دور R{r}: اسب شگفتی قابل تفکیک نیست.\n"
+                    continue
+                h = max(candidates, key=lambda x: (x.get("win_ev") or -999, x["model_prob"]))
+                msg += f"\n🏁 دور R{r}: {h['num']}-{html.escape(str(h['n']))} ({h['model_prob']:.1f}%)"
+                if h.get("win_ev") is not None:
+                    msg += f" | EV {h['win_ev']:+.1f}%"
+                msg += "\n"
+            else:
+                pair = res["q_candidates"][-1] if res["q_candidates"] else None
+                if pair:
+                    msg += (
+                        f"\n🏁 دور R{r}: {pair['h1']['num']}-{html.escape(str(pair['h1']['n']))} + "
+                        f"{pair['h2']['num']}-{html.escape(str(pair['h2']['n']))}"
+                        f" | احتمال {pair['prob']:.1f}%\n"
+                    )
+                else:
+                    msg += f"\n🏁 دور R{r}: ترکیب موجود نیست.\n"
+            found = True
+        except Exception as e:
+            msg += f"\n🏁 دور R{r}: تحلیل نشد ({html.escape(clean_text(e))})\n"
+    if not found:
+        msg += "\nداده کافی برای شناسایی گزینه شگفتی وجود ندارد."
+    msg += "\n\n⚠️ گزینه‌های شگفتی پرریسک‌اند."
     await send_long_message(c, chat_id, msg)
 
 
 async def process_value_bets(chat_id, c, bet_amount=None):
-    if (
-        await get_github_var("AUTO_UPDATE", "true")
-    ).lower() == "false":
+    if (await get_github_var("AUTO_UPDATE", "true")).lower() == "false":
         return await c.bot.send_message(chat_id, "🛑 ربات خاموش است.")
-    await c.bot.send_message(chat_id, "⏳ در حال بررسی گزینه‌های ارزش...")
+    await c.bot.send_message(chat_id, "⏳ در حال بررسی ارزش واقعی ضرایب...")
     races = await fetch_races_for_chat(chat_id, c)
     if not races:
         return
-    msg = "💎 <b>شکار ارزش</b>\n━━━━━━━━━━━━━━\n"
+    msg = "💎 <b>شکار ارزش (EV)</b>\n━━━━━━━━━━━━━━\n"
     found = False
     for r in sorted(races):
         try:
-            res = analyze_horses([dict(x) for x in races[r]])
-        except Exception as exc:
-            msg += f"\n🏁 دور R{r}: ⚠️ تحلیل نشد ({html.escape(clean_text(exc))})\n"
-            continue
-        # Value betting needs actual offered odds. Do not fabricate a value edge.
-        if not res["market_available"]:
-            continue
-        candidates = [
-            h for h in res["horses"]
-            if h["edge"] is not None and h["edge"] >= 3
-        ]
-        if candidates:
-            found = True
-            msg += f"\n🏁 <b>دور R{r}</b>\n"
-            for h in candidates[:3]:
-                msg += (
-                    f"💎 {h['num']}-{html.escape(str(h['n']))} | مدل {h['model_prob']:.1f}%"
-                    f" | اختلاف با بازار {h['edge']:+.1f}%\n"
-                )
+            res = analyze_horses(races[r])
+            candidates = []
+            for h in res["horses"]:
+                if h.get("win_ev") is not None and h["win_ev"] >= 5:
+                    candidates.append(("برد", h, h["win_ev"], h.get("pishbar_odd")))
+                if h.get("place_ev") is not None and h["place_ev"] >= 5:
+                    candidates.append(("مکان", h, h["place_ev"], h.get("paybar_odd")))
+            if candidates:
+                found = True
+                msg += f"\n🏁 <b>دور R{r}</b>\n"
+                for market_name, h, ev, odd in sorted(candidates, key=lambda x: x[2], reverse=True)[:5]:
+                    msg += (
+                        f"💎 {market_name}: {h['num']}-{html.escape(str(h['n']))}"
+                        f" | ضریب {safe_float(odd):.2f} | EV {ev:+.1f}%"
+                        f" | احتمال مستقل {h['form_prob']:.1f}%\n"
+                    )
+        except Exception as e:
+            msg += f"\n🏁 دور R{r}: داده کافی نیست ({html.escape(clean_text(e))})\n"
     if not found:
-        msg += "\n⚠️ با داده‌های فعلی، گزینه ارزش قابل تأییدی پیدا نشد."
+        msg += "\n⚠️ با داده‌های معتبر فعلی، گزینه‌ای با ارزش موردنیاز پیدا نشد."
+    msg += "\n\nℹ️ EV برآوردی است و به کیفیت سابقه و ضرایب ثبت‌شده وابسته است؛ تضمین سود نیست."
     await send_long_message(c, chat_id, msg)
 
 
@@ -1540,6 +1346,9 @@ async def check_expirations(bot):
 
 async def run_reminder(chat_id, c, round_no, delay_minutes):
     await asyncio.sleep(delay_minutes * 60)
+    if not await is_premium(chat_id):
+        await c.bot.send_message(chat_id, "⏰ زمان یادآوری رسید، اما اشتراک فعال نیست؛ تحلیل اجرا نشد.")
+        return
     await c.bot.send_message(chat_id, f"⏰ یادآوری تحلیل دور {round_no}")
     await process_odds(
         chat_id, c, specific_round=round_no,
@@ -1551,7 +1360,7 @@ async def run_reminder(chat_id, c, round_no, delay_minutes):
 # ======================== دستورات مدیریت ========================
 
 async def cmd_approve(u: Update, c: C):
-    if str(u.effective_chat.id) != MY_ID:
+    if str(u.effective_user.id if u.effective_user else u.effective_chat.id) != MY_ID:
         return
     try:
         _, target, days = u.message.text.split()[:3]
@@ -1577,7 +1386,7 @@ async def cmd_approve(u: Update, c: C):
 
 
 async def cmd_remove(u: Update, c: C):
-    if str(u.effective_chat.id) != MY_ID:
+    if str(u.effective_user.id if u.effective_user else u.effective_chat.id) != MY_ID:
         return
     try:
         target = u.message.text.split()[1]
@@ -1592,7 +1401,7 @@ async def cmd_remove(u: Update, c: C):
 
 
 async def cmd_broadcast(u: Update, c: C):
-    if str(u.effective_chat.id) != MY_ID:
+    if str(u.effective_user.id if u.effective_user else u.effective_chat.id) != MY_ID:
         return
     if not c.args:
         return await u.message.reply_text("متن پیام را بعد از /broadcast بنویسید.")
@@ -1611,7 +1420,7 @@ async def cmd_broadcast(u: Update, c: C):
 
 async def cmd_debug(u: Update, c: C):
     """Collect rendered site sections and fetch/XHR data for diagnostics."""
-    if str(u.effective_chat.id) != MY_ID:
+    if str(u.effective_user.id if u.effective_user else u.effective_chat.id) != MY_ID:
         return await u.message.reply_text("⛔ فقط ادمین.")
     browser = None
     try:
@@ -1706,11 +1515,18 @@ async def handle_photo(u: Update, c: C):
     if str(chat_id) == MY_ID:
         return
     name = u.effective_chat.first_name or "کاربر"
-    await c.bot.forward_message(
-        chat_id=int(MY_ID),
-        from_chat_id=chat_id,
-        message_id=u.message.message_id,
-    )
+    try:
+        await c.bot.forward_message(
+            chat_id=int(MY_ID),
+            from_chat_id=chat_id,
+            message_id=u.message.message_id,
+        )
+    except Exception:
+        await c.bot.send_message(
+            int(MY_ID),
+            f"⚠️ ارسال خودکار رسید ناموفق بود؛ شناسه کاربر: <code>{chat_id}</code>",
+            parse_mode="HTML",
+        )
     await c.bot.send_message(
         int(MY_ID),
         f"🔔 رسید جدید\nنام: {name}\nآیدی: <code>{chat_id}</code>\n"
@@ -1726,7 +1542,7 @@ async def handle_inputs(u: Update, c: C):
     if c.user_data.get("awaiting_bet"):
         c.user_data["awaiting_bet"] = False
         try:
-            amount = int(re.sub(r"[^\d]", "", u.message.text))
+            amount = int(re.sub(r"[^\d]", "", normalize_digits(u.message.text)))
             if amount < 1000:
                 raise ValueError
             c.user_data["bet_amount"] = amount
@@ -1737,10 +1553,22 @@ async def handle_inputs(u: Update, c: C):
         except Exception:
             await u.message.reply_text("❌ مبلغ معتبر و حداقل ۱۰۰۰ تومان وارد کنید.")
         return
+    if c.user_data.get("awaiting_rem_round"):
+        try:
+            round_no = int(re.sub(r"[^\d]", "", normalize_digits(u.message.text)))
+            if round_no < 1 or round_no > 30:
+                raise ValueError
+            c.user_data["rem_round"] = round_no
+            c.user_data["awaiting_rem_round"] = False
+            c.user_data["awaiting_rem"] = True
+            await u.message.reply_text("چند دقیقه دیگر یادآوری کنم؟ (۱ تا ۱۰۰۸۰ دقیقه)")
+        except Exception:
+            await u.message.reply_text("شماره دور معتبر نیست؛ عددی بین ۱ تا ۳۰ وارد کنید.")
+        return
     if c.user_data.get("awaiting_rem"):
         c.user_data["awaiting_rem"] = False
         try:
-            mins = int(re.sub(r"[^\d]", "", u.message.text))
+            mins = int(re.sub(r"[^\d]", "", normalize_digits(u.message.text)))
             if mins < 1 or mins > 10080:
                 raise ValueError
             round_no = c.user_data.get("rem_round", 1)
@@ -1776,17 +1604,16 @@ async def cmd_start(u: Update, c: C):
 
     users = await get_allowed_users_dict()
     if chat_id != MY_ID and chat_id not in users:
-        expiry = (
-            datetime.now() + timedelta(days=TRIAL_DAYS)
-        ).strftime("%Y-%m-%d %H:%M:%S")
-        users[chat_id] = expiry
-        await set_github_var("ALLOWED_USERS", json.dumps(users))
+        expiry = (datetime.now() + timedelta(days=TRIAL_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+        saved = await set_github_var("ALLOWED_USERS", json.dumps({**users, chat_id: expiry}, ensure_ascii=False))
         welcome = (
-            "👋 خوش آمدید!\n"
-            "🎁 یک روز اشتراک آزمایشی برای شما فعال شد."
+            "👋 خوش آمدید!\n🎁 یک روز اشتراک آزمایشی فعال شد."
+            if saved else "👋 خوش آمدید؛ ثبت اشتراک آزمایشی انجام نشد. لطفاً با پشتیبانی تماس بگیرید."
         )
+    elif chat_id == MY_ID or await is_premium(chat_id):
+        welcome = "👋 خوش آمدید. اشتراک شما فعال است و ربات آماده است."
     else:
-        welcome = "👋 خوش آمدید. ربات آماده است."
+        welcome = "👋 خوش آمدید. اشتراک شما منقضی شده است؛ برای تمدید از دکمه خرید اشتراک استفاده کنید."
     await c.bot.send_message(
         u.effective_chat.id,
         welcome,
@@ -1801,6 +1628,7 @@ async def button_callback(u: Update, c: C):
     query = u.callback_query
     await query.answer()
     chat_id = query.message.chat_id
+    actor_id = u.effective_user.id if u.effective_user else chat_id
     data = query.data or ""
 
     premium_buttons = {
@@ -1808,12 +1636,12 @@ async def button_callback(u: Update, c: C):
         "q_safe", "q_value", "q_lucky", "value",
         "ml_6", "ml_5", "ml_3a", "ml_3b", "sur_h", "sur_d",
     }
-    if data in premium_buttons and not await is_premium(chat_id):
+    if data in premium_buttons and not await is_premium(actor_id):
         return await query.message.reply_text(
             "⛔ دسترسی ویژه مشترکین است. برای تهیه اشتراک از دکمه خرید استفاده کنید."
         )
 
-    if data in ("on", "off") and str(chat_id) != MY_ID:
+    if data in ("on", "off") and str(actor_id) != MY_ID:
         return await query.answer("⛔ دسترسی ندارید.", show_alert=True)
 
     now = time.time()
@@ -1829,10 +1657,7 @@ async def button_callback(u: Update, c: C):
 
     if data == "buy_sub":
         if not CARD_NUMBER or not CARD_HOLDER:
-            await query.message.reply_text(
-                "⚠️ اطلاعات پرداخت در تنظیمات محیطی ربات ثبت نشده است؛ با پشتیبانی تماس بگیرید."
-            )
-            return
+            return await query.message.reply_text("⚠️ اطلاعات پرداخت هنوز توسط مدیریت تنظیم نشده است؛ لطفاً بعداً مراجعه کنید.")
         await query.message.reply_text(
             f"💳 اشتراک ویژه\nمبلغ: {html.escape(SUB_PRICE)} تومان\n"
             f"شماره کارت: <code>{html.escape(CARD_NUMBER)}</code>\n"
@@ -1866,7 +1691,7 @@ async def button_callback(u: Update, c: C):
         ok = await set_github_var("AUTO_UPDATE", "false")
         await query.message.reply_text("🛑 خاموش شد." if ok else "❌ ذخیره وضعیت ناموفق بود.")
     elif data in ("admin_help", "admin_refresh"):
-        if str(chat_id) == MY_ID:
+        if str(actor_id) == MY_ID:
             if data == "admin_refresh":
                 try:
                     await query.message.delete()
@@ -1874,8 +1699,8 @@ async def button_callback(u: Update, c: C):
                     pass
             await cmd_admin_panel(chat_id, c)
     elif data.startswith("adm_"):
-        if str(chat_id) != MY_ID:
-            return
+        if str(actor_id) != MY_ID:
+            return await query.answer("⛔ دسترسی ندارید.", show_alert=True)
         parts = data.split("_")
         action, uid = parts[1], parts[2]
         users = await get_allowed_users_dict()
@@ -1899,7 +1724,7 @@ async def button_callback(u: Update, c: C):
     elif data == "weather":
         await query.message.reply_text(await get_weather())
     elif data == "change_city":
-        await query.message.reply_text("🏙 مکان فعلی مسابقات از سایت خوانده می‌شود.")
+        await query.message.reply_text("🏙 محل و شرایط مسابقه از اطلاعات رسمی سایت خوانده می‌شود؛ تغییر دستی شهر در نسخه فعلی پشتیبانی نمی‌شود.")
     elif data == "bet_set":
         c.user_data["awaiting_bet"] = True
         current = c.user_data.get("bet_amount", 0)
@@ -1907,16 +1732,23 @@ async def button_callback(u: Update, c: C):
             f"سرمایه فعلی: {current:,} تومان\nمبلغ جدید را ارسال کنید.",
             reply_markup=ForceReply(selective=True),
         )
+    elif data == "rem_start":
+        if not await is_premium(actor_id):
+            return await query.answer("⛔ تنظیم یادآوری تحلیل برای مشترکین است.", show_alert=True)
+        c.user_data["awaiting_rem_round"] = True
+        await query.message.reply_text(
+            "شماره دور مسابقه را وارد کنید (مثلاً ۱):",
+            reply_markup=ForceReply(selective=True),
+        )
     elif data.startswith("rem_set_"):
+        if not await is_premium(actor_id):
+            return await query.answer("⛔ تنظیم یادآوری تحلیل برای مشترکین است.", show_alert=True)
         try:
             c.user_data["rem_round"] = int(data.rsplit("_", 1)[1])
         except Exception:
             c.user_data["rem_round"] = 1
         c.user_data["awaiting_rem"] = True
-        await query.message.reply_text(
-            "چند دقیقه دیگر یادآوری کنم؟",
-            reply_markup=ForceReply(selective=True),
-        )
+        await query.message.reply_text("چند دقیقه دیگر یادآوری کنم؟", reply_markup=ForceReply(selective=True))
     elif data in ("q_safe", "q_value", "q_lucky"):
         await process_quinellas(chat_id, c, data)
     elif data == "value":
@@ -1940,6 +1772,17 @@ async def button_callback(u: Update, c: C):
         await process_surprises(chat_id, c, data, c.user_data.get("bet_amount"))
 
 
+
+async def on_error(update, context):
+    err = context.error
+    print("Telegram handler error:", repr(err))
+    try:
+        if update and update.effective_message:
+            await update.effective_message.reply_text("⚠️ خطای موقت رخ داد. دوباره تلاش کنید.")
+    except Exception:
+        pass
+
+
 # ======================== اجرای اصلی ========================
 
 async def main():
@@ -1957,6 +1800,7 @@ async def main():
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_inputs))
+    app.add_error_handler(on_error)
 
     await app.initialize()
     await app.start()
@@ -1964,12 +1808,7 @@ async def main():
 
     expiry_task = asyncio.create_task(check_expirations(app.bot))
     try:
-        # Keep polling indefinitely. Set RUN_SECONDS to a positive value only for
-        # deployments that intentionally require a timed process restart.
-        if RUN_SECONDS > 0:
-            await asyncio.sleep(RUN_SECONDS)
-        else:
-            await asyncio.Event().wait()
+        await asyncio.sleep(RUN_SECONDS)
     finally:
         expiry_task.cancel()
         try:
