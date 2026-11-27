@@ -277,7 +277,7 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# 🆕 Core Analysis
+# 🆕 Core Analysis (FIXED)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -288,6 +288,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     try:
         await p.wait_for_timeout(2000)
 
+        # استخراج تمام جدول‌هایی که مربوط به اسب‌ها و وزن هستند
         tables_data = await p.evaluate("""
             () => {
                 let tables = Array.from(document.querySelectorAll('table, .v-data-table, [role="grid"]')).filter(t =>
@@ -313,10 +314,11 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         if not tables_data or len(tables_data) < r_num:
             raise ValueError(f"جدول دور {r_num} پیدا نشد. (تعداد جداول یافت شده در صفحه: {len(tables_data) if tables_data else 0})")
 
-        target_table = tables_data[r_num - 1]
+        target_table = tables_data[r_num - 1] # آرایه از 0 شروع می‌شود
 
+        # پردازش داده‌های استخراج شده
         for row in target_table:
-            if any("اسب" in cell for cell in row): continue
+            if any("اسب" in cell for cell in row): continue # فیلتر هدر
 
             num = None
             name = None
@@ -326,11 +328,14 @@ async def ar(p, r_num, c, chat_id, save_history=True):
             jockey = "نامشخص"
 
             try:
+                # ستون 0: شماره (H)
                 if row[0].isdigit():
                     num = int(row[0])
 
+                # ستون 1: نام اسب
                 name = row[1]
 
+                # ستون 2: سن / وزن / IOR (مثلا "3\n58kg\n75")
                 col2_parts = row[2].split('\n')
                 for part in col2_parts:
                     part = part.strip()
@@ -339,14 +344,17 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                     elif part.isdigit() and len(part) <= 3:
                         ior = int(part)
 
+                # ستون 3: عملکرد (مثلا "6-1-2-1-1")
                 perf_str = row[3].replace('\n', '').strip()
+                # تبدیل اعداد فارسی به انگلیسی برای محاسبات
                 perf_str = perf_str.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789'))
                 perf_str = re.sub(r'[^\d\-]', '', perf_str)
 
+                # ستون 4: مالک / مربی / چابکسوار
                 if len(row) > 4:
                     names = row[4].split('\n')
                     if names:
-                        jockey = names[-1].strip()
+                        jockey = names[-1].strip() # آخرین نفر چابکسوار است
 
                 if num and name:
                     horses[num] = {
@@ -379,9 +387,11 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     horse_list = list(horses.values())
     n = len(horse_list)
     
+    # محاسبه فرم بر اساس ستون عملکرد
     forms = [decayed_form(h['perf']) for h in horse_list]
     form_max = max(forms) if forms and max(forms) > 0 else 1
     
+    # استفاده از IOR برای شانس بازار (چون ضریب واقعی نداریم)
     total_ior = sum(h['ior'] for h in horse_list)
     market_probs = [h['ior'] / total_ior if total_ior > 0 else 1/n for h in horse_list]
 
@@ -418,7 +428,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     res_dict = {"w": w, "p": p_horse, "s": s_horse, "horses": sorted_horses, "q": f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}", "q_fair": q_fair}
     res_dict['conf'] = get_confidence_level(res_dict)
     
-    long_shots = [h for h in sorted_horses if h['market_prob'] <= 10]
+    long_shots = [h for h in sorted_horses if h['market_prob'] <= 10] # اسب‌های با شانس کمتر
     top_ls = sorted(long_shots, key=lambda x: x['model_prob'], reverse=True) if long_shots else sorted_horses[-2:]
     res_dict['su'] = top_ls[0] if top_ls else sorted_horses[-1]
     res_dict['qs'] = f"{top_ls[0]['num']}-{top_ls[0]['n']} + {top_ls[1]['num']}-{top_ls[1]['n']}" if len(top_ls) >= 2 else "N/A"
@@ -428,7 +438,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     return res_dict
 
 # ============================================================
-# Other functions
+# توابع دیگر (بدون تغییر)
 # ============================================================
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
     if await get_github_var("AUTO_UPDATE", "true") == "false" and not is_reminder:
