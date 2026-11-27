@@ -6,6 +6,7 @@ import time
 import asyncio
 import itertools
 import html
+import zipfile
 from datetime import datetime, timedelta
 
 import httpx
@@ -1056,36 +1057,90 @@ async def cmd_broadcast(u: Update, c: C):
 
 
 async def cmd_debug(u: Update, c: C):
+    """Collect rendered site sections and fetch/XHR data for diagnostics."""
     if str(u.effective_chat.id) != MY_ID:
         return await u.message.reply_text("⛔ فقط ادمین.")
     browser = None
     try:
-        await u.message.reply_text("⏳ در حال دریافت جدول...")
+        await u.message.reply_text("⏳ در حال بررسی بخش‌های سایت و دریافت داده‌ها...")
         async with ap() as p:
             browser, context = await make_browser_context(p)
             pg = await context.new_page()
-            await pg.goto(SITE_URL, timeout=90000, wait_until="domcontentloaded")
-            await pg.wait_for_timeout(5000)
-            html = await pg.content()
-            fname = "Table_HTML_current.txt"
-            with open(fname, "w", encoding="utf-8") as f:
-                f.write(html)
-            with open(fname, "rb") as f:
-                await c.bot.send_document(
-                    u.effective_chat.id, document=f,
-                    filename=fname, caption="HTML جدول فعلی مسابقات",
-                )
+            dump_dir = "asbdavani_debug"
+            os.makedirs(dump_dir, exist_ok=True)
+            network_log = []
+            tasks = []
+
+            async def save_response(response):
+                try:
+                    req = response.request
+                    if req.resource_type not in ("xhr", "fetch"):
+                        return
+                    headers = await response.all_headers()
+                    ctype = headers.get("content-type", "")
+                    entry = {"url": response.url, "method": req.method,
+                             "status": response.status, "resource_type": req.resource_type,
+                             "content_type": ctype}
+                    network_log.append(entry)
+                    if "json" in ctype.lower() or "text/" in ctype.lower():
+                        body = await response.body()
+                        if len(body) <= 2_000_000:
+                            base = re.sub(r"[^a-zA-Z0-9._-]+", "_", response.url.split("?")[0].split("/")[-1])[:80] or "response"
+                            fname = f"{len(network_log):03d}_{base}.txt"
+                            with open(os.path.join(dump_dir, fname), "wb") as f:
+                                f.write(body)
+                            entry["saved_body"] = fname
+                except Exception as ex:
+                    network_log.append({"url": getattr(response, "url", ""), "error": str(ex)})
+
+            pg.on("response", lambda response: tasks.append(asyncio.create_task(save_response(response))))
+            pages = [
+                ("home", SITE_URL), ("odds", SITE_URL.rstrip("/") + "/odds"),
+                ("dorei", SITE_URL.rstrip("/") + "/dorei"),
+                ("bets", SITE_URL.rstrip("/") + "/bets"),
+                ("wallet", SITE_URL.rstrip("/") + "/wallet"),
+                ("racecards", "https://asbdavani.app/racecards"),
+                ("live", "https://asbdavani.app/live"),
+            ]
+            for label, url in pages:
+                try:
+                    await pg.goto(url, timeout=90000, wait_until="domcontentloaded")
+                    await pg.wait_for_timeout(3500)
+                    with open(os.path.join(dump_dir, label + ".html"), "w", encoding="utf-8") as f:
+                        f.write(await pg.content())
+                    try:
+                        body_text = await pg.locator("body").inner_text(timeout=5000)
+                        with open(os.path.join(dump_dir, label + ".txt"), "w", encoding="utf-8") as f:
+                            f.write(body_text)
+                    except Exception:
+                        pass
+                except Exception as ex:
+                    with open(os.path.join(dump_dir, label + "_ERROR.txt"), "w", encoding="utf-8") as f:
+                        f.write(url + "\n" + str(ex))
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            with open(os.path.join(dump_dir, "network_requests.json"), "w", encoding="utf-8") as f:
+                json.dump(network_log, f, ensure_ascii=False, indent=2)
             try:
+                await pg.goto(SITE_URL, timeout=90000, wait_until="domcontentloaded")
+                await pg.wait_for_timeout(3000)
                 races = await get_all_races(pg)
-                summary = "\n".join(
-                    f"R{r}: {len(hs)} اسب - " + "، ".join(x["n"] for x in hs)
-                    for r, hs in races.items()
-                )
-                await send_long_message(c, u.effective_chat.id, summary)
-            except Exception as e:
-                await u.message.reply_text(f"خطای استخراج: {e}")
+                summary = "\n".join(f"R{r}: {len(hs)} اسب - " + "، ".join(x["n"] for x in hs) for r, hs in races.items())
+                if summary:
+                    await send_long_message(c, u.effective_chat.id, summary)
+            except Exception as ex:
+                await u.message.reply_text(f"⚠️ خلاصه جدول: {ex}")
+            archive = "asbdavani_debug.zip"
+            with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+                for name in os.listdir(dump_dir):
+                    full = os.path.join(dump_dir, name)
+                    if os.path.isfile(full):
+                        zf.write(full, arcname=name)
+            with open(archive, "rb") as f:
+                await c.bot.send_document(u.effective_chat.id, document=f, filename=archive,
+                    caption="گزارش صفحات سایت و پاسخ‌های fetch/XHR برای شناسایی API")
     except Exception as e:
-        await u.message.reply_text(f"❌ {e}")
+        await u.message.reply_text(f"❌ خطای بررسی سایت: {e}")
     finally:
         if browser:
             await browser.close()
