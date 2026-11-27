@@ -16,16 +16,26 @@ G = os.environ.get("GH_PAT")
 R = os.environ.get("GITHUB_REPOSITORY")
 MY_ID = "184149177"
 
+# ============================================================
+# ⚠️ تنظیمات اشتراک ⚠️
+# ============================================================
 CARD_NUMBER = "6219-8618-0229-0089"
 CARD_HOLDER = "مرتضی عزیزی"
 SUB_PRICE = "250,000"                 
 REF_REWARD_DAYS = 3                   
+# ============================================================
 
+# ============================================================
+# Anti-Spam & Cache
+# ============================================================
 _last_call = {}
 COOLDOWN = 60
 AR_CACHE = {}
-CACHE_TTL = 300
+CACHE_TTL = 0 
 
+# ============================================================
+# GitHub Variables & Auth
+# ============================================================
 async def get_github_var(var_name, default_val=""):
     if not R or not G: return default_val
     try:
@@ -74,29 +84,17 @@ async def is_premium(chat_id):
 
 async def is_authorized(u: Update, c: C) -> bool: return True 
 
+# ============================================================
+# Weather & Math Helpers
+# ============================================================
 async def get_weather():
     try:
         url = "https://api.open-meteo.com/v1/forecast?latitude=37.25&longitude=55.16&current_weather=true"
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient() as client:
             res = await client.get(url)
-            if res.status_code == 200:
-                data = res.json()
-                cw = data.get('current_weather', {})
-                return f"🌡 دما: {cw.get('temperature', '---')}°C | 💨 باد: {cw.get('windspeed', '---')} km/h"
-    except: pass
-    
-    try:
-        url = "https://wttr.in/Gonbad-e-Qabus?format=j1"
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            res = await client.get(url)
-            if res.status_code == 200:
-                data = res.json()
-                temp = data['current_condition'][0]['temp_C']
-                wind = data['current_condition'][0]['windspeedKmph']
-                return f"🌡 دما: {temp}°C | 💨 باد: {wind} km/h"
-    except: pass
-    
-    return "⚠️ اطلاعات هوا در دسترس نیست."
+            data = res.json()
+            return f"🌡 دما: {data['current_weather']['temperature']}°C | 💨 باد: {data['current_weather']['windspeed']} km/h"
+    except: return "⚠️ اطلاعات هوا در دسترس نیست."
 
 JOCKEY_TIERS = {'S': ['رحمانی', 'قهرمانی', 'نوروزی'], 'A': ['وحدانی', 'مرادی', 'صوفیان', 'خواجوی'],
                 'B': ['آقاجانی', 'حیدری', 'نصیری', 'مسعودی'], 'C': ['احمدی', 'رضایی']}
@@ -154,6 +152,8 @@ def calculate_kelly(bankroll, model_prob, decimal_odds, fraction=0.25, min_bet=1
     raw = min(bankroll * f * fraction, bankroll * max_pct)
     return int(raw // 1000) * 1000 if raw >= min_bet else 0
 
+FRACTIONS = {'win': 0.25, 'place': 0.20, 'quinella': 0.15, 'exacta': 0.10, 'trifecta': 0.05, 'parlay': 0.08}
+
 def get_confidence_level(res_dict):
     w, p = res_dict['w'], res_dict['p']
     model_gap = w['model_prob'] - p['model_prob']
@@ -184,25 +184,31 @@ def get_main_menu(chat_id):
         keyboard.append([InlineKeyboardButton("👑 پنل مدیریت", callback_data='admin_help')])
     return InlineKeyboardMarkup(keyboard)
 
+def _split_safe(text, max_len=4000):
+    if len(text) <= max_len: return [text]
+    chunks, current = [], ""
+    for block in text.split('\n\n'):
+        if len(current) + len(block) + 2 > max_len:
+            if current: chunks.append(current)
+            if len(block) > max_len:
+                current = ""
+                for line in block.split('\n'):
+                    if len(current) + len(line) + 1 > max_len:
+                        if current: chunks.append(current)
+                        current = line
+                    else: current = current + '\n' + line if current else line
+            else: current = block
+        else: current = current + '\n\n' + block if current else block
+    if current: chunks.append(current)
+    return chunks
+
 async def send_long_message(c, chat_id, text, max_len=4000):
-    if not text: return
-    parts = []
-    while len(text) > max_len:
-        split_idx = text.rfind('\n', 0, max_len)
-        if split_idx == -1:
-            split_idx = text.rfind(' ', 0, max_len)
-        if split_idx == -1:
-            split_idx = max_len
-        parts.append(text[:split_idx])
-        text = text[split_idx:].lstrip('\n')
-    parts.append(text)
-    
-    for chunk in parts:
+    for chunk in _split_safe(text, max_len):
         try: await c.bot.send_message(chat_id, chunk, parse_mode='HTML')
         except Exception:
             try: await c.bot.send_message(chat_id, re.sub(r'<[^>]+>', '', chunk))
             except Exception as e: print(f"Send error: {e}")
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.2)
 
 async def save_to_history(res_dict, r_num):
     history_str = await get_github_var("BOT_HISTORY", "[]")
@@ -232,7 +238,8 @@ async def cmd_admin_panel(chat_id, c):
                 exp_date = datetime.strptime(exp_str, "%Y-%m-%d %H:%M:%S")
                 days_left = (exp_date - now).days
                 user_status = f"({days_left} روز مانده)" if days_left >= 0 else "(منقضی شده)"
-            except: user_status = "(نامشخص)"
+            except: 
+                user_status = "(نامشخص)"
             
             keyboard.append([InlineKeyboardButton(f"👤 {display_name} {user_status}", callback_data='ignore')])
             keyboard.append([
@@ -244,40 +251,11 @@ async def cmd_admin_panel(chat_id, c):
 
 async def prepare_page(pg):
     try:
-        await pg.wait_for_timeout(3000)
+        await pg.wait_for_timeout(4000)
         try: await pg.keyboard.press("Escape")
         except: pass
     except Exception as e:
         print(f"Prepare page error: {e}")
-
-async def click_round(pg, r_num):
-    try:
-        participation = pg.locator("text=/^(مشارکت|پیش‌بینی|پیش بینی)$/i").first
-        if await participation.is_visible():
-            await participation.click()
-            await pg.wait_for_timeout(2000)
-
-        clicked = await pg.evaluate(f"""
-            () => {{
-                let elements = Array.from(document.querySelectorAll('button, div, span, a, [role="tab"]'));
-                for (let el of elements) {{
-                    let text = el.innerText ? el.innerText.trim() : '';
-                    if ((text === 'دور {r_num}' || text === 'R {r_num}' || text === '{r_num}' || text === 'R{r_num}')) {{
-                        el.scrollIntoView({{block: "center"}});
-                        el.click();
-                        return true;
-                    }}
-                }}
-                return false;
-            }}
-        """)
-        if clicked:
-            await pg.wait_for_timeout(6000)
-            try:
-                await pg.wait_for_load_state("networkidle", timeout=3000)
-            except: pass
-    except Exception as e:
-        print(f"Click round error: {e}")
 
 async def _dump_rendered_html(pg, c, chat_id, r_num):
     try:
@@ -287,232 +265,112 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
             f.write(html)
         with open(fname, "rb") as f:
             await c.bot.send_document(
-                chat_id, document=f, filename=fname,
-                caption=(f"🔍 <b>دیباگ HTML دور {r_num}</b>\n📏 حجم: {len(html):,} کاراکتر"),
+                chat_id,
+                document=f,
+                filename=fname,
+                caption=(f"🔍 <b>دیباگ HTML دور {r_num}</b>\n"
+                         f"📏 حجم: {len(html):,} کاراکتر\n"
+                         f"👇 در فایل سرچ کنید: <code>سانتال</code> یا <code>58kg</code>"),
                 parse_mode='HTML'
             )
     except Exception as e:
         print(f"Dump HTML error: {e}")
 
-def parse_row_data(cells):
-    rank, name, jockey, weight, ior, perf, w_odd = 0, "", "", 0.0, 0, "", 0.0
-    trans = str.maketrans('۰۱۲۳۴۵۶۷۸۹٫', '0123456789.')
-    
-    for val in cells:
-        val = str(val).translate(trans).replace(',', '').strip()
-        if not val: continue
-        
-        if re.match(r'^\d+(-\d+)+$', val) and len(val) < 15 and perf == "":
-            perf = val
-            continue
-            
-        floats = re.findall(r'\b\d+\.\d+\b', val)
-        if floats:
-            for f_str in floats:
-                f_val = float(f_str)
-                if 1.0 < f_val < 300.0:
-                    w_odd = f_val
-                    break
-                    
-        if w_odd == 0.0 and re.match(r'^\d+$', val):
-            ival = int(val)
-            if 1 < ival < 40:
-                w_odd = float(ival)
-            elif 40 <= ival <= 65 and weight == 0.0:
-                weight = float(ival)
-            elif 40 < ival < 200 and ior == 0:
-                ior = ival
-                
-        if '-' in val and len(val) > 3:
-            parts = val.split('-')
-            if parts[0].isdigit() and rank == 0:
-                rank = int(parts[0])
-                val = '-'.join(parts[1:]).strip()
-                
-        if val.isdigit() and rank == 0 and 1 <= int(val) <= 20:
-            rank = int(val)
-            continue
-            
-        if len(val) > 2 and not re.match(r'^[\d\.\-\s]+$', val):
-            if any(kw in val for kw in ['دور', 'مشارکت', 'پخش', 'زنده', 'جدول', 'هفته', 'نظرسنجی', 'سرمایه', 'تومان']): continue
-            if not name: name = val
-            elif not jockey and len(val) < 20: jockey = val
-            
-    return rank, name, jockey, weight, ior, perf, w_odd
-
+# ============================================================
+# 🆕 Core Analysis
+# ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
         ts, cached_res = AR_CACHE[r_num]
         if time.time() - ts < CACHE_TTL: return cached_res
 
-    await click_round(p, r_num)
     horses = {}
-    full_text = ""
-    api_data = []
-
-    async def handle_response(response):
-        if response.status == 200 and response.request.resource_type in ["xhr", "fetch"]:
-            try:
-                data = await response.json()
-                text_data = json.dumps(data)
-                if "odds" in text_data or "coefficient" in text_data or "price" in text_data or "horses" in text_data:
-                    api_data.append(data)
-            except: pass
-
-    p.on("response", handle_response)
-
     try:
-        await p.wait_for_timeout(4000)
-        full_text = await p.evaluate("() => document.body.innerText")
-        
-        if api_data:
-            print("API Data found! Attempting to extract...")
-            def find_horses(obj):
-                if isinstance(obj, list):
-                    for item in obj:
-                        if isinstance(item, dict) and ('name' in item or 'horseName' in item) and ('odds' in item or 'price' in item or 'coefficient' in item):
-                            name = item.get('name') or item.get('horseName')
-                            odd = item.get('odds') or item.get('price') or item.get('coefficient')
-                            if name and odd:
-                                try:
-                                    val = float(odd)
-                                    if val > 1.0:
-                                        rank = len(horses) + 1
-                                        horses[rank] = {"n": name, "num": rank, "ior": 0, "j": "-", "perf": "", "w_odd": val, "weight": 0.0}
-                                except: pass
-                        else:
-                            find_horses(item)
-                elif isinstance(obj, dict):
-                    for k, v in obj.items():
-                        find_horses(v)
-            
-            for data in api_data:
-                find_horses(data)
+        await p.wait_for_timeout(2000)
 
-        if not horses or all(h.get('w_odd', 0) == 0.0 for h in horses.values()):
-            rows_data = await p.evaluate("""
-                () => {
-                    let rows = [];
-                    document.querySelectorAll('table tr, .v-data-table tbody tr, .v-data-table__tr').forEach(tr => {
-                        let tds = Array.from(tr.querySelectorAll('td, th, .v-data-table__td')).map(td => td.innerText.trim());
-                        if (tds.length >= 4) rows.push(tds);
-                    });
-                    if (rows.length === 0) {
-                        document.querySelectorAll('div').forEach(div => {
-                            let children = Array.from(div.children);
-                            if (children.length >= 3 && children.length <= 15) {
-                                let texts = children.map(c => c.innerText ? c.innerText.trim() : '');
-                                let hasNum = texts.some(t => /\\d+(\\.\\d+)?/.test(t));
-                                let hasText = texts.some(t => t.length > 2 && isNaN(t));
-                                if (hasNum && hasText) rows.push(texts);
-                            }
-                        });
+        tables_data = await p.evaluate("""
+            () => {
+                let tables = Array.from(document.querySelectorAll('table, .v-data-table, [role="grid"]')).filter(t =>
+                    t.innerText.includes('اسب') && (t.innerText.includes('وزن') || t.innerText.includes('عملکرد'))
+                );
+                let allData = [];
+                for (let table of tables) {
+                    let rows = table.querySelectorAll('tr, .v-data-table__tr');
+                    let tableData = [];
+                    for (let r of rows) {
+                        let cols = r.querySelectorAll('td, .v-data-table__td');
+                        if (cols.length >= 4) {
+                            let rowData = Array.from(cols).map(c => c.innerText.trim());
+                            tableData.push(rowData);
+                        }
                     }
-                    return rows;
+                    if (tableData.length > 1) allData.push(tableData);
                 }
-            """)
+                return allData;
+            }
+        """)
 
-            if rows_data:
-                for cells in rows_data:
-                    cells = [c.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹٫', '0123456789.')).strip() for c in cells if c.strip()]
-                    if len(cells) >= 3:
-                        rank, name, jockey, weight, ior, perf, w_odd = parse_row_data(cells)
-                        if rank == 0 and name: rank = len(horses) + 1
-                        if rank > 0 and name and rank not in horses:
-                            horses[rank] = {"n": name, "num": rank, "ior": ior, "j": jockey, "perf": perf, "w_odd": w_odd, "weight": weight}
+        if not tables_data or len(tables_data) < r_num:
+            raise ValueError(f"جدول دور {r_num} پیدا نشد. (تعداد جداول یافت شده در صفحه: {len(tables_data) if tables_data else 0})")
 
-        if not horses or all(h.get('w_odd', 0) == 0.0 for h in horses.values()):
-            print(f"DOM/API failed for round {r_num}. Falling back to text parsing.")
-            parts = [p.strip() for p in full_text.replace('\n', ' | ').split('|') if p.strip()]
-            current_round = 0
-            idx = 0
-            
-            ignore_words = ['H', '1405', '500,000', 'پی‌بر', 'پخش زنده', 'مشارکت', 'آد اسب', 
-                            'دوره‌ای', 'گزارش انتخاب‌ها', 'مالی', 'جدول مسابقات', 'اسبدوانی']
-            
-            while idx < len(parts):
-                part = parts[idx]
-                m = re.match(r'^(?:R|دور)\s*(\d+)$', part, re.IGNORECASE)
-                if m:
-                    current_round = int(m.group(1))
-                    idx += 1
-                    continue
-                
-                if current_round == r_num:
-                    if part in ignore_words or any(w in part for w in ['هفته', 'پاییز', 'قلا', 'نظر‌سنجی']):
-                        idx += 1
-                        continue
-                    
-                    if part.isdigit() and 1 <= int(part) <= 20:
-                        rank = int(part)
-                        name_found = ""
-                        odd_found = 0.0
-                        for look_idx in range(1, 4):
-                            if idx + look_idx < len(parts):
-                                next_part = parts[idx + look_idx].replace('٫', '.')
-                                if not name_found and not next_part.isdigit() and len(next_part) > 2:
-                                    name_found = next_part
-                                elif name_found and re.match(r'^\d+(\.\d+)?$', next_part):
-                                    val = float(next_part)
-                                    if 1.0 < val < 300.0:
-                                        odd_found = val
-                                        break
-                        if name_found and rank not in horses:
-                            horses[rank] = {"n": name_found, "num": rank, "ior": 0, "j": "-", "perf": "", "w_odd": odd_found, "weight": 0.0}
-                        idx += 1
-                        continue
+        target_table = tables_data[r_num - 1]
 
-                    match_name = re.match(r'^(\d+)[-\.\s]+(.+?)(?:\s+([\d\.]+))?$', part)
-                    if match_name:
-                        rank = int(match_name.group(1))
-                        name = match_name.group(2).strip()
-                        w_odd = 0.0
-                        
-                        if match_name.group(3):
-                            try:
-                                val = float(match_name.group(3).replace('٫', '.'))
-                                if 1.0 < val < 300.0:
-                                    w_odd = val
-                            except: pass
-                        
-                        if w_odd == 0.0:
-                            for lookahead in range(1, 10):
-                                if idx + lookahead < len(parts):
-                                    try:
-                                        val_str = parts[idx + lookahead].replace('٫', '.')
-                                        if re.match(r'^\d+(\.\d+)?$', val_str):
-                                            val = float(val_str)
-                                            if 1.0 < val < 300.0:
-                                                w_odd = val
-                                                break
-                                    except ValueError:
-                                        pass
-                        
-                        if rank not in horses:
-                            horses[rank] = {"n": name, "num": rank, "ior": 0, "j": "-", "perf": "", "w_odd": w_odd, "weight": 0.0}
-                        elif horses[rank]['w_odd'] == 0.0 and w_odd > 0.0:
-                            horses[rank]['w_odd'] = w_odd
-                        
-                        idx += 1
-                        continue
-                    
-                    if len(part) > 2 and not re.match(r'^\d+(\.\d+)?$', part) and not part.isdigit():
-                        rank = len(horses) + 1
-                        horses[rank] = {"n": part, "num": rank, "ior": 0, "j": "-", "perf": "", "w_odd": 0.0, "weight": 0.0}
-                
-                idx += 1
+        for row in target_table:
+            if any("اسب" in cell for cell in row): continue
+
+            num = None
+            name = None
+            weight = None
+            ior = None
+            perf_str = "0"
+            jockey = "نامشخص"
+
+            try:
+                if row[0].isdigit():
+                    num = int(row[0])
+
+                name = row[1]
+
+                col2_parts = row[2].split('\n')
+                for part in col2_parts:
+                    part = part.strip()
+                    if 'kg' in part.lower():
+                        weight = float(re.sub(r'[^\d.]', '', part.lower()))
+                    elif part.isdigit() and len(part) <= 3:
+                        ior = int(part)
+
+                perf_str = row[3].replace('\n', '').strip()
+                perf_str = perf_str.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789'))
+                perf_str = re.sub(r'[^\d\-]', '', perf_str)
+
+                if len(row) > 4:
+                    names = row[4].split('\n')
+                    if names:
+                        jockey = names[-1].strip()
+
+                if num and name:
+                    horses[num] = {
+                        "n": name, "num": num, 
+                        "ior": ior or 50, 
+                        "j": jockey, 
+                        "perf": perf_str, 
+                        "w_odd": 50.0,
+                        "weight": weight
+                    }
+            except Exception as e:
+                print(f"Error parsing row {row}: {e}")
+                continue
 
     except Exception as e: 
         print(f"Error in ar: {e}")
         await _dump_rendered_html(p, c, chat_id, r_num)
         await c.bot.send_message(chat_id, f"🚨 <b>خطای سیستمی در خواندن جدول دور {r_num}:</b>\n<code>{str(e)}</code>", parse_mode='HTML')
         return "ERROR"
-    finally:
-        p.remove_listener("response", handle_response)
 
     if not horses:
-        snippet = full_text.replace('\n', ' | ')[:1000]
-        await c.bot.send_message(chat_id, f"⚠️ <b>ربات نتوانست دیتایی استخراج کند.</b>\n\n📄 <b>پیش‌نمایش متن صفحه:</b>\n<code>{snippet}</code>", parse_mode='HTML')
+        await p.screenshot(path="debug_parse_fail.png")
+        with open("debug_parse_fail.png", "rb") as f:
+            await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در پارس کردن جدول دور {r_num}</b>\nربات جدول را دید ولی نتوانست ردیف‌های اسب‌ها را تشخیص دهد.", parse_mode='HTML')
         await _dump_rendered_html(p, c, chat_id, r_num)
         return "NOT_UPLOADED"
 
@@ -524,13 +382,8 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     forms = [decayed_form(h['perf']) for h in horse_list]
     form_max = max(forms) if forms and max(forms) > 0 else 1
     
-    implied_probs = [1.0 / h['w_odd'] if h['w_odd'] > 1.0 else 0 for h in horse_list]
-    total_implied = sum(implied_probs)
-    
-    if total_implied > 0:
-        market_probs = [p / total_implied for p in implied_probs]
-    else:
-        market_probs = [1.0 / len(horse_list)] * len(horse_list)
+    total_ior = sum(h['ior'] for h in horse_list)
+    market_probs = [h['ior'] / total_ior if total_ior > 0 else 1/n for h in horse_list]
 
     for idx, h in enumerate(horse_list):
         form_norm = decayed_form(h['perf']) / form_max
@@ -565,7 +418,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     res_dict = {"w": w, "p": p_horse, "s": s_horse, "horses": sorted_horses, "q": f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}", "q_fair": q_fair}
     res_dict['conf'] = get_confidence_level(res_dict)
     
-    long_shots = [h for h in sorted_horses if h['market_prob'] <= 10] 
+    long_shots = [h for h in sorted_horses if h['market_prob'] <= 10]
     top_ls = sorted(long_shots, key=lambda x: x['model_prob'], reverse=True) if long_shots else sorted_horses[-2:]
     res_dict['su'] = top_ls[0] if top_ls else sorted_horses[-1]
     res_dict['qs'] = f"{top_ls[0]['num']}-{top_ls[0]['n']} + {top_ls[1]['num']}-{top_ls[1]['n']}" if len(top_ls) >= 2 else "N/A"
@@ -574,6 +427,9 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     AR_CACHE[r_num] = (time.time(), res_dict)
     return res_dict
 
+# ============================================================
+# Other functions
+# ============================================================
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
     if await get_github_var("AUTO_UPDATE", "true") == "false" and not is_reminder:
         return await c.bot.send_message(chat_id, "🛑 خاموش است.")
@@ -607,29 +463,20 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     found_any = True
                     w = res['w']
                     rp += f"\n🏁 <b>دور R{r}</b>\n"
-                    
-                    missing_odds = all(h.get('w_odd', 0.0) == 0.0 for h in res['horses'])
-                    if missing_odds:
-                        rp += "⚠️ <i>(ضرایب در این دور یافت نشدند. لطفاً مطمئن شوید ضرایب در سایت منتشر شده‌اند)</i>\n"
-
                     rp += f"🥇 <b>پیش‌بر:</b> {w['num']}-{w['n']}\n"
-                    rp += f"   📊 مدل: {w['model_prob']:.1f}% | بازار: {w['market_prob']:.1f}% (ضریب: {w['w_odd']})\n"
+                    rp += f"   📊 مدل: {w['model_prob']:.1f}% | بازار: {w['market_prob']:.1f}%\n"
                     rp += f"🥈 <b>میان‌بر:</b> {res['p']['num']}-{res['p']['n']}\n"
                     rp += f"👥 <b>دوقلو (امن):</b> {res['q']}\n"
                     rp += f"🎯 <b>اطمینان:</b> {res['conf']}\n"
                     
                     if bet_amount and specific_round and r == specific_round:
-                        rp += f"\n💰 <b>مدیریت سرمایه (کِلی)</b>\n"
-                        bet_amt = calculate_kelly(bet_amount, w['model_prob'], w['w_odd'])
-                        if bet_amt > 0:
-                            rp += f"  پیشنهاد شرط روی {w['num']}-{w['n']}: <code>{bet_amt:,}</code> تومان\n"
-                        else:
-                            rp += f"  ⚠️ ارزش شرط‌بندی وجود ندارد (ریسک بالا).\n"
+                        rp += f"\n💰 <b>مدیریت سرمایه</b>\n"
+                        rp += f"(به دلیل نبود ضرایب در سایت، شرط‌بندی پیشنهاد نمی‌شود.)\n"
                     
                     if specific_round:
                         rp += "\n📈 <b>سه اسب برتر:</b>\n"
                         for h in res['horses'][:3]:
-                            rp += f"  {h['num']}-{h['n']}: احتمال {h['model_prob']:.1f}% (ضریب: {h['w_odd']})\n"
+                            rp += f"  {h['num']}-{h['n']}: احتمال {h['model_prob']:.1f}% (IOR: {h['ior']})\n"
                     rp += "➖➖➖➖➖➖➖➖\n"
                     
             if not found_any:
@@ -661,7 +508,8 @@ async def process_quinellas(chat_id, c, variant_type):
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
             await prepare_page(pg)
-            rp = f"{title}\n➖➖➖➖➖➖➖➖\n"
+            rp = f"{title}\n"
+            rp += "➖➖➖➖➖➖➖➖\n"
             found_any = False
             for r in range(1, 8):
                 res = await ar(pg, r, c, chat_id, save_history=False)
@@ -675,12 +523,14 @@ async def process_quinellas(chat_id, c, variant_type):
                         h1, h2 = horses[i], horses[j]
                         if variant_type == 'q_safe' and not (i == 0 and j == 1): continue
                         if variant_type == 'q_value':
-                            if not ((i < 3) or (j < 3)): continue
+                            is_top = (i < 3) or (j < 3)
+                            if not is_top: continue
                         if variant_type == 'q_lucky':
                             if not (i >= 3 and j >= 3): continue
                         q_p = quinella_prob(probs, i, j)
                         if q_p <= 0: continue
-                        candidates.append({"h1": h1, "h2": h2, "prob": q_p * 100, "fair_odd": round(1 / q_p, 2)})
+                        fair_odd = round(1 / q_p, 2)
+                        candidates.append({"h1": h1, "h2": h2, "prob": q_p * 100, "fair_odd": fair_odd})
                 if candidates:
                     if variant_type == 'q_safe': candidates.sort(key=lambda x: x['prob'], reverse=True)
                     else: candidates.sort(key=lambda x: x['fair_odd'], reverse=True)
@@ -688,7 +538,8 @@ async def process_quinellas(chat_id, c, variant_type):
                     found_any = True
                     rp += f"\n🏁 <b>دور R{r}</b>\n"
                     rp += f"👥 <b>{best['h1']['num']}-{best['h1']['n']} + {best['h2']['num']}-{best['h2']['n']}</b>\n"
-                    rp += f"   📊 احتمال برد: <b>{best['prob']:.1f}%</b>\n➖➖➖➖➖➖➖➖\n"
+                    rp += f"   📊 احتمال برد: <b>{best['prob']:.1f}%</b>\n"
+                    rp += "➖➖➖➖➖➖➖➖\n"
             if not found_any: rp += "\n⚠️ برای این نوع دوقلو، گزینه مناسبی پیدا نشد.\n"
             await send_long_message(c, chat_id, rp)
     except Exception as e:
@@ -718,11 +569,12 @@ async def process_multileg(chat_id, c, leg_type, bet_amount=None):
             elif leg_type == 'ml_3a': tr = [1,2,3]; title = "۳ پره اول"
             elif leg_type == 'ml_3b': tr = [5,6,7] if is_7 else [4,5,6]; title = "۳ پره دوم"
             else: return
-            picks = []
+            picks, details = [], []
             for r in tr:
                 res = res_7 if r == 7 and is_7 else await ar(pg, r, c, chat_id, save_history=False)
                 if isinstance(res, dict):
                     picks.append(f"{res['w']['num']}-{res['w']['n']}")
+                    details.append(res['w'])
                 else: picks.append("نامشخص")
             msg = f"🎯 <b>ترکیب {title}</b>\n\n🏇 <b>انتخاب‌ها:</b>\n<code>{' + '.join(picks)}</code>\n"
             await c.bot.send_message(chat_id, msg, parse_mode='HTML')
@@ -792,7 +644,8 @@ async def process_value_bets(chat_id, c, bet_amount=None):
                         found_any = True
                         rp += f"\n🏁 <b>دور R{r}:</b>\n"
                         for v in values[:3]:
-                            rp += f"💎 {v['num']}-{v['n']} | مدل {v['model_prob']:.1f}% (ضریب: {v['w_odd']})\n"
+                            line = f"💎 {v['num']}-{v['n']} | مدل {v['model_prob']:.1f}% (IOR: {v['ior']})"
+                            rp += line + "\n"
                         rp += "➖➖➖➖➖➖➖➖\n"
             if not found_any: rp += "\n⚠️ <b>ارزشی پیدا نشد.</b>"
             await send_long_message(c, chat_id, rp)
@@ -842,7 +695,7 @@ async def check_expirations(bot):
                     days_left = (exp_date - now).days
                     if days_left == 2:
                         try:
-                            await bot.send_message(int(uid), "⚠️ <b>هشدار انقضای اشتراک</b>\n\nاشتراک شما ۲ روز دیگر به پایان می‌رسد.\nبرای جلوگیری از قطع دسترسی، از دکمه «💳 خرید اشتراک» استفاده کنید.", parse_mode='HTML')
+                            await bot.send_message(int(uid), "⚠️ <b>هشدار انقضای اشتراک</b>\n\nاشتراک شما ۲ روز دیگر به پایان می‌رسد.\nبرای جلوگیری از قطع دسترسی به تحلیل‌ها، از دکمه «💳 خرید اشتراک» استفاده کنید.", parse_mode='HTML')
                         except: pass
                 except: pass
         except: pass
@@ -874,7 +727,7 @@ async def button_callback(u: Update, c: C):
     _last_call[key] = now
 
     if data == 'buy_sub':
-        txt = f"💳 <b>خرید اشتراک ویژه</b>\n\nبرای دسترسی به تمام امکانات ربات، مبلغ <b>{SUB_PRICE} تومان</b> را به شماره کارت زیر واریز کنید:\n\n💳 <code>{CARD_NUMBER}</code>\n👤 به نام: {CARD_HOLDER}\n\n📸 <b>پس از واریز، عکس رسید پرداخت را همین‌جا ارسال کنید.</b>"
+        txt = f"💳 <b>خرید اشتراک ویژه</b>\n\nبرای دسترسی به تمام امکانات ربات، مبلغ <b>{SUB_PRICE} تومان</b> را به شماره کارت زیر واریز کنید:\n\n💳 <code>{CARD_NUMBER}</code>\n👤 به نام: {CARD_HOLDER}\n\n📸 <b>پس از واریز، عکس رسید پرداخت را همین‌جا ارسال کنید.</b>\nپس از تایید توسط مدیریت، اشتراک شما فعال می‌شود."
         await query.message.reply_text(txt, parse_mode='HTML')
         return
     elif data == 'my_status':
@@ -890,7 +743,7 @@ async def button_callback(u: Update, c: C):
         link = f"https://t.me/{bot_info.username}?start=ref_{chat_id}"
         referrals = await get_referrals()
         invited = len(referrals.get(str(chat_id), []))
-        txt = f"🎁 <b>دعوت از دوستان</b>\n\nبا دعوت از دوستان خود، به ازای هر نفر <b>{REF_REWARD_DAYS} روز</b> اشتراک رایگان دریافت کنید!\n\n🔗 <b>لینک اختصاصی شما:</b>\n<code>{link}</code>\n\n👤 <b>تعداد دعوت شدگان:</b> {invited} نفر"
+        txt = f"🎁 <b>دعوت از دوستان</b>\n\nبا دعوت از دوستان خود، به ازای هر نفر <b>{REF_REWARD_DAYS} روز</b> اشتراک رایگان دریافت کنید!\n\n🔗 <b>لینک اختصاصی شما:</b>\n<code>{link}</code>\n\n👤 <b>تعداد دعوت شدگان:</b> {invited} نفر\n🎁 (معادل {invited * REF_REWARD_DAYS} روز اشتراک هدیه گرفته‌اید)"
         await query.message.reply_text(txt, parse_mode='HTML')
         return
     elif data.startswith('adm_'):
@@ -970,7 +823,7 @@ async def handle_photo(u: Update, c: C):
     if str(chat_id) == MY_ID: return
     user_name = u.effective_chat.first_name or "کاربر"
     await c.bot.forward_message(chat_id=MY_ID, from_chat_id=chat_id, message_id=u.message.message_id)
-    admin_msg = f"🔔 <b>رسید جدید!</b>\n\n👤 نام: {user_name}\nآیدی عددی: <code>{chat_id}</code>\n\nبرای تایید ۳۰ روزه، روی این متن کلیک کنید تا کپی شود و سپس ارسال کنید:\n<code>/approve {chat_id} 30</code>"
+    admin_msg = f"🔔 <b>رسید جدید!</b>\n\n👤 نام: {user_name}\nآیدی عددی: <code>{chat_id}</code>\n\nبرای تایید ۳۰ روزه، روی این متن کلیک کنید تا کپی شود و سپس ارسال کنید:\n<code>/approve {chat_id} 30</code>\n<i>(اگر می‌خواهید تعداد روز دیگری باشد، عدد ۳۰ را تغییر دهید)</i>"
     await c.bot.send_message(MY_ID, admin_msg, parse_mode='HTML')
     await u.message.reply_text("✅ رسید شما دریافت شد.\nپس از بررسی توسط پشتیبانی، اشتراک شما فعال خواهد شد.")
 
@@ -1024,7 +877,8 @@ async def cmd_debug(u: Update, c: C):
         return await u.message.reply_text("⛔ فقط ادمین.")
     try:
         r_num = int(c.args[0]) if c.args else 1
-    except: r_num = 1
+    except:
+        r_num = 1
     await u.message.reply_text(f"⏳ در حال گرفتن HTML دور {r_num}...")
     browser = None
     try:
@@ -1040,7 +894,6 @@ async def cmd_debug(u: Update, c: C):
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
             await pg.wait_for_timeout(5000)
             await prepare_page(pg)
-            await click_round(pg, r_num)
             await _dump_rendered_html(pg, c, u.effective_chat.id, r_num)
     except Exception as e:
         await u.message.reply_text(f"❌ خطا: {e}")
@@ -1068,7 +921,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 6.9 (استخراج پیشرفته از API و DOM)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.4 (استخراج دقیق جدول‌های اصلی)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
