@@ -87,7 +87,8 @@ async def is_authorized(u: Update, c: C) -> bool: return True
 async def get_weather():
     try:
         url = "https://api.open-meteo.com/v1/forecast?latitude=37.25&longitude=55.16&current_weather=true"
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # افزایش تایم اوت به 15 ثانیه برای جلوگیری از قطعی
+        async with httpx.AsyncClient(timeout=15.0) as client:
             res = await client.get(url)
             if res.status_code == 200:
                 data = res.json()
@@ -298,13 +299,16 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# Parsers & Core Analysis (اصلاح شده)
+# Parsers & Core Analysis
 # ============================================================
 def parse_row_data(cells):
     rank, name, jockey, weight, ior, perf, w_odd = 0, "", "", 0.0, 0, "", 0.0
     
+    # تبدیل اعداد فارسی به انگلیسی
+    trans = str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')
+    
     for val in cells:
-        val = str(val).strip()
+        val = str(val).translate(trans).strip()
         if not val: continue
         
         # 1. Performance (e.g., 1-2-3-4, 0-0-5)
@@ -312,12 +316,14 @@ def parse_row_data(cells):
             perf = val
             continue
             
-        # 2. Odds (Typically float like 4.5, 12.0)
-        if re.match(r'^\d+\.\d+$', val):
+        # 2. Odds (float or int like 4.5, 12, 10.0)
+        if re.match(r'^\d+(\.\d+)?$', val):
             f_val = float(val)
             if 1.0 < f_val < 300.0:
-                w_odd = f_val
-                continue
+                # اگر عدد صحیح است و شبیه امتیاز (IOR) نیست، پس ضریب است
+                if "." in val or (w_odd == 0.0 and f_val < 100):
+                    w_odd = f_val
+                    continue
                 
         # 3. Weight (e.g., 54.5, 56)
         num_val = val.replace('kg', '').replace('کیلو', '').strip()
@@ -340,9 +346,9 @@ def parse_row_data(cells):
             rank = int(val)
             continue
             
-        # 6. Text (Name, Jockey)
+        # 6. Text (Name, Jockey) - حذف کلمات مزاحم
         if len(val) > 2 and not re.match(r'^\d+(\.\d+)?$', val):
-            if any(kw in val for kw in ['دور', 'مشارکت', 'پخش', 'زنده', 'جدول']): continue
+            if any(kw in val for kw in ['دور', 'مشارکت', 'پخش', 'زنده', 'جدول', 'هفته', 'نظرسنجی']): continue
             if not name: name = val
             elif not jockey: jockey = val
             
@@ -357,24 +363,24 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     horses = {}
     full_text = ""
     try:
-        # افزایش زمان انتظار برای لود کامل جداول جدید
-        await p.wait_for_timeout(5000)
+        # افزایش زمان انتظار برای لود جداول سنگین
+        await p.wait_for_timeout(6000)
         full_text = await p.evaluate("() => document.body.innerText")
         
-        # --- روش اول: خواندن از طریق DOM با سلکتورهای بسیار قوی‌تر ---
+        # --- روش اول: خواندن از طریق DOM (سلکتورهای فوق‌پیشرفته) ---
         rows_data = await p.evaluate("""
             () => {
                 let rows = [];
-                // 1. Standard Tables
+                // 1. جداول استاندارد
                 document.querySelectorAll('table tr').forEach(tr => {
                     let tds = Array.from(tr.querySelectorAll('td, th')).map(td => td.innerText.trim());
                     if (tds.length >= 4) rows.push(tds);
                 });
 
-                // 2. Vuetify / ElementUI / Grids
+                // 2. ساختارهای Vuetify / ElementUI / Grid
                 if (rows.length === 0) {
-                    document.querySelectorAll('tr, .v-data-table tbody tr, .v-data-table__wrapper tbody tr, .el-table__row, [role="row"], .row').forEach(tr => {
-                        let tds = Array.from(tr.querySelectorAll('td, .v-data-table__mobile-row__cell, .cell, span, div')).map(td => td.innerText.trim()).filter(t => t);
+                    document.querySelectorAll('.v-data-table__wrapper tbody tr, .el-table__row, [role="row"], .row').forEach(tr => {
+                        let tds = Array.from(tr.querySelectorAll('td, .cell, span, div')).map(td => td.innerText.trim()).filter(t => t);
                         let uniqueTds = [...new Set(tds)];
                         if (uniqueTds.length >= 4 && /^\\d+$/.test(uniqueTds[0])) {
                             rows.push(uniqueTds);
@@ -382,20 +388,23 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                     });
                 }
 
-                // 3. Generic Div Row structures (Fallback)
+                // 3. ساختارهای Div تو در تو (بسیار تهاجمی)
                 if (rows.length === 0) {
                     document.querySelectorAll('div').forEach(div => {
                         let children = Array.from(div.children);
                         if (children.length >= 4 && children.length <= 15) {
                             let texts = children.map(c => c.innerText ? c.innerText.trim() : '');
-                            if (texts.length > 0 && /^\\d+$/.test(texts[0]) && texts.some(t => t.length > 2)) {
+                            // چک کردن اینکه آیا این ردیف شامل اسم و عدد است؟
+                            let hasText = texts.some(t => t.length > 2 && isNaN(t));
+                            let hasNum = texts.some(t => !isNaN(parseFloat(t)));
+                            if (texts.length > 0 && /^\\d+$/.test(texts[0]) && hasText && hasNum) {
                                 rows.push(texts);
                             }
                         }
                     });
                 }
                 
-                // Deduplicate
+                // حذف ردیف‌های تکراری
                 let uniqueRows = [];
                 let seen = new Set();
                 for (let r of rows) {
@@ -411,39 +420,65 @@ async def ar(p, r_num, c, chat_id, save_history=True):
 
         if rows_data:
             for cells in rows_data:
-                trans = str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')
-                cells = [c.translate(trans).strip() for c in cells if c.strip()]
+                cells = [c.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')).strip() for c in cells if c.strip()]
                 if len(cells) >= 3:
                     rank, name, jockey, weight, ior, perf, w_odd = parse_row_data(cells)
                     if rank == 0 and name: rank = len(horses) + 1
                     if rank > 0 and name and rank not in horses:
                         horses[rank] = {"n": name, "num": rank, "ior": ior, "j": jockey, "perf": perf, "w_odd": w_odd, "weight": weight}
 
-        # --- روش دوم (پلن B): پردازش متن خام اگر DOM جواب نداد ---
+        # --- روش دوم (پلن B): پردازش متن خام ---
         if not horses:
             print(f"DOM failed for round {r_num}. Falling back to text parsing.")
+            # جایگزینی خطوط جدید با | برای یکدست سازی
             parts = [p.strip() for p in full_text.replace('\n', ' | ').split('|') if p.strip()]
             current_round = 0
-            horse_idx = 1
             
             ignore_words = ['H', '1405', '500,000', 'پی‌بر', 'پخش زنده', 'مشارکت', 'آد اسب', 
                             'دوره‌ای', 'گزارش انتخاب‌ها', 'مالی', 'جدول مسابقات', 'اسبدوانی']
             
-            for part in parts:
+            idx = 0
+            while idx < len(parts):
+                part = parts[idx]
                 m = re.match(r'^(?:R|دور)\s*(\d+)$', part, re.IGNORECASE)
                 if m:
                     current_round = int(m.group(1))
-                    horse_idx = 1
+                    idx += 1
                     continue
                 
                 if current_round == r_num:
-                    if part.isdigit() or part in ignore_words or any(w in part for w in ['هفته', 'پاییز', 'قلا', 'نظر‌سنجی']):
+                    if part in ignore_words or any(w in part for w in ['هفته', 'پاییز', 'قلا', 'نظر‌سنجی']):
+                        idx += 1
                         continue
                     
-                    if len(part) > 1:
-                        # ضریب به صورت پیش‌فرض 0.0 است تا باگ تحلیل مساوی رخ ندهد
-                        horses[horse_idx] = {"n": part, "num": horse_idx, "ior": 0, "j": "-", "perf": "", "w_odd": 0.0, "weight": 0.0}
-                        horse_idx += 1
+                    # پیدا کردن الگوی "رتبه-نام" مثل "1-اوچر ولد"
+                    match_name = re.match(r'^(\d+)-(.*)$', part)
+                    if match_name:
+                        rank = int(match_name.group(1))
+                        name = match_name.group(2).strip()
+                        # جستجوی ۵ عنصر بعدی برای پیدا کردن ضریب
+                        w_odd = 0.0
+                        for lookahead in range(1, 6):
+                            if idx + lookahead < len(parts):
+                                try:
+                                    val = float(parts[idx + lookahead])
+                                    if 1.0 < val < 300.0 and "." in parts[idx + lookahead]:
+                                        w_odd = val
+                                        break
+                                except ValueError:
+                                    pass
+                        
+                        if rank not in horses:
+                            horses[rank] = {"n": name, "num": rank, "ior": 0, "j": "-", "perf": "", "w_odd": w_odd, "weight": 0.0}
+                        idx += 1
+                        continue
+                    
+                    # اگر اسم بدون رتبه بود
+                    if len(part) > 2 and not re.match(r'^\d+(\.\d+)?$', part) and not part.isdigit():
+                        rank = len(horses) + 1
+                        horses[rank] = {"n": part, "num": rank, "ior": 0, "j": "-", "perf": "", "w_odd": 0.0, "weight": 0.0}
+                
+                idx += 1
 
     except Exception as e: 
         print(f"Error in ar: {e}")
@@ -471,7 +506,6 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     if total_implied > 0:
         market_probs = [p / total_implied for p in implied_probs]
     else:
-        # اگر ضریب اصلا پیدا نشد، به همه شانس مساوی بده تا برنامه کرش نکند
         market_probs = [1.0 / len(horse_list)] * len(horse_list)
 
     for idx, h in enumerate(horse_list):
@@ -517,7 +551,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     return res_dict
 
 # ============================================================
-# توابع پردازش ربات
+# توابع پردازش ربات (بدون تغییر)
 # ============================================================
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
     if await get_github_var("AUTO_UPDATE", "true") == "false" and not is_reminder:
@@ -553,7 +587,6 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     w = res['w']
                     rp += f"\n🏁 <b>دور R{r}</b>\n"
                     
-                    # اصلاح شرط بررسی نبود ضریب (چون حالا پیش‌فرض 0.0 است)
                     missing_odds = all(h.get('w_odd', 0.0) == 0.0 for h in res['horses'])
                     if missing_odds:
                         rp += "⚠️ <i>(ضریب در صفحه یافت نشد، تحلیل با شانس برابر انجام شد)</i>\n"
@@ -1014,7 +1047,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 6.4 (پردازش DOM هوشمند)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 6.5 (استخراج هوشمند دیتا)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
