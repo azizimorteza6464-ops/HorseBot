@@ -215,7 +215,7 @@ async def prepare_page(pg):
         print(f"Prepare page error: {e}")
 
 # ============================================================
-# 🆕 PARSER: استخراج داده‌ها بر اساس ساختار جدول
+# 🆕 PARSER: استخراج داده‌ها بر اساس ساختار خطوط متنی
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -226,85 +226,80 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     try:
         await p.wait_for_timeout(3000)
 
-        # 1. پیدا کردن تمام جدول‌های صفحه
-        tables_data = await p.evaluate("""
+        # استخراج تمام متن صفحه به صورت بلوک‌های خطی (بدون وابستگی به تگ)
+        # و سپس پیدا کردن بلوک‌هایی که شبیه اطلاعات اسب هستند
+        raw_blocks = await p.evaluate("""
             () => {
-                let tables = Array.from(document.querySelectorAll('table, .v-data-table, [role="grid"], .v-table'));
-                let allData = [];
+                // پیدا کردن تمام عناصر سطح پایین (برگ‌ها) که متن دارن
+                let elements = Array.from(document.querySelectorAll('div, td, span, li, p, tr'));
                 
-                for (let table of tables) {
-                    let rows = table.querySelectorAll('tr, .v-data-table__tr');
-                    let tableData = [];
-                    for (let r of rows) {
-                        let cols = r.querySelectorAll('td, .v-data-table__td, .v-table__td');
-                        if (cols.length >= 4) { // جدول اسب‌ها حداقل ۴ ستون داره
-                            let rowData = Array.from(cols).map(c => c.innerText.trim());
-                            tableData.push(rowData);
-                        }
-                    }
-                    if (tableData.length > 1) allData.push(tableData);
-                }
-                return allData;
+                // فیلتر کردن عناصری که متن زیاد و بی‌ربط دارن
+                let textBlocks = elements.filter(el => {
+                    if (el.children.length > 5) return false; // فقط عناصر با فرزندان کم
+                    let txt = (el.innerText || '').trim();
+                    return txt.length > 0 && txt.length < 300;
+                });
+                
+                return textBlocks.map(el => el.innerText.trim());
             }
         """)
 
-        if not tables_data:
-            raise ValueError(f"هیچ جدولی در صفحه پیدا نشد.")
+        if not raw_blocks:
+            raise ValueError(f"هیچ متن قابل خواندنی در صفحه پیدا نشد.")
 
-        # 2. انتخاب جدول مربوط به دور مورد نظر
-        if len(tables_data) < r_num:
-            raise ValueError(f"جدول دور {r_num} پیدا نشد. (تعداد جداول: {len(tables_data)})")
-
-        target_table = tables_data[r_num - 1] # جدول اول برای دور 1، دومی برای دور 2 و ...
-
-        # 3. پردازش ردیف‌های جدول
-        for row in target_table:
-            if any("اسب" in cell for cell in row) or any("مقام" in cell for cell in row):
-                continue # فیلتر هدر
+        # حالا باید بلوک‌های متنی رو بر اساس شماره اسب گروه‌بندی کنیم
+        # الگو: شماره اسب (1 تا 15) در یک خط، نام اسب در خط بعد، وزن (kg) در خط بعد...
+        current_horse = None
+        
+        for block in raw_blocks:
+            lines = block.split('\n')
             
-            try:
-                # ستون 0: شماره (مقام)
-                if not row[0].isdigit(): continue
-                num = int(row[0])
-
-                # ستون 1: اسب (شامل نام و شماره)
-                name = re.sub(r'[^\u0600-\u06FFa-zA-Z\s]', '', row[1]).strip()
-                if not name: continue
-
-                # ستون 2: سن / وزن / IOR
-                col2_text = row[2]
-                weight = None
-                ior = None
+            # اگر بلوک تک خطی است
+            if len(lines) == 1:
+                line = lines[0].strip()
+                # چک می‌کنیم آیا شماره اسب است
+                if re.fullmatch(r'\d{1,2}', line) and int(line) <= 20:
+                    # این احتمالا شماره یک اسب جدید است
+                    if current_horse and current_horse.get("num") and current_horse.get("n"):
+                        horses[current_horse["num"]] = current_horse
+                    current_horse = {"num": int(line), "n": None, "weight": None, "ior": None, "perf": "0", "j": "نامشخص"}
+                    continue
                 
-                # پیدا کردن وزن (مثلا 56kg)
-                w_match = re.search(r'(\d+)kg', col2_text.lower())
-                if w_match: weight = float(w_match.group(1))
-                
-                # پیدا کردن IOR (عدد 2 یا 3 رقمی در خطوط بعدی)
-                lines = col2_text.split('\n')
+                # اگر شماره اسب داریم، بقیه اطلاعات رو پر می‌کنیم
+                if current_horse:
+                    if not current_horse["n"] and re.search(r'[آ-یa-zA-Z]{2,}', line) and 'اسب' not in line:
+                        current_horse["n"] = line
+                    elif 'kg' in line.lower() and not current_horse["weight"]:
+                        current_horse["weight"] = float(re.sub(r'[^\d.]', '', line.lower()))
+                    elif re.fullmatch(r'\d{2,3}', line) and not current_horse["ior"]:
+                        current_horse["ior"] = int(line)
+                    elif re.search(r'\d+-\d+', line) and current_horse["perf"] == "0":
+                        current_horse["perf"] = re.sub(r'[^\d\-]', '', line)
+                    elif re.search(r'[آ-ی]{3,}', line) and current_horse["j"] == "نامشخص" and current_horse["n"]:
+                        current_horse["j"] = line
+            else:
+                # بلوک چند خطی (مثل اطلاعات کامل یک اسب در یک div)
                 for line in lines:
-                    if line.strip().isdigit() and len(line.strip()) <= 3:
-                        ior = int(line.strip())
-                        break
+                    line = line.strip()
+                    if not current_horse: continue
+                    
+                    if not current_horse["n"] and re.search(r'[آ-یa-zA-Z]{2,}', line) and 'اسب' not in line:
+                        current_horse["n"] = line
+                    elif 'kg' in line.lower() and not current_horse["weight"]:
+                        current_horse["weight"] = float(re.sub(r'[^\d.]', '', line.lower()))
+                    elif re.fullmatch(r'\d{2,3}', line) and not current_horse["ior"]:
+                        current_horse["ior"] = int(line)
+                    elif re.search(r'\d+-\d+', line) and current_horse["perf"] == "0":
+                        current_horse["perf"] = re.sub(r'[^\d\-]', '', line)
+                    elif re.search(r'[آ-ی]{3,}', line) and current_horse["j"] == "نامشخص" and current_horse["n"]:
+                        current_horse["j"] = line
+        
+        # اضافه کردن آخرین اسب
+        if current_horse and current_horse.get("num") and current_horse.get("n"):
+            horses[current_horse["num"]] = current_horse
 
-                # ستون 3: عملکرد (مثلا 1-2-4-1-6)
-                perf_str = "0"
-                perf_match = re.search(r'(\d+[-]\d+[-]\d+.*)', row[3])
-                if perf_match: 
-                    perf_str = re.sub(r'[^\d\-]', '', perf_match.group(1))
-                
-                # ستون 4: مالک / مربی / چابکسوار
-                jockey = row[4].split('\n')[-1].strip() if len(row) > 4 else "نامشخص"
-
-                if num and name and num not in horses:
-                    if not ior: ior = max(10, int(120 - (weight if weight else 55)))
-                    horses[num] = {
-                        "n": name, "num": num, "ior": ior, "j": jockey,
-                        "perf": perf_str if perf_str else "0", "w_odd": 50.0, "weight": weight
-                    }
-            except Exception as e:
-                print(f"Row parse error: {e}")
-                continue
+        # تمیزکاری نهایی: حذف اسب‌هایی که اطلاعات کافی ندارن
+        horses = {k: v for k, v in horses.items() if v["n"] and v["num"]}
 
         if len(horses) < 2:
             raise ValueError(f"تعداد اسب‌های معتبر ({len(horses)}) کمتر از حد نیاز است.")
@@ -321,10 +316,11 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     forms = [decayed_form(h['perf']) for h in horse_list]
     form_max = max(forms) if forms and max(forms) > 0 else 1
     
-    total_ior = sum(h['ior'] for h in horse_list)
-    market_probs = [h['ior'] / total_ior if total_ior > 0 else 1/n for h in horse_list]
+    total_ior = sum(h['ior'] if h['ior'] else 50 for h in horse_list)
+    market_probs = [(h['ior'] if h['ior'] else 50) / total_ior if total_ior > 0 else 1/n for h in horse_list]
 
     for idx, h in enumerate(horse_list):
+        if not h['ior']: h['ior'] = 50
         form_norm = decayed_form(h['perf']) / form_max
         h['combined'] = (0.60 * form_norm + 0.40 * market_probs[idx])
         h['market_prob'] = market_probs[idx] * 100
@@ -862,7 +858,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.7 (استخراج دقیق جدول با ستون‌های استاندارد)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.8 (استخراج هوشمند بر اساس بلوک‌های متنی)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
