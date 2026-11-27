@@ -31,7 +31,7 @@ R = os.environ.get("GITHUB_REPOSITORY")
 MY_ID = os.environ.get("ADMIN_ID", "184149177")
 
 # 👇 مقادیر پیش‌فرض را اینجا وارد کنید 👇
-CARD_NUMBER = os.environ.get("CARD_NUMBER", "6219-8618-0229-0089")
+CARD_NUMBER = os.environ.get("CARD_NUMBER", "6219861802290089")
 CARD_HOLDER = os.environ.get("CARD_HOLDER", "مرتضی عزیزی")
 SUB_PRICE = os.environ.get("SUB_PRICE", "250,000")
 # 👆 --------------------------------- 👆
