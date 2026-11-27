@@ -46,6 +46,7 @@ COOLDOWN = 60
 _last_call = {}
 AR_CACHE = {}
 SITE_WEATHER_CACHE = None
+CURRENT_RACE_INFO = "🏇 مسابقات امروز" # متغیر جدید برای نگه داشتن اطلاعات مسابقه
 RUN_SECONDS = max(60, int(os.environ.get("RUN_SECONDS", "17400")))
 
 RANK_POINTS = {"1": 10, "2": 6, "3": 3, "4": 1, "5": 0.5}
@@ -892,6 +893,8 @@ def _survey_by_runner(survey_payload):
 
 
 async def fetch_api_races(pg):
+    global CURRENT_RACE_INFO # دسترسی به متغیر سراسری
+    
     days_payload = await api_get_json(pg, "/races/days?limit=50&offset=0&has_races=true")
     days = _api_data(days_payload).get("race_days", [])
     if not days:
@@ -905,6 +908,21 @@ async def fetch_api_races(pg):
         featured = [d for d in days if d.get("featured")]
         candidates = featured or days
     day = sorted(candidates, key=lambda d: (bool(d.get("featured")), str(d.get("date") or "")), reverse=True)[0]
+    
+    # استخراج نام مسابقه/شهر و تاریخ از API
+    city_name = day.get("city") or day.get("track") or day.get("name") or "نامشخص"
+    race_date = day.get("date") or day.get("jalali_date") or "نامشخص"
+    
+    # اگر تاریخ به صورت YYYY-MM-DD بود، آن را خوانا کنیم
+    if "-" in str(race_date) and len(str(race_date)) == 10:
+        try:
+            dt = datetime.strptime(race_date, "%Y-%m-%d")
+            race_date = dt.strftime("%Y/%m/%d")
+        except:
+            pass
+            
+    CURRENT_RACE_INFO = f"🏟 {city_name} | 📅 {race_date}"
+
     day_id = safe_int(day.get("id"))
     if day_id is None:
         raise RuntimeError("شناسه روز مسابقه نامعتبر است")
@@ -960,8 +978,10 @@ async def fetch_api_races(pg):
 
 
 async def fetch_races_for_chat(chat_id, c):
-    global SITE_WEATHER_CACHE
+    global SITE_WEATHER_CACHE, CURRENT_RACE_INFO
     SITE_WEATHER_CACHE = None
+    CURRENT_RACE_INFO = "🏇 مسابقات امروز"
+    
     if not all([A, D, U]):
         await c.bot.send_message(chat_id, "⚠️ اطلاعات ورود سایت در تنظیمات ربات کامل نیست.")
         return None
@@ -1105,7 +1125,8 @@ async def process_odds(
         )
         return
 
-    msg = "🏇 <b>تحلیل مسابقات</b>\n" + weather + "\n"
+    # اضافه کردن نام مسابقه و تاریخ به ابتدای پیام
+    msg = f"🏇 <b>تحلیل مسابقات</b>\n{CURRENT_RACE_INFO}\n{weather}\n"
     if bet_amount:
         msg += f"💰 سرمایه ثبت‌شده: <code>{bet_amount:,}</code> تومان\n"
     msg += "━━━━━━━━━━━━━━\n"
@@ -1132,7 +1153,7 @@ async def process_quinellas(chat_id, c, variant_type):
     races = await fetch_races_for_chat(chat_id, c)
     if not races:
         return
-    msg = f"<b>{titles[variant_type]}</b>\n━━━━━━━━━━━━━━\n"
+    msg = f"<b>{titles[variant_type]}</b>\n{CURRENT_RACE_INFO}\n━━━━━━━━━━━━━━\n"
     found = False
     for r in sorted(races):
         try:
@@ -1188,7 +1209,7 @@ async def process_multileg(chat_id, c, leg_type, bet_amount=None):
         except Exception as e:
             details.append(f"R{r}: تحلیل نشد ({html.escape(clean_text(e))})")
     msg = (
-        f"🎯 <b>ترکیب {title}</b>\n\n" + "\n".join(details)
+        f"🎯 <b>ترکیب {title}</b>\n{CURRENT_RACE_INFO}\n\n" + "\n".join(details)
         + ("\n\n<code>" + " | ".join(picks) + "</code>" if picks else "")
         + "\n\n⚠️ احتمال برد ترکیبی حاصل‌ضرب تقریبی احتمال‌هاست و با وابستگی‌ها/شرایط مسابقه تغییر می‌کند؛ تضمینی نیست."
     )
@@ -1201,7 +1222,7 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
     if not races:
         return
     title = "🎲 اسب شگفتی" if mode == "sur_h" else "🔥 دوقلوی شگفتی"
-    msg = f"<b>{title}</b>\n━━━━━━━━━━━━━━\n"
+    msg = f"<b>{title}</b>\n{CURRENT_RACE_INFO}\n━━━━━━━━━━━━━━\n"
     found = False
     for r in sorted(races):
         try:
@@ -1245,7 +1266,7 @@ async def process_value_bets(chat_id, c, bet_amount=None):
     races = await fetch_races_for_chat(chat_id, c)
     if not races:
         return
-    msg = "💎 <b>شکار ارزش (EV)</b>\n━━━━━━━━━━━━━━\n"
+    msg = f"💎 <b>شکار ارزش (EV)</b>\n{CURRENT_RACE_INFO}\n━━━━━━━━━━━━━━\n"
     found = False
     for r in sorted(races):
         try:
