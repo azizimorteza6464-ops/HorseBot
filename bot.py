@@ -29,9 +29,13 @@ G = os.environ.get("GH_PAT")
 R = os.environ.get("GITHUB_REPOSITORY")
 
 MY_ID = os.environ.get("ADMIN_ID", "184149177")
-CARD_NUMBER = os.environ.get("CARD_NUMBER", "")
-CARD_HOLDER = os.environ.get("CARD_HOLDER", "")
+
+# 👇 مقادیر پیش‌فرض را اینجا وارد کنید 👇
+CARD_NUMBER = os.environ.get("CARD_NUMBER", "6219-8618-0229-0089")
+CARD_HOLDER = os.environ.get("CARD_HOLDER", "مرتضی عزیزی")
 SUB_PRICE = os.environ.get("SUB_PRICE", "250,000")
+# 👆 --------------------------------- 👆
+
 REF_REWARD_DAYS = 3
 TRIAL_DAYS = 1
 
@@ -301,7 +305,6 @@ def place_probability(probs, index, places=3):
     if not probs or index < 0 or index >= len(probs):
         return 0.0
     places = max(1, min(int(places), len(probs)))
-    # Sum over all ordered selections of the other horses before the target.
     others = [i for i in range(len(probs)) if i != index]
     total = 0.0
     for n_before in range(places):
@@ -366,11 +369,6 @@ async def make_browser_context(p):
 
 
 async def extract_race_columns(pg):
-    """
-    استخراج ستون‌های R1، R2 و ... از جدول اصلی.
-    شماره اولیه بر اساس ترتیب دکمه‌هاست؛ اگر سایت شماره جداگانه
-    روی دکمه یا ویژگی data داشته باشد، همان شماره استفاده می‌شود.
-    """
     result = await pg.evaluate("""
     () => {
         const root = document.querySelector(
@@ -424,10 +422,6 @@ async def extract_race_columns(pg):
 
 
 async def extract_selected_horse_details(pg, round_no):
-    """
-    اطلاعات نمای انتخابی سایت را به صورت محافظه‌کارانه استخراج می‌کند.
-    فقط فیلدهایی که واقعاً در DOM دیده شوند ثبت می‌شوند.
-    """
     return await pg.evaluate("""(roundNo) => {
         const root = document.querySelector(
             'main div.flex.items-start.user-select-none'
@@ -487,7 +481,6 @@ async def get_all_races(pg):
 
 
 async def fetch_racecard_performance(pg):
-    """Scrape publicly rendered racecard performance: form, weight, IOR, coach and recent-race interval."""
     url = "https://asbdavani.app/racecards"
     try:
         await pg.goto(url, timeout=90000, wait_until="domcontentloaded")
@@ -572,7 +565,6 @@ def _has_stats_signal(horses):
 
 
 def _history_score(horse):
-    """Combine recent finishing form and published career podium stats."""
     form = decayed_form(horse.get("perf"))
     starts = safe_float(horse.get("starts"))
     wins = safe_float(horse.get("p1"))
@@ -580,7 +572,6 @@ def _history_score(horse):
     thirds = safe_float(horse.get("p3"))
     career = 0.0
     if starts and starts > 0:
-        # Light Bayesian shrinkage prevents tiny samples from dominating.
         career = (
             0.55 * ((wins or 0) + 1.0) / (starts + 4.0)
             + 0.30 * ((seconds or 0) + 1.0) / (starts + 4.0)
@@ -612,8 +603,6 @@ def analyze_horses(horses):
     has_form = _has_form_signal(horses)
     has_stats = _has_stats_signal(horses)
 
-    # A uniform baseline is used when no historical signal exists. It is not
-    # presented as a learned prediction and confidence remains low.
     if has_form or has_stats:
         base = power_probs([max(0.02, x) for x in raw_scores], power=1.65)
     else:
@@ -624,9 +613,6 @@ def analyze_horses(horses):
     has_market = market is not None and all(x is not None for x in market)
     has_survey = survey is not None and all(x is not None for x in survey)
 
-    # Consensus ranking uses observable sources, but the history-only estimate
-    # is kept separately so value checks do not compare a market-blended model
-    # against the same market a second time.
     if has_market and has_survey and (has_form or has_stats):
         final = [0.58 * market[i] + 0.14 * survey[i] + 0.28 * base[i]
                  for i in range(len(horses))]
@@ -854,7 +840,6 @@ async def cmd_admin_panel(chat_id, c):
 # ======================== اجرای تحلیل‌ها ========================
 
 async def api_get_json(pg, path):
-    """GET the site's documented-by-observation JSON API using the browser context cookies."""
     url = API_BASE + path
     response = await pg.context.request.get(url, timeout=35000)
     if not response.ok:
@@ -907,7 +892,6 @@ def _survey_by_runner(survey_payload):
 
 
 async def fetch_api_races(pg):
-    """Fetch current racecard, actual pool odds and survey percentages from API."""
     days_payload = await api_get_json(pg, "/races/days?limit=50&offset=0&has_races=true")
     days = _api_data(days_payload).get("race_days", [])
     if not days:
@@ -916,7 +900,6 @@ async def fetch_api_races(pg):
     if not days:
         raise RuntimeError("روز مسابقه از API دریافت نشد")
 
-    # Prefer the currently featured day that actually has races, otherwise latest dated day.
     candidates = [d for d in days if d.get("races")]
     if not candidates:
         featured = [d for d in days if d.get("featured")]
@@ -952,7 +935,6 @@ async def fetch_api_races(pg):
             if num is None:
                 continue
             runner_id = safe_int(runner.get("id"))
-            # Odds API may key runners by runnerId while the racecard uses horse number.
             horse_odds = odds_map.get(num) or odds_map.get(runner_id) or {}
             entries.append({
                 "num": num,
@@ -996,15 +978,12 @@ async def fetch_races_for_chat(chat_id, c):
                 await c.bot.send_message(chat_id, "⚠️ نشست ورود سایت منقضی شده است.")
                 return None
 
-            # API is authoritative for race IDs, horse numbers, live pool odds and survey.
             try:
                 races = await fetch_api_races(pg)
             except Exception as api_error:
                 print("API race fetch failed; trying visible racecard:", repr(api_error))
                 races = await get_all_races(pg)
 
-            # Enrich every runner with the official racecard performance page.
-            # This page includes last-rank sequence, starts/podiums, weight, IOR and coach.
             try:
                 performance_rows = await fetch_racecard_performance(pg)
                 perf_by_id = {clean_text(x.get("horse_id")): x for x in performance_rows if x.get("horse_id")}
@@ -1024,7 +1003,6 @@ async def fetch_races_for_chat(chat_id, c):
             except Exception as perf_error:
                 print("racecard performance enrichment skipped:", repr(perf_error))
 
-            # DOM-only fields from participation page are merged by race and horse number.
             try:
                 await pg.goto(SITE_URL, timeout=90000, wait_until="domcontentloaded")
                 await pg.wait_for_timeout(2200)
@@ -1074,29 +1052,26 @@ def format_round_result(round_no, res, detailed=False):
         msg += "ℹ️ سابقه فرم/چابکسوار در این دریافت کامل نبود؛ احتمال‌ها عمدتاً ترکیب ضرایب و مشارکت هستند.\n"
     if not res["market_available"]:
         msg += "ℹ️ ضرایب پیش‌بر کامل دریافت نشد؛ رتبه‌بندی فقط از داده‌های قابل‌دسترس ساخته شده است.\n"
+    
     if detailed:
         msg += "\n📊 <b>رتبه‌بندی اسب‌ها:</b>\n"
         for rank, h in enumerate(res["horses"], 1):
-            market = f"{h['market_prob']:.1f}%" if h["market_prob"] is not None else "ناموجود"
-            odd = f"{h['pishbar_odd']:.2f}" if safe_float(h.get("pishbar_odd")) else "ناموجود"
-            mid_odd = f"{h['miyanbar_odd']:.2f}" if safe_float(h.get("miyanbar_odd")) else "ناموجود"
-            place_odd = f"{h['paybar_odd']:.2f}" if safe_float(h.get("paybar_odd")) else "ناموجود"
-            survey = f"{h['survey_percent']:.1f}%" if safe_float(h.get("survey_percent")) is not None else "ناموجود"
+            model_p = f"{h['model_prob']:.1f}%"
+            odd_win = f"{safe_float(h.get('pishbar_odd')):.2f}" if safe_float(h.get('pishbar_odd')) else "—"
+            odd_place = f"{safe_float(h.get('paybar_odd')):.2f}" if safe_float(h.get('paybar_odd')) else "—"
+            ev_win = f"{h['win_ev']:+.1f}%" if h.get('win_ev') is not None else "—"
+            form = html.escape(str(h.get('perf') or '—'))
+            
             msg += (
-                f"{rank}) شماره {h['num']} - {html.escape(str(h['n']))}"
-                f" | مدل {h['model_prob']:.1f}% | پیش‌بر {odd}"
-                f" | میان‌بر {mid_odd} | پی‌بر {place_odd}"
-                f" | بازار {market} | مشارکت {survey}"
-                f" | احتمال مستقل {h.get('form_prob', 0):.1f}%"
-                f" | ارزش برد {('%.1f%%' % h['win_ev']) if h.get('win_ev') is not None else 'ناموجود'}"
-                f" | ارزش مکان {('%.1f%%' % h['place_ev']) if h.get('place_ev') is not None else 'ناموجود'}"
-                f" | فرم {html.escape(str(h.get('perf') or 'ناموجود'))}"
-                f" | وزن {html.escape(str(h.get('weight') or 'ناموجود'))}"
-                f" | IOR {html.escape(str(h.get('ior') if h.get('ior') is not None else 'ناموجود'))}"
-                f" | روز از آخرین مسابقه {html.escape(str(h.get('days_since_last') if h.get('days_since_last') is not None else 'ناموجود'))}"
-                f" | مربی {html.escape(str(h.get('coach') or 'ناموجود'))}"
-                f" | چابکسوار {html.escape(str(h.get('j') or 'نامشخص'))}\n"
+                f"\n<b>{rank}. شماره {h['num']} - {html.escape(str(h['n']))}</b>\n"
+                f"  🎯 مدل: <code>{model_p}</code> | 📈 ارزش: <code>{ev_win}</code>\n"
+                f"  💰 ضریب برد: <code>{odd_win}</code> | 💰 ضریب مکان: <code>{odd_place}</code>\n"
+                f"  📜 فرم: <code>{form}</code> | ⚖️ وزن: {h.get('weight', '—')}\n"
             )
+            if h.get('ior') is not None or h.get('j') != 'نامشخص':
+                msg += f"  📊 IOR: {h.get('ior', '—')} | 🏇 چابک: {html.escape(str(h.get('j') or '—'))}\n"
+            msg += "  ─────\n"
+            
     return msg + "━━━━━━━━━━━━━━\n"
 
 
@@ -1168,11 +1143,8 @@ async def process_quinellas(chat_id, c, variant_type):
             if variant_type == "q_safe":
                 chosen = candidates[0]
             elif variant_type == "q_value":
-                # The API currently supplies runner win/place odds, not a confirmed
-                # quinella payout. Never label a pair as profitable without that payout.
                 chosen = candidates[0]
             else:
-                # Select a lower-ranked pair only when its estimated chance is nonzero.
                 pool = [x for x in candidates if x["h1"]["model_prob"] < 35 or x["h2"]["model_prob"] < 35]
                 chosen = min(pool, key=lambda x: x["prob"]) if pool else candidates[-1]
             found = True
@@ -1236,7 +1208,6 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
             res = analyze_horses(races[r])
             if mode == "sur_h":
                 ranked = res["horses"]
-                # A surprise must be an actual outsider, not simply the third favourite.
                 candidates = [h for h in ranked[2:] if h["model_prob"] >= 3.0]
                 if not candidates:
                     candidates = ranked[2:]
@@ -1419,7 +1390,6 @@ async def cmd_broadcast(u: Update, c: C):
 
 
 async def cmd_debug(u: Update, c: C):
-    """Collect rendered site sections and fetch/XHR data for diagnostics."""
     if str(u.effective_user.id if u.effective_user else u.effective_chat.id) != MY_ID:
         return await u.message.reply_text("⛔ فقط ادمین.")
     browser = None
@@ -1770,7 +1740,6 @@ async def button_callback(u: Update, c: C):
         )
     elif data in ("sur_h", "sur_d"):
         await process_surprises(chat_id, c, data, c.user_data.get("bet_amount"))
-
 
 
 async def on_error(update, context):
