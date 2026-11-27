@@ -1,5 +1,5 @@
 import os
- re
+import re
 import sys
 import json
 import time
@@ -42,7 +42,7 @@ COOLDOWN = 60
 _last_call = {}
 AR_CACHE = {}
 SITE_WEATHER_CACHE = None
-RUN_SECONDS = int(os.environ.get("RUN_SECONDS", "17400"))
+RUN_SECONDS = int(os.environ.get("RUN_SECONDS", "0"))
 
 RANK_POINTS = {"1": 10, "2": 6, "3": 3, "4": 1, "5": 0.5}
 JOCKEY_TIERS = {
@@ -61,14 +61,29 @@ def clean_text(value):
     return re.sub(r"\s+", " ", value).strip()
 
 
+def normalize_digits(value):
+    """Convert Persian/Arabic digits to ASCII without changing other text."""
+    table = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+    return str(value).translate(table)
+
+
+def normalize_horse_name(value):
+    """Normalize Persian/Arabic horse names for reliable cross-page matching."""
+    value = normalize_digits(clean_text(value)).lower()
+    value = value.replace("ي", "ی").replace("ك", "ک").replace("ة", "ه")
+    value = re.sub(r"[^0-9a-z؀-ۿ]+", "", value)
+    return value
+
+
 def safe_float(value):
     if value is None:
         return None
-    s = str(value).replace(",", ".")
-    m = re.search(r"\d+(?:\.\d+)?", s)
+    s = normalize_digits(value).replace("٫", ".").replace("٬", "")
+    s = s.replace(",", ".")
+    m = re.search(r"-?\d+(?:\.\d+)?", s)
     try:
         return float(m.group()) if m else None
-    except Exception:
+    except (TypeError, ValueError):
         return None
 
 
@@ -82,6 +97,13 @@ def _split_safe(text, max_len=3900):
         return [text]
     chunks, current = [], ""
     for line in text.split("\n"):
+        if len(line) > max_len:
+            if current:
+                chunks.append(current)
+                current = ""
+            for start in range(0, len(line), max_len):
+                chunks.append(line[start:start + max_len])
+            continue
         if len(current) + len(line) + 1 > max_len:
             if current:
                 chunks.append(current)
@@ -247,14 +269,41 @@ def extract_site_weather(body_text):
 
 
 def decayed_form(perf_str, decay=0.85):
+    """Score recent finishing positions; accept Persian digits and common separators."""
     if not perf_str:
         return 0.0
-    total = 0.0
-    for i, item in enumerate(str(perf_str).split("-")):
-        rank = item.strip()
-        if rank.isdigit():
-            total += RANK_POINTS.get(rank, 0) * (decay ** i)
-    return total
+    text = normalize_digits(str(perf_str))
+    ranks = re.findall(r"(?<!\\d)([1-5])(?!\\d)", text)
+    return sum(RANK_POINTS.get(rank, 0) * (decay ** i)
+               for i, rank in enumerate(ranks))
+
+
+def career_form_score(horse):
+    """Use official career podium counts when recent-form text is absent."""
+    starts = safe_float(horse.get("starts"))
+    wins = safe_float(horse.get("p1"))
+    seconds = safe_float(horse.get("p2"))
+    thirds = safe_float(horse.get("p3"))
+    if starts is None or starts <= 0:
+        return 0.0
+    wins = max(0.0, wins or 0.0)
+    seconds = max(0.0, seconds or 0.0)
+    thirds = max(0.0, thirds or 0.0)
+    return min(1.0, (wins + 0.60 * seconds + 0.35 * thirds) / starts)
+
+
+def has_horse_form_data(horse):
+    perf = normalize_digits(str(horse.get("perf") or "")).strip()
+    if decayed_form(perf) > 0:
+        return True
+    starts = safe_float(horse.get("starts"))
+    if starts and starts > 0 and any(
+        safe_float(horse.get(k)) is not None for k in ("p1", "p2", "p3")
+    ):
+        return True
+    if safe_float(horse.get("ior")) is not None:
+        return True
+    return False
 
 
 def jockey_score(name):
@@ -285,7 +334,7 @@ def quinella_prob(probs, i, j):
 
 def place_probability(probs, index, places=3):
     # تقریب Plackett-Luce برای احتمال قرار گرفتن در سه رتبه اول
-    if not probs or index >= len(probs):
+    if not probs or index < 0 or index >= len(probs) or len(probs) < 1:
         return 0.0
     p = probs[index]
     if p <= 0:
@@ -320,10 +369,7 @@ def get_confidence_level(horses):
     top = horses[0]
     second = horses[1] if len(horses) > 1 else top
     gap = top["model_prob"] - second["model_prob"]
-    data_count = sum(
-        1 for h in horses
-        if h.get("perf") and h["perf"] != "ناموجود"
-    )
+    data_count = sum(1 for h in horses if has_horse_form_data(h))
     if data_count == 0:
         return "⚠️ پایین"
     if gap >= 12 and data_count >= max(2, len(horses) // 2):
@@ -552,6 +598,27 @@ def _normalized_inverse_odds(horses, field="pishbar_odd"):
     return [x / total if x > 0 else None for x in valid]
 
 
+def _combined_market_probabilities(horses):
+    """Combine available inverse-odds pools; pishbar has highest priority."""
+    pools = (
+        ("pishbar_odd", 0.60),
+        ("miyanbar_odd", 0.25),
+        ("paybar_odd", 0.15),
+    )
+    normalized = [(field, weight, _normalized_inverse_odds(horses, field))
+                  for field, weight in pools]
+    combined = []
+    for i in range(len(horses)):
+        parts = [(weight, probs[i]) for _, weight, probs in normalized if probs[i] is not None]
+        weight_sum = sum(weight for weight, _ in parts)
+        combined.append(sum(weight * value for weight, value in parts) / weight_sum
+                        if weight_sum else None)
+    total = sum(x for x in combined if x is not None)
+    if total > 0:
+        combined = [x / total if x is not None else None for x in combined]
+    return combined
+
+
 def _normalized_percentages(horses, field="survey_percent"):
     vals = [safe_float(h.get(field)) for h in horses]
     vals = [x if x is not None and x >= 0 else 0.0 for x in vals]
@@ -563,71 +630,84 @@ def _normalized_percentages(horses, field="survey_percent"):
 
 def _has_form_signal(horses):
     for h in horses:
-        perf = str(h.get("perf") or "").strip()
-        if perf and perf != "ناموجود" and re.search(r"(?:^|-)\s*[1-5](?:\s*-|$)", perf):
+        if has_horse_form_data(h):
             return True
-        if clean_text(h.get("j", "")) not in ("", "نامشخص", "ناموجود") and jockey_score(h.get("j", "")) > 0:
+        # Unknown riders are recognized as received data, but get no invented score.
+        if clean_text(h.get("j", "")) not in ("", "نامشخص", "ناموجود"):
             return True
     return False
 
-
 def analyze_horses(horses):
+    horses = [dict(h) for h in (horses or [])]
     if len(horses) < 2:
         raise ValueError("برای تحلیل حداقل دو اسب لازم است.")
 
-    # Remove scratched horses from probability calculation; retain active entries only.
-    horses = [dict(h) for h in horses if not h.get("scratched")]
+    # Remove scratched runners from calculations.
+    horses = [h for h in horses if not h.get("scratched")]
     if len(horses) < 2:
         raise ValueError("کمتر از دو اسب فعال در این دور وجود دارد.")
 
-    forms = [decayed_form(h.get("perf")) for h in horses]
+    recent_forms = [decayed_form(h.get("perf")) for h in horses]
+    career_forms = [career_form_score(h) for h in horses]
+    forms = [
+        recent_forms[i] if recent_forms[i] > 0 else career_forms[i]
+        for i in range(len(horses))
+    ]
     max_form = max(forms) if forms and max(forms) > 0 else 1.0
     raw_scores = []
     for i, h in enumerate(horses):
         form = forms[i] / max_form
-        jockey = jockey_score(h.get("j", "")) / 10.0
-        # Weight alone is not treated as a performance advantage without a race-specific baseline.
-        score = 0.72 * form + 0.18 * jockey + 0.10
-        raw_scores.append(max(0.03, score))
+        jockey_points = jockey_score(h.get("j", ""))
+        jockey = jockey_points / 10.0 if jockey_points else 0.0
+        # Neutral baseline; weight alone is not treated as an advantage.
+        raw_scores.append(max(0.03, 0.72 * form + 0.18 * jockey + 0.10))
 
     model = power_probs(raw_scores, power=1.8)
     model_signal = _has_form_signal(horses)
-    market = _normalized_inverse_odds(horses, "pishbar_odd")
+    # Use all three official pools, not only pishbar. Some rounds publish
+    # miyanbar/paybar earlier or without a complete pishbar pool.
+    market = _combined_market_probabilities(horses)
     survey = _normalized_percentages(horses, "survey_percent")
     has_full_market = all(x is not None for x in market)
+    has_any_market = any(x is not None for x in market)
     has_full_survey = all(x is not None for x in survey)
+    has_any_survey = any(x is not None for x in survey)
 
-    if has_full_market:
-        # Market odds are the strongest observable source. Add survey share as a secondary signal.
-        if has_full_survey and model_signal:
-            final = [0.72 * market[i] + 0.13 * survey[i] + 0.15 * model[i] for i in range(len(horses))]
-        elif has_full_survey:
-            final = [0.85 * market[i] + 0.15 * survey[i] for i in range(len(horses))]
-        elif model_signal:
-            final = [0.82 * market[i] + 0.18 * model[i] for i in range(len(horses))]
-        else:
-            final = market[:]
-    elif has_full_survey:
-        final = [0.70 * survey[i] + 0.30 * model[i] for i in range(len(horses))]
-        # If no form signal exists, the participation poll is the only available ranking source.
-        if not model_signal:
-            final = survey[:]
-    elif model_signal:
-        final = model[:]
-    else:
-        raise ValueError("ضرایب معتبر، نظرسنجی کامل یا سابقه عملکرد قابل استخراج نیست؛ تحلیل احتمالات متوقف شد.")
+    # Do not abort a whole race when only some runners have odds/survey data.
+    # Each runner is scored from the signals actually available for that runner;
+    # missing signals are not fabricated. If there is no usable signal at all,
+    # stop rather than present a random ranking as a prediction.
+    if not has_any_market and not has_any_survey and not model_signal:
+        raise ValueError("برای این دور هیچ ضریب معتبر، مشارکت یا سابقه عملکرد قابل استخراج نیست.")
 
-    total = sum(x for x in final if x is not None) or 1.0
-    final = [(x / total if x is not None else 0.0) for x in final]
+    final_raw = []
+    for i in range(len(horses)):
+        components = []
+        if market[i] is not None:
+            components.append((0.72 if has_full_market else 0.65, market[i]))
+        if survey[i] is not None:
+            components.append((0.13 if has_full_market else 0.15, survey[i]))
+        # Model is always a small neutral fallback; it becomes stronger when
+        # genuine form/jockey data exists and no market/survey data is present.
+        model_weight = 0.15 if (has_any_market or has_any_survey) else 1.0
+        if model_signal and not has_any_market and has_any_survey:
+            model_weight = 0.30
+        elif model_signal and has_any_market and not has_any_survey:
+            model_weight = 0.18 if has_full_market else 0.20
+        elif not model_signal and (has_any_market or has_any_survey):
+            model_weight = 0.10
+        components.append((model_weight, model[i]))
+        weight_total = sum(w for w, _ in components)
+        final_raw.append(sum(w * value for w, value in components) / weight_total if weight_total else model[i])
+
+    total = sum(final_raw) or 1.0
+    final = [x / total for x in final_raw]
 
     for i, h in enumerate(horses):
         h["market_prob"] = market[i] * 100 if market[i] is not None else None
         h["survey_prob"] = survey[i] * 100 if survey[i] is not None else None
         h["model_prob"] = final[i] * 100
-        h["edge"] = (
-            h["model_prob"] - h["market_prob"]
-            if h["market_prob"] is not None else None
-        )
+        h["edge"] = h["model_prob"] - h["market_prob"] if h["market_prob"] is not None else None
         h["place_prob"] = place_probability(final, i, 3) * 100
         h["place_fair_odd"] = round(100 / h["place_prob"], 2) if h["place_prob"] > 0 else None
 
@@ -637,14 +717,17 @@ def analyze_horses(horses):
     for i, j in itertools.combinations(range(len(ranked)), 2):
         qp = quinella_prob(probs, i, j)
         q_candidates.append({
-            "h1": ranked[i], "h2": ranked[j],
-            "prob": qp * 100,
+            "h1": ranked[i], "h2": ranked[j], "prob": qp * 100,
             "fair_odd": round(1 / qp, 2) if qp > 0 else None,
         })
     q_candidates.sort(key=lambda x: x["prob"], reverse=True)
     longshots = [h for h in ranked[2:] if h["model_prob"] >= 5]
     if not longshots:
         longshots = ranked[2:] or ranked[-1:]
+
+    confidence = get_confidence_level(ranked)
+    if (not has_full_market and not has_full_survey) or not model_signal:
+        confidence = "⚠️ پایین"
 
     return {
         "horses": ranked,
@@ -655,9 +738,11 @@ def analyze_horses(horses):
         "su": longshots[0],
         "qs": (f"{longshots[0]['num']}-{longshots[0]['n']} + {longshots[1]['num']}-{longshots[1]['n']}"
                if len(longshots) > 1 else "N/A"),
-        "conf": get_confidence_level(ranked),
+        "conf": confidence,
         "market_available": has_full_market,
+        "market_partial": has_any_market and not has_full_market,
         "survey_available": has_full_survey,
+        "survey_partial": has_any_survey and not has_full_survey,
         "model_signal": model_signal,
     }
 
@@ -822,50 +907,179 @@ async def api_get_json(pg, path):
 
 
 def _api_data(payload):
-    return payload.get("data", payload) if isinstance(payload, dict) else {}
+    """Unwrap common API envelopes while preserving list responses."""
+    value = payload
+    for _ in range(5):
+        if isinstance(value, dict):
+            next_value = None
+            for key in ("data", "result", "payload"):
+                candidate = value.get(key)
+                if isinstance(candidate, (dict, list)):
+                    next_value = candidate
+                    break
+            if next_value is None:
+                return value
+            value = next_value
+        else:
+            return value
+    return value
+
+
+def _norm_api_key(value):
+    value = normalize_digits(str(value or "")).lower()
+    value = value.replace("ي", "ی").replace("ك", "ک")
+    return re.sub(r"[^a-z0-9؀-ۿ]", "", value)
+
+
+def _id_tokens(*values):
+    tokens = set()
+    for value in values:
+        if value is None or isinstance(value, (dict, list, tuple)):
+            continue
+        raw = clean_text(value)
+        if not raw:
+            continue
+        tokens.add(raw)
+        tokens.add(_norm_api_key(raw))
+        number = safe_int(raw)
+        if number is not None:
+            tokens.add(number)
+            tokens.add(str(number))
+    return {x for x in tokens if x not in (None, "")}
+
+
+def _market_name(value):
+    key = _norm_api_key(value)
+    aliases = {
+        "pishbar": ("pishbar", "prebar", "win", "winner", "first", "برنده", "پیشبر"),
+        "miyanbar": ("miyanbar", "place", "second", "دوم", "میانبر"),
+        "paybar": ("paybar", "show", "third", "سوم", "پیبر"),
+    }
+    for market, words in aliases.items():
+        if any(_norm_api_key(word) in key for word in words):
+            return market
+    return None
 
 
 def _odds_by_runner(odds_payload):
+    """Parse market odds from nested-market, row-list, or runner-keyed API JSON."""
     data = _api_data(odds_payload)
-    odds = data.get("odds", data)
     result = {}
-    if not isinstance(odds, dict):
-        return result
-    for market_name in ("pishbar", "miyanbar", "paybar"):
-        market = odds.get(market_name) or {}
-        if not isinstance(market, dict):
-            continue
-        for key, item in market.items():
-            if not isinstance(item, dict):
-                continue
-            runner = safe_int(item.get("runnerId", key))
-            odd = safe_float(item.get("odd"))
-            if runner is None or odd is None or odd <= 1:
-                continue
-            result.setdefault(runner, {})[market_name] = odd
+    id_fields = (
+        "runnerId", "runner_id", "horseId", "horse_id", "horseNumber",
+        "horse_number", "horse_num", "number", "num", "external_id",
+        "externalId", "id",
+    )
+    odd_fields = ("odd", "odds", "value", "price", "coefficient", "rate")
+
+    def add(ids, market, odd):
+        value = safe_float(odd)
+        if not market or value is None or value <= 1:
+            return
+        for token in _id_tokens(*ids):
+            result.setdefault(token, {})[market] = value
+
+    def walk(node, path=(), parent_key=None):
+        if isinstance(node, list):
+            for child in node:
+                walk(child, path, None)
+            return
+        if not isinstance(node, dict):
+            market = next((_market_name(x) for x in reversed(path) if _market_name(x)), None)
+            if market and parent_key is not None:
+                add((parent_key,), market, node)
+            return
+
+        ids = [node.get(k) for k in id_fields if node.get(k) is not None]
+        market = None
+        for field in ("pool", "pool_name", "market", "market_name", "type", "type_name", "title"):
+            market = _market_name(node.get(field))
+            if market:
+                break
+        if not market:
+            market = next((_market_name(x) for x in reversed(path) if _market_name(x)), None)
+        odd = next((node.get(k) for k in odd_fields if node.get(k) is not None), None)
+        if market and odd is not None and (ids or parent_key is not None):
+            add(ids + ([parent_key] if parent_key is not None else []), market, odd)
+
+        # Shape: {runner_number: {pishbar: 2.2, ...}}
+        if parent_key is not None:
+            for key, value in node.items():
+                child_market = _market_name(key)
+                if child_market and not isinstance(value, (dict, list)):
+                    add(ids + [parent_key], child_market, value)
+
+        for key, value in node.items():
+            child_market = _market_name(key)
+            if child_market and isinstance(value, dict):
+                # Shape: {pishbar: {runner_id: odd}} or rows under a pool.
+                for runner_key, runner_value in value.items():
+                    if isinstance(runner_value, dict):
+                        row_ids = [runner_value.get(k) for k in id_fields if runner_value.get(k) is not None]
+                        row_odd = next((runner_value.get(k) for k in odd_fields if runner_value.get(k) is not None), None)
+                        add(row_ids + [runner_key], child_market, row_odd)
+                    else:
+                        add((runner_key,), child_market, runner_value)
+            elif isinstance(value, (dict, list)):
+                walk(value, path + (str(key),), str(key))
+            elif child_market:
+                add(ids + [parent_key, key], child_market, value)
+
+    walk(data)
     return result
 
 
 def _survey_by_runner(survey_payload):
+    """Read survey values from common statistics/participants API layouts."""
     data = _api_data(survey_payload)
     result = {}
-    for item in data.get("statistics", []) if isinstance(data, dict) else []:
-        if not isinstance(item, dict):
-            continue
-        num = safe_int(item.get("horse_num"))
-        percent = safe_float(item.get("percent"))
-        if num is not None and percent is not None:
-            result[num] = percent
+    id_fields = (
+        "horse_num", "horse_number", "horseNumber", "number", "num",
+        "runner_number", "runnerNumber", "runner_id", "runnerId",
+        "horse_id", "horseId", "external_id", "id",
+    )
+    value_fields = ("percent", "percentage", "survey_percent", "share", "value", "rate")
+
+    def walk(node, parent_key=None):
+        if isinstance(node, list):
+            for row in node:
+                walk(row)
+            return
+        if not isinstance(node, dict):
+            if parent_key is not None:
+                value = safe_float(node)
+                if value is not None and 0 <= value <= 100:
+                    for token in _id_tokens(parent_key):
+                        result[token] = value
+            return
+        ids = [node.get(k) for k in id_fields if node.get(k) is not None]
+        raw_value = next((node.get(k) for k in value_fields if node.get(k) is not None), None)
+        value = safe_float(raw_value)
+        if value is not None and 0 <= value <= 100:
+            for token in _id_tokens(*(ids + ([parent_key] if parent_key is not None else []))):
+                result[token] = value
+        for key, child in node.items():
+            if isinstance(child, (dict, list)):
+                walk(child, key)
+            elif parent_key is None and key not in id_fields:
+                numeric = safe_float(child)
+                if numeric is not None and 0 <= numeric <= 100:
+                    for token in _id_tokens(key):
+                        result[token] = numeric
+
+    walk(data)
     return result
 
 
 async def fetch_api_races(pg):
     """Fetch current racecard, actual pool odds and survey percentages from API."""
     days_payload = await api_get_json(pg, "/races/days?limit=50&offset=0&has_races=true")
-    days = _api_data(days_payload).get("race_days", [])
+    day_data = _api_data(days_payload)
+    days = (day_data.get("race_days") or day_data.get("days") or day_data.get("items") or []) if isinstance(day_data, dict) else []
     if not days:
         days_payload = await api_get_json(pg, "/races/days?featured=true&limit=50")
-        days = _api_data(days_payload).get("race_days", [])
+        day_data = _api_data(days_payload)
+        days = (day_data.get("race_days") or day_data.get("days") or day_data.get("items") or []) if isinstance(day_data, dict) else []
     if not days:
         raise RuntimeError("روز مسابقه از API دریافت نشد")
 
@@ -881,48 +1095,82 @@ async def fetch_api_races(pg):
 
     race_payload = await api_get_json(pg, f"/races/racecard?day_id={day_id}")
     race_data = _api_data(race_payload)
-    api_races = race_data.get("races", [])
-    if not api_races:
-        raise RuntimeError("جدول مسابقات در API خالی است")
+    api_races = (race_data.get("races") or race_data.get("items") or
+                 race_data.get("race_list") or []) if isinstance(race_data, dict) else []
+    if isinstance(api_races, dict):
+        api_races = list(api_races.values())
+    if not isinstance(api_races, list) or not api_races:
+        raise RuntimeError("جدول مسابقات در API خالی یا نامعتبر است")
 
     all_data = {}
     sem = asyncio.Semaphore(4)
 
     async def enrich(race):
         rid = safe_int(race.get("id"))
-        rno = safe_int(race.get("number"))
-        if rid is None or rno is None:
+        rno = safe_int(race.get("number", race.get("race_number", race.get("raceNo"))))
+        if rid is None or rno is None or rno < 1:
             return rno, []
         async with sem:
             odds_task = api_get_json(pg, f"/pools/race/{rid}/odds")
             survey_task = api_get_json(pg, f"/races/{rid}/survey-statistics")
             odds_payload, survey_payload = await asyncio.gather(odds_task, survey_task, return_exceptions=True)
+        if isinstance(odds_payload, Exception):
+            print(f"R{rno} odds API failed:", repr(odds_payload))
+        if isinstance(survey_payload, Exception):
+            print(f"R{rno} survey API failed:", repr(survey_payload))
         odds_map = _odds_by_runner(odds_payload) if not isinstance(odds_payload, Exception) else {}
         survey_map = _survey_by_runner(survey_payload) if not isinstance(survey_payload, Exception) else {}
         entries = []
-        for runner in race.get("race_horses", []) or []:
-            num = safe_int(runner.get("number"))
+        runners = (race.get("race_horses") or race.get("horses") or
+                   race.get("runners") or race.get("participants") or [])
+        if isinstance(runners, dict):
+            runners = list(runners.values())
+        for runner in runners:
+            if not isinstance(runner, dict):
+                continue
+            num = safe_int(runner.get("number", runner.get("horse_number", runner.get("horse_num"))))
             if num is None:
                 continue
-            horse_odds = odds_map.get(num, {})
+            runner_id = runner.get("runner_id", runner.get("runnerId", runner.get("id")))
+            horse_id = runner.get("horse_id", runner.get("horseId"))
+            external_id = runner.get("external_id", runner.get("externalId"))
+            identifiers = _id_tokens(runner_id, horse_id, external_id, num)
+            horse_odds = {}
+            for token in identifiers:
+                horse_odds.update(odds_map.get(token, {}))
+            survey_percent = next((survey_map[token] for token in identifiers if token in survey_map), None)
+            horse_name = runner.get("horse_name") or runner.get("name")
+            if not horse_name and isinstance(runner.get("horse"), dict):
+                horse_name = runner["horse"].get("name")
             entries.append({
                 "num": num,
-                "n": clean_text(runner.get("horse_name") or f"اسب {num}"),
+                "n": clean_text(horse_name or f"اسب {num}"),
                 "race_id": rid,
-                "horse_id": safe_int(runner.get("id")),
-                "external_id": clean_text(runner.get("external_id") or ""),
-                "scratched": bool(runner.get("scratched")),
+                "horse_id": safe_int(horse_id if horse_id is not None else runner_id),
+                "runner_id": safe_int(runner_id),
+                "external_id": clean_text(external_id or ""),
+                "scratched": bool(runner.get("scratched") or runner.get("is_scratched")),
                 "not_finished": bool(runner.get("not_finished")),
                 "pishbar_odd": horse_odds.get("pishbar"),
                 "miyanbar_odd": horse_odds.get("miyanbar"),
                 "paybar_odd": horse_odds.get("paybar"),
-                "survey_percent": survey_map.get(num),
-                "weight": None, "ior": None, "perf": "ناموجود", "j": "نامشخص",
+                "survey_percent": survey_percent,
+                "weight": safe_float(runner.get("weight")),
+                "ior": safe_float(runner.get("ior")),
+                "perf": runner.get("perf") or runner.get("form") or "ناموجود",
+                "j": runner.get("jockey_name") or runner.get("jockey") or "نامشخص",
             })
+        odds_runner_count = sum(1 for h in entries if any(h.get(k) is not None for k in ("pishbar_odd", "miyanbar_odd", "paybar_odd")))
+        survey_runner_count = sum(1 for h in entries if h.get("survey_percent") is not None)
+        print(f"R{rno}: runners={len(entries)}, odds_matched={odds_runner_count}, survey_matched={survey_runner_count}")
         return rno, entries
 
-    results = await asyncio.gather(*(enrich(r) for r in api_races))
-    for rno, entries in results:
+    results = await asyncio.gather(*(enrich(r) for r in api_races), return_exceptions=True)
+    for item in results:
+        if isinstance(item, Exception):
+            print("race enrichment failed:", repr(item))
+            continue
+        rno, entries = item
         if rno is not None and entries:
             all_data[rno] = entries
     return all_data
@@ -959,10 +1207,14 @@ async def fetch_races_for_chat(chat_id, c):
             try:
                 performance_rows = await fetch_racecard_performance(pg)
                 perf_by_id = {clean_text(x.get("horse_id")): x for x in performance_rows if x.get("horse_id")}
-                perf_by_name = {clean_text(x.get("name")): x for x in performance_rows if x.get("name")}
+                perf_by_name = {normalize_horse_name(x.get("name")): x for x in performance_rows if x.get("name")}
+                perf_by_id = {clean_text(x.get("horse_id")): x for x in performance_rows if x.get("horse_id")}
+                perf_by_name = {normalize_horse_name(x.get("name")): x for x in performance_rows if x.get("name")}
                 for horses in races.values():
                     for horse in horses:
-                        perf = perf_by_id.get(clean_text(horse.get("external_id"))) or perf_by_name.get(clean_text(horse.get("n")))
+                        perf = (perf_by_id.get(clean_text(horse.get("external_id")))
+                                or perf_by_id.get(clean_text(horse.get("horse_id")))
+                                or perf_by_name.get(normalize_horse_name(horse.get("n"))))
                         if not perf:
                             continue
                         for dest, srcfield in (("weight","weight"),("ior","ior"),("perf","perf"),
@@ -986,7 +1238,8 @@ async def fetch_races_for_chat(chat_id, c):
                         extra = dom_by_num.get(safe_int(horse.get("num")), {})
                         for field in ("weight", "ior", "perf", "j"):
                             value = extra.get(field)
-                            if value not in (None, "", "ناموجود", "نامشخص"):
+                            current = horse.get(field)
+                            if value not in (None, "", "ناموجود", "نامشخص") and current in (None, "", "ناموجود", "نامشخص"):
                                 horse[field] = value
             except Exception as dom_error:
                 print("DOM enrichment skipped:", repr(dom_error))
@@ -1024,7 +1277,12 @@ def format_round_result(round_no, res, detailed=False):
     if not res.get("model_signal"):
         msg += "ℹ️ سابقه فرم/چابکسوار در این دریافت کامل نبود؛ احتمال‌ها عمدتاً ترکیب ضرایب و مشارکت هستند.\n"
     if not res["market_available"]:
-        msg += "ℹ️ ضرایب پیش‌بر کامل دریافت نشد؛ رتبه‌بندی فقط از داده‌های قابل‌دسترس ساخته شده است.\n"
+        if res.get("market_partial"):
+            msg += "ℹ️ ضرایب بازار فقط برای بخشی از اسب‌ها دریافت شد؛ رتبه‌بندی با داده ناقص انجام شده و اطمینان پایین است.\n"
+        else:
+            msg += "ℹ️ ضرایب بازار برای همه اسب‌ها کامل نبود؛ رتبه‌بندی فقط از داده‌های قابل‌دسترس ساخته شده است.\n"
+    if res.get("survey_partial"):
+        msg += "ℹ️ آمار مشارکت فقط برای بخشی از اسب‌ها موجود بود.\n"
     if detailed:
         msg += "\n📊 <b>رتبه‌بندی اسب‌ها:</b>\n"
         for rank, h in enumerate(res["horses"], 1):
@@ -1107,7 +1365,11 @@ async def process_quinellas(chat_id, c, variant_type):
         return
     msg = f"<b>{titles[variant_type]}</b>\n━━━━━━━━━━━━━━\n"
     for r in sorted(races):
-        res = analyze_horses([dict(x) for x in races[r]])
+        try:
+            res = analyze_horses([dict(x) for x in races[r]])
+        except Exception as exc:
+            msg += f"\n🏁 دور R{r}: ⚠️ تحلیل نشد ({html.escape(clean_text(exc))})\n━━━━━━━━━━━━━━\n"
+            continue
         candidates = res["q_candidates"]
         if not candidates:
             continue
@@ -1162,7 +1424,11 @@ async def process_multileg(chat_id, c, leg_type, bet_amount=None):
     picks = []
     details = []
     for r in selected:
-        res = analyze_horses([dict(x) for x in races[r]])
+        try:
+            res = analyze_horses([dict(x) for x in races[r]])
+        except Exception as exc:
+            details.append(f"R{r}: تحلیل نشد ({html.escape(clean_text(exc))})")
+            continue
         picks.append(f"R{r}: {res['w']['num']}-{html.escape(str(res['w']['n']))}")
         details.append(
             f"R{r}: {res['w']['num']}-{html.escape(str(res['w']['n']))} "
@@ -1187,7 +1453,11 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
     title = "🎲 اسب شگفتی" if mode == "sur_h" else "🔥 دوقلوی شگفتی"
     msg = f"<b>{title}</b>\n━━━━━━━━━━━━━━\n"
     for r in sorted(races):
-        res = analyze_horses([dict(x) for x in races[r]])
+        try:
+            res = analyze_horses([dict(x) for x in races[r]])
+        except Exception as exc:
+            msg += f"\n🏁 دور R{r}: ⚠️ تحلیل نشد ({html.escape(clean_text(exc))})\n"
+            continue
         if mode == "sur_h":
             h = res["su"]
             msg += (
@@ -1212,7 +1482,11 @@ async def process_value_bets(chat_id, c, bet_amount=None):
     msg = "💎 <b>شکار ارزش</b>\n━━━━━━━━━━━━━━\n"
     found = False
     for r in sorted(races):
-        res = analyze_horses([dict(x) for x in races[r]])
+        try:
+            res = analyze_horses([dict(x) for x in races[r]])
+        except Exception as exc:
+            msg += f"\n🏁 دور R{r}: ⚠️ تحلیل نشد ({html.escape(clean_text(exc))})\n"
+            continue
         # Value betting needs actual offered odds. Do not fabricate a value edge.
         if not res["market_available"]:
             continue
@@ -1696,7 +1970,12 @@ async def main():
 
     expiry_task = asyncio.create_task(check_expirations(app.bot))
     try:
-        await asyncio.sleep(RUN_SECONDS)
+        # Keep polling indefinitely. Set RUN_SECONDS to a positive value only for
+        # deployments that intentionally require a timed process restart.
+        if RUN_SECONDS > 0:
+            await asyncio.sleep(RUN_SECONDS)
+        else:
+            await asyncio.Event().wait()
     finally:
         expiry_task.cancel()
         try:
