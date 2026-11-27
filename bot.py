@@ -16,14 +16,10 @@ G = os.environ.get("GH_PAT")
 R = os.environ.get("GITHUB_REPOSITORY")
 MY_ID = "184149177"
 
-# ============================================================
-# ⚠️ تنظیمات اشتراک ⚠️
-# ============================================================
 CARD_NUMBER = "6219-8618-0229-0089"
 CARD_HOLDER = "مرتضی عزیزی"
 SUB_PRICE = "250,000"                 
 REF_REWARD_DAYS = 3                   
-# ============================================================
 
 _last_call = {}
 COOLDOWN = 60
@@ -76,8 +72,6 @@ async def is_premium(chat_id):
         except: pass
     return False
 
-async def is_authorized(u: Update, c: C) -> bool: return True 
-
 async def get_weather():
     try:
         url = "https://api.open-meteo.com/v1/forecast?latitude=37.25&longitude=55.16&current_weather=true"
@@ -86,15 +80,6 @@ async def get_weather():
             data = res.json()
             return f"🌡 دما: {data['current_weather']['temperature']}°C | 💨 باد: {data['current_weather']['windspeed']} km/h"
     except: return "⚠️ اطلاعات هوا در دسترس نیست."
-
-JOCKEY_TIERS = {'S': ['رحمانی', 'قهرمانی', 'نوروزی'], 'A': ['وحدانی', 'مرادی', 'صوفیان', 'خواجوی'],
-                'B': ['آقاجانی', 'حیدری', 'نصیری', 'مسعودی'], 'C': ['احمدی', 'رضایی']}
-JOCKEY_RATINGS = {'S': 0.95, 'A': 0.75, 'B': 0.55, 'C': 0.40, 'D': 0.28}
-
-def jockey_rating(name):
-    for tier, names in JOCKEY_TIERS.items():
-        if any(n in name for n in names): return JOCKEY_RATINGS[tier]
-    return JOCKEY_RATINGS['D']
 
 RANK_POINTS = {'1': 10, '2': 6, '3': 3, '4': 1, '5': 0.5}
 def decayed_form(perf_str, decay=0.85):
@@ -211,8 +196,7 @@ async def cmd_admin_panel(chat_id, c):
                 exp_date = datetime.strptime(exp_str, "%Y-%m-%d %H:%M:%S")
                 days_left = (exp_date - now).days
                 user_status = f"({days_left} روز مانده)" if days_left >= 0 else "(منقضی شده)"
-            except: 
-                user_status = "(نامشخص)"
+            except: user_status = "(نامشخص)"
             
             keyboard.append([InlineKeyboardButton(f"👤 {display_name} {user_status}", callback_data='ignore')])
             keyboard.append([
@@ -238,19 +222,14 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
             f.write(html)
         with open(fname, "rb") as f:
             await c.bot.send_document(
-                chat_id,
-                document=f,
-                filename=fname,
-                caption=(f"🔍 <b>دیباگ HTML دور {r_num}</b>\n"
-                         f"📏 حجم: {len(html):,} کاراکتر\n"
-                         f"👇 در فایل سرچ کنید: <code>سانتال</code> یا <code>58kg</code>"),
-                parse_mode='HTML'
+                chat_id, document=f, filename=fname,
+                caption=f"🔍 <b>دیباگ HTML دور {r_num}</b>\n📏 حجم: {len(html):,} کاراکتر", parse_mode='HTML'
             )
     except Exception as e:
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# 🆕 Core Analysis (TEXT-BASED PARSING - NO TABLE TAG)
+# 🆕 PARSER: استخراج داده‌ها با استفاده از هوش مصنوعی متنی
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -260,83 +239,63 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     horses = {}
     try:
         await p.wait_for_timeout(3000)
-        
-        # 1. پیدا کردن تمام کارت‌های اسب (divهایی که شامل شماره و وزن هستند)
-        # این روش به جای تگ table، به دنبال ساختارهای گرافیکی می‌گردد
-        horse_cards = await p.evaluate("""
+
+        # 1. پیدا کردن جدول‌ها با متد جدید (استخراج تمام ردیف‌های شبیه به اسب)
+        table_texts = await p.evaluate("""
             () => {
-                // پیدا کردن تمام divهایی که شبیه به یک ردیف اسب هستند
-                let elements = Array.from(document.querySelectorAll('div, tr, li'));
-                let cards = elements.filter(el => {
-                    let txt = el.innerText || '';
-                    // الگوی تقریبی: شامل kg و خط تیره (برای عملکرد) یا کلمه اسب
-                    return (txt.includes('kg') || txt.includes('اسب')) && 
-                           (txt.match(/\\d+-\\d+/) || txt.length < 500); // جلوگیری از انتخاب کل صفحه
-                });
+                // تمام عناصری که ممکنه ردیف جدول باشن رو پیدا کن
+                let rows = Array.from(document.querySelectorAll('tr, .v-data-table__tr, div'));
                 
-                // حذف عناصر تکراری (وقتی والد و فرزند هر دو انتخاب می‌شوند)
-                let uniqueCards = [];
-                for (let card of cards) {
-                    if (!uniqueCards.some(c => c.contains(card) && c !== card)) {
-                        uniqueCards.push(card);
-                    }
-                }
-                
-                return uniqueCards.map(el => {
-                    // استخراج متن با حفظ ساختار خطوط
-                    let lines = Array.from(el.childNodes)
-                        .filter(n => n.nodeType === 3 || (n.nodeType === 1 && !['STYLE','SCRIPT','SVG'].includes(n.tagName)))
-                        .map(n => (n.innerText || n.textContent || '').trim())
-                        .filter(t => t.length > 0);
+                // فیلتر کردن عناصری که شبیه به یک ردیف اسب هستن (حداقل ۳ تا از ویژگی‌ها رو دارن)
+                let horseRows = rows.filter(r => {
+                    let txt = (r.innerText || '').trim();
+                    if (txt.length < 10 || txt.length > 500) return false;
                     
-                    // اگر خطوط خیلی کم بود، از innerText استفاده کن
-                    if (lines.length < 3) {
-                        lines = (el.innerText || '').split('\\n').map(l => l.trim()).filter(l => l.length > 0);
-                    }
-                    return lines;
-                }).filter(lines => lines.length >= 4); // حداقل ۴ خط: شماره، نام، وزن، عملکرد
+                    let hasNum = /^\\d{1,2}\\b/.test(txt); // با شماره شروع میشه
+                    let hasKg = txt.includes('kg');
+                    let hasForm = /\\d+-\\d+/.test(txt);
+                    
+                    return (hasNum && hasKg) || (hasNum && hasForm) || (hasKg && hasForm);
+                });
+
+                return horseRows.map(r => {
+                    // استخراج متن هر ردیف (به صورت خط به خط)
+                    return r.innerText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+                });
             }
         """)
 
-        if not horse_cards:
+        if not table_texts:
             raise ValueError(f"هیچ ساختار اسبی در صفحه پیدا نشد.")
 
-        # 2. پردازش کارت‌ها و تبدیل به دیکشنری اسب‌ها
-        for lines in horse_cards:
+        # 2. پردازش خطوط استخراج شده و تبدیل به اطلاعات اسب
+        for lines in table_texts:
             num = None; name = None; weight = None; ior = None; perf_str = "0"; jockey = "نامشخص"
             
-            for i, line in enumerate(lines):
-                # شماره اسب: اولین عدد تک‌رقمی یا دورقمی که در ابتدای خطوط است
-                if not num and re.fullmatch(r'\d{1,2}', line):
+            # به دنبال شماره اسب در خط اول بگرد
+            for line in lines:
+                if re.fullmatch(r'\d{1,2}', line) and not num:
                     num = int(line)
-                # نام اسب: متنی که شامل حروف است و طولش بیشتر از ۲ است
-                elif not name and re.search(r'[آ-یa-zA-Z]{2,}', line) and 'اسب' not in line:
+                elif re.search(r'[آ-یa-zA-Z]{3,}', line) and not name and 'اسب' not in line:
                     name = line
-                # وزن: شامل kg
                 elif 'kg' in line.lower() and not weight:
                     weight = float(re.sub(r'[^\d.]', '', line.lower()))
-                # IOR: عدد سه رقمی (بین ۱۰ تا ۹۹۹)
                 elif re.fullmatch(r'\d{2,3}', line) and not ior:
                     ior = int(line)
-                # عملکرد: شامل خط تیره (مثل 1-2-3)
                 elif re.search(r'\d+-\d+', line) and perf_str == "0":
                     perf_str = re.sub(r'[^\d\-]', '', line)
-                # چابکسوار: در انتهای لیست معمولا اسم می‌آید
-                elif re.search(r'[آ-ی]{3,}', line) and jockey == "نامشخص":
+                elif re.search(r'[آ-ی]{3,}', line) and jockey == "نامشخص" and not name:
                     jockey = line
 
             if num and name and num not in horses:
-                # اگر IOR پیدا نشد، یک مقدار پیش‌فرض بر اساس وزن در نظر بگیر
-                if not ior:
-                    ior = int(100 - (weight if weight else 55)) + 10
+                if not ior: ior = max(10, int(120 - (weight if weight else 55)))
                 horses[num] = {
-                    "n": name, "num": num, "ior": max(10, ior), "j": jockey,
+                    "n": name, "num": num, "ior": ior, "j": jockey,
                     "perf": perf_str if perf_str else "0", "w_odd": 50.0, "weight": weight
                 }
 
         if len(horses) < 2:
-            # اگر تعداد اسب‌های پیدا شده خیلی کم بود، خطا بده
-            raise ValueError(f"تعداد اسب‌های معتبر یافت شده ({len(horses)}) کمتر از حد نیاز است.")
+            raise ValueError(f"تعداد اسب‌های معتبر ({len(horses)}) کمتر از حد نیاز است.")
 
     except Exception as e:
         print(f"Error in ar: {e}")
@@ -344,7 +303,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
         await c.bot.send_message(chat_id, f"🚨 <b>خطا در پارس دور {r_num}:</b>\n<code>{str(e)}</code>", parse_mode='HTML')
         return "ERROR"
 
-    # --- شروع محاسبات آماری ---
+    # --- محاسبات آماری ---
     horse_list = list(horses.values())
     n = len(horse_list)
     
@@ -844,8 +803,7 @@ async def cmd_debug(u: Update, c: C):
         return await u.message.reply_text("⛔ فقط ادمین.")
     try:
         r_num = int(c.args[0]) if c.args else 1
-    except:
-        r_num = 1
+    except: r_num = 1
     await u.message.reply_text(f"⏳ در حال گرفتن HTML دور {r_num}...")
     browser = None
     try:
@@ -888,7 +846,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.5 (پارس هوشمند متنی - بدون وابستگی به تگ Table)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.6 (استخراج هوشمند متنی)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
