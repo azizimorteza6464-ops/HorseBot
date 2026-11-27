@@ -25,17 +25,11 @@ SUB_PRICE = "250,000"
 REF_REWARD_DAYS = 3                   
 # ============================================================
 
-# ============================================================
-# Anti-Spam & Cache
-# ============================================================
 _last_call = {}
 COOLDOWN = 60
 AR_CACHE = {}
 CACHE_TTL = 0 
 
-# ============================================================
-# GitHub Variables & Auth
-# ============================================================
 async def get_github_var(var_name, default_val=""):
     if not R or not G: return default_val
     try:
@@ -84,9 +78,6 @@ async def is_premium(chat_id):
 
 async def is_authorized(u: Update, c: C) -> bool: return True 
 
-# ============================================================
-# Weather & Math Helpers
-# ============================================================
 async def get_weather():
     try:
         url = "https://api.open-meteo.com/v1/forecast?latitude=37.25&longitude=55.16&current_weather=true"
@@ -118,11 +109,6 @@ def power_probs(scores, power=1.8):
     total = sum(powered) or 1
     return [p / total for p in powered]
 
-def normalize_market(odds_list):
-    implied = [1.0 / o if o > 0 else 0 for o in odds_list]
-    total = sum(implied) or 1
-    return [i / total for i in implied]
-
 def place_probability(probs, i, num_places=3):
     n = len(probs); p_i = probs[i]
     if p_i <= 0: return 0
@@ -140,19 +126,6 @@ def quinella_prob(probs, i, j):
     p_i, p_j = probs[i], probs[j]
     if p_i + p_j >= 1 or p_i <= 0 or p_j <= 0: return 0
     return p_i * p_j / (1 - p_i) + p_j * p_i / (1 - p_j)
-
-def calculate_kelly(bankroll, model_prob, decimal_odds, fraction=0.25, min_bet=1000, max_pct=0.05, confidence=0.55):
-    if decimal_odds <= 1 or bankroll <= 0: return 0
-    market_prob = 100 / decimal_odds
-    p_true = model_prob * confidence + market_prob * (1 - confidence)
-    b = decimal_odds - 1; p = p_true / 100; q = 1 - p
-    if p <= 0 or p >= 1: return 0
-    f = (b * p - q) / b
-    if f <= 0: return 0
-    raw = min(bankroll * f * fraction, bankroll * max_pct)
-    return int(raw // 1000) * 1000 if raw >= min_bet else 0
-
-FRACTIONS = {'win': 0.25, 'place': 0.20, 'quinella': 0.15, 'exacta': 0.10, 'trifecta': 0.05, 'parlay': 0.08}
 
 def get_confidence_level(res_dict):
     w, p = res_dict['w'], res_dict['p']
@@ -277,7 +250,7 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# 🆕 Core Analysis (FIXED - Flexible Parsing)
+# 🆕 Core Analysis (TEXT-BASED PARSING - NO TABLE TAG)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -287,117 +260,97 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     horses = {}
     try:
         await p.wait_for_timeout(3000)
-
-        # استخراج تمام جدول‌هایی که مربوط به اسب‌ها و وزن هستند (با تشخیص هوشمندانه‌تر)
-        tables_data = await p.evaluate("""
+        
+        # 1. پیدا کردن تمام کارت‌های اسب (divهایی که شامل شماره و وزن هستند)
+        # این روش به جای تگ table، به دنبال ساختارهای گرافیکی می‌گردد
+        horse_cards = await p.evaluate("""
             () => {
-                let tables = Array.from(document.querySelectorAll('table, .v-data-table, [role="grid"]')).filter(t => {
-                    let txt = t.innerText || '';
-                    return txt.includes('اسب') || txt.includes('وزن') || txt.includes('عملکرد');
+                // پیدا کردن تمام divهایی که شبیه به یک ردیف اسب هستند
+                let elements = Array.from(document.querySelectorAll('div, tr, li'));
+                let cards = elements.filter(el => {
+                    let txt = el.innerText || '';
+                    // الگوی تقریبی: شامل kg و خط تیره (برای عملکرد) یا کلمه اسب
+                    return (txt.includes('kg') || txt.includes('اسب')) && 
+                           (txt.match(/\\d+-\\d+/) || txt.length < 500); // جلوگیری از انتخاب کل صفحه
                 });
-                let allData = [];
-                for (let table of tables) {
-                    let rows = table.querySelectorAll('tr, .v-data-table__tr');
-                    let tableData = [];
-                    for (let r of rows) {
-                        let cols = r.querySelectorAll('td, .v-data-table__td');
-                        if (cols.length >= 3) { // حداقل 3 ستون برای شماره، نام، و بقیه
-                            let rowData = Array.from(cols).map(c => c.innerText.trim());
-                            tableData.push(rowData);
-                        }
+                
+                // حذف عناصر تکراری (وقتی والد و فرزند هر دو انتخاب می‌شوند)
+                let uniqueCards = [];
+                for (let card of cards) {
+                    if (!uniqueCards.some(c => c.contains(card) && c !== card)) {
+                        uniqueCards.push(card);
                     }
-                    if (tableData.length > 1) allData.push(tableData);
                 }
-                return allData;
+                
+                return uniqueCards.map(el => {
+                    // استخراج متن با حفظ ساختار خطوط
+                    let lines = Array.from(el.childNodes)
+                        .filter(n => n.nodeType === 3 || (n.nodeType === 1 && !['STYLE','SCRIPT','SVG'].includes(n.tagName)))
+                        .map(n => (n.innerText || n.textContent || '').trim())
+                        .filter(t => t.length > 0);
+                    
+                    // اگر خطوط خیلی کم بود، از innerText استفاده کن
+                    if (lines.length < 3) {
+                        lines = (el.innerText || '').split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+                    }
+                    return lines;
+                }).filter(lines => lines.length >= 4); // حداقل ۴ خط: شماره، نام، وزن، عملکرد
             }
         """)
 
-        if not tables_data:
-            raise ValueError(f"هیچ جدول اسبی در صفحه پیدا نشد.")
+        if not horse_cards:
+            raise ValueError(f"هیچ ساختار اسبی در صفحه پیدا نشد.")
 
-        if len(tables_data) < r_num:
-            raise ValueError(f"جدول دور {r_num} پیدا نشد. (تعداد جداول یافت شده در صفحه: {len(tables_data)})")
+        # 2. پردازش کارت‌ها و تبدیل به دیکشنری اسب‌ها
+        for lines in horse_cards:
+            num = None; name = None; weight = None; ior = None; perf_str = "0"; jockey = "نامشخص"
+            
+            for i, line in enumerate(lines):
+                # شماره اسب: اولین عدد تک‌رقمی یا دورقمی که در ابتدای خطوط است
+                if not num and re.fullmatch(r'\d{1,2}', line):
+                    num = int(line)
+                # نام اسب: متنی که شامل حروف است و طولش بیشتر از ۲ است
+                elif not name and re.search(r'[آ-یa-zA-Z]{2,}', line) and 'اسب' not in line:
+                    name = line
+                # وزن: شامل kg
+                elif 'kg' in line.lower() and not weight:
+                    weight = float(re.sub(r'[^\d.]', '', line.lower()))
+                # IOR: عدد سه رقمی (بین ۱۰ تا ۹۹۹)
+                elif re.fullmatch(r'\d{2,3}', line) and not ior:
+                    ior = int(line)
+                # عملکرد: شامل خط تیره (مثل 1-2-3)
+                elif re.search(r'\d+-\d+', line) and perf_str == "0":
+                    perf_str = re.sub(r'[^\d\-]', '', line)
+                # چابکسوار: در انتهای لیست معمولا اسم می‌آید
+                elif re.search(r'[آ-ی]{3,}', line) and jockey == "نامشخص":
+                    jockey = line
 
-        target_table = tables_data[r_num - 1] # آرایه از 0 شروع می‌شود
+            if num and name and num not in horses:
+                # اگر IOR پیدا نشد، یک مقدار پیش‌فرض بر اساس وزن در نظر بگیر
+                if not ior:
+                    ior = int(100 - (weight if weight else 55)) + 10
+                horses[num] = {
+                    "n": name, "num": num, "ior": max(10, ior), "j": jockey,
+                    "perf": perf_str if perf_str else "0", "w_odd": 50.0, "weight": weight
+                }
 
-        # پردازش داده‌های استخراج شده (با انعطاف‌پذیری بیشتر)
-        for row in target_table:
-            if any("اسب" in cell for cell in row): continue # فیلتر هدر
+        if len(horses) < 2:
+            # اگر تعداد اسب‌های پیدا شده خیلی کم بود، خطا بده
+            raise ValueError(f"تعداد اسب‌های معتبر یافت شده ({len(horses)}) کمتر از حد نیاز است.")
 
-            num = None
-            name = None
-            weight = None
-            ior = None
-            perf_str = "0"
-            jockey = "نامشخص"
-
-            try:
-                # ستون 0: شماره (H)
-                if row[0].isdigit():
-                    num = int(row[0])
-
-                # ستون 1: نام اسب
-                if len(row) > 1:
-                    name = row[1]
-
-                # ستون 2: سن / وزن / IOR (مثلا "3\n58kg\n75")
-                if len(row) > 2:
-                    col2_parts = row[2].split('\n')
-                    for part in col2_parts:
-                        part = part.strip()
-                        if 'kg' in part.lower():
-                            weight = float(re.sub(r'[^\d.]', '', part.lower()))
-                        elif part.isdigit() and len(part) <= 3:
-                            ior = int(part)
-
-                # ستون 3: عملکرد (مثلا "6-1-2-1-1")
-                if len(row) > 3:
-                    perf_str = row[3].replace('\n', '').strip()
-                    perf_str = perf_str.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789'))
-                    perf_str = re.sub(r'[^\d\-]', '', perf_str)
-
-                # ستون 4: مالک / مربی / چابکسوار
-                if len(row) > 4:
-                    names = row[4].split('\n')
-                    if names:
-                        jockey = names[-1].strip() # آخرین نفر چابکسوار است
-
-                if num and name:
-                    horses[num] = {
-                        "n": name, "num": num, 
-                        "ior": ior or 50, 
-                        "j": jockey, 
-                        "perf": perf_str, 
-                        "w_odd": 50.0,
-                        "weight": weight
-                    }
-            except Exception as e:
-                print(f"Error parsing row {row}: {e}")
-                continue
-
-    except Exception as e: 
+    except Exception as e:
         print(f"Error in ar: {e}")
         await _dump_rendered_html(p, c, chat_id, r_num)
-        await c.bot.send_message(chat_id, f"🚨 <b>خطای سیستمی در خواندن جدول دور {r_num}:</b>\n<code>{str(e)}</code>", parse_mode='HTML')
+        await c.bot.send_message(chat_id, f"🚨 <b>خطا در پارس دور {r_num}:</b>\n<code>{str(e)}</code>", parse_mode='HTML')
         return "ERROR"
 
-    if not horses:
-        await p.screenshot(path="debug_parse_fail.png")
-        with open("debug_parse_fail.png", "rb") as f:
-            await c.bot.send_photo(chat_id, photo=f, caption=f"🚨 <b>خطا در پارس کردن جدول دور {r_num}</b>\nربات جدول را دید ولی نتوانست ردیف‌های اسب‌ها را تشخیص دهد.", parse_mode='HTML')
-        await _dump_rendered_html(p, c, chat_id, r_num)
-        return "NOT_UPLOADED"
-
-    if len(horses) < 2: return "NO_DATA"
-
+    # --- شروع محاسبات آماری ---
     horse_list = list(horses.values())
     n = len(horse_list)
     
-    # محاسبه فرم بر اساس ستون عملکرد
     forms = [decayed_form(h['perf']) for h in horse_list]
     form_max = max(forms) if forms and max(forms) > 0 else 1
     
-    # استفاده از IOR برای شانس بازار (چون ضریب واقعی نداریم)
     total_ior = sum(h['ior'] for h in horse_list)
     market_probs = [h['ior'] / total_ior if total_ior > 0 else 1/n for h in horse_list]
 
@@ -434,7 +387,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     res_dict = {"w": w, "p": p_horse, "s": s_horse, "horses": sorted_horses, "q": f"{w['num']}-{w['n']} + {p_horse['num']}-{p_horse['n']}", "q_fair": q_fair}
     res_dict['conf'] = get_confidence_level(res_dict)
     
-    long_shots = [h for h in sorted_horses if h['market_prob'] <= 10] # اسب‌های با شانس کمتر
+    long_shots = [h for h in sorted_horses if h['market_prob'] <= 10]
     top_ls = sorted(long_shots, key=lambda x: x['model_prob'], reverse=True) if long_shots else sorted_horses[-2:]
     res_dict['su'] = top_ls[0] if top_ls else sorted_horses[-1]
     res_dict['qs'] = f"{top_ls[0]['num']}-{top_ls[0]['n']} + {top_ls[1]['num']}-{top_ls[1]['n']}" if len(top_ls) >= 2 else "N/A"
@@ -444,7 +397,7 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     return res_dict
 
 # ============================================================
-# توابع دیگر (بدون تغییر)
+# بقیه توابع (بدون تغییر)
 # ============================================================
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
     if await get_github_var("AUTO_UPDATE", "true") == "false" and not is_reminder:
@@ -486,8 +439,7 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                     rp += f"🎯 <b>اطمینان:</b> {res['conf']}\n"
                     
                     if bet_amount and specific_round and r == specific_round:
-                        rp += f"\n💰 <b>مدیریت سرمایه</b>\n"
-                        rp += f"(به دلیل نبود ضرایب در سایت، شرط‌بندی پیشنهاد نمی‌شود.)\n"
+                        rp += f"\n💰 <b>مدیریت سرمایه</b>\n(به دلیل نبود ضرایب در سایت، شرط‌بندی پیشنهاد نمی‌شود.)\n"
                     
                     if specific_round:
                         rp += "\n📈 <b>سه اسب برتر:</b>\n"
@@ -524,8 +476,7 @@ async def process_quinellas(chat_id, c, variant_type):
                 await c.bot.send_message(chat_id, "⚠️ کوکی‌ها منقضی شده‌اند.", parse_mode='HTML')
                 return
             await prepare_page(pg)
-            rp = f"{title}\n"
-            rp += "➖➖➖➖➖➖➖➖\n"
+            rp = f"{title}\n➖➖➖➖➖➖➖➖\n"
             found_any = False
             for r in range(1, 8):
                 res = await ar(pg, r, c, chat_id, save_history=False)
@@ -937,7 +888,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.4 (استخراج دقیق جدول‌های اصلی)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.5 (پارس هوشمند متنی - بدون وابستگی به تگ Table)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
