@@ -214,22 +214,8 @@ async def prepare_page(pg):
     except Exception as e:
         print(f"Prepare page error: {e}")
 
-async def _dump_rendered_html(pg, c, chat_id, r_num):
-    try:
-        html = await pg.content()
-        fname = f"Table_HTML_R{r_num}.txt"
-        with open(fname, "w", encoding="utf-8") as f:
-            f.write(html)
-        with open(fname, "rb") as f:
-            await c.bot.send_document(
-                chat_id, document=f, filename=fname,
-                caption=f"🔍 <b>دیباگ HTML دور {r_num}</b>\n📏 حجم: {len(html):,} کاراکتر", parse_mode='HTML'
-            )
-    except Exception as e:
-        print(f"Dump HTML error: {e}")
-
 # ============================================================
-# 🆕 PARSER: استخراج داده‌ها با استفاده از هوش مصنوعی متنی
+# 🆕 PARSER: استخراج داده‌ها بر اساس ساختار جدول
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -240,66 +226,91 @@ async def ar(p, r_num, c, chat_id, save_history=True):
     try:
         await p.wait_for_timeout(3000)
 
-        # 1. پیدا کردن جدول‌ها با متد جدید (استخراج تمام ردیف‌های شبیه به اسب)
-        table_texts = await p.evaluate("""
+        # 1. پیدا کردن تمام جدول‌های صفحه
+        tables_data = await p.evaluate("""
             () => {
-                // تمام عناصری که ممکنه ردیف جدول باشن رو پیدا کن
-                let rows = Array.from(document.querySelectorAll('tr, .v-data-table__tr, div'));
+                let tables = Array.from(document.querySelectorAll('table, .v-data-table, [role="grid"], .v-table'));
+                let allData = [];
                 
-                // فیلتر کردن عناصری که شبیه به یک ردیف اسب هستن (حداقل ۳ تا از ویژگی‌ها رو دارن)
-                let horseRows = rows.filter(r => {
-                    let txt = (r.innerText || '').trim();
-                    if (txt.length < 10 || txt.length > 500) return false;
-                    
-                    let hasNum = /^\\d{1,2}\\b/.test(txt); // با شماره شروع میشه
-                    let hasKg = txt.includes('kg');
-                    let hasForm = /\\d+-\\d+/.test(txt);
-                    
-                    return (hasNum && hasKg) || (hasNum && hasForm) || (hasKg && hasForm);
-                });
-
-                return horseRows.map(r => {
-                    // استخراج متن هر ردیف (به صورت خط به خط)
-                    return r.innerText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
-                });
+                for (let table of tables) {
+                    let rows = table.querySelectorAll('tr, .v-data-table__tr');
+                    let tableData = [];
+                    for (let r of rows) {
+                        let cols = r.querySelectorAll('td, .v-data-table__td, .v-table__td');
+                        if (cols.length >= 4) { // جدول اسب‌ها حداقل ۴ ستون داره
+                            let rowData = Array.from(cols).map(c => c.innerText.trim());
+                            tableData.push(rowData);
+                        }
+                    }
+                    if (tableData.length > 1) allData.push(tableData);
+                }
+                return allData;
             }
         """)
 
-        if not table_texts:
-            raise ValueError(f"هیچ ساختار اسبی در صفحه پیدا نشد.")
+        if not tables_data:
+            raise ValueError(f"هیچ جدولی در صفحه پیدا نشد.")
 
-        # 2. پردازش خطوط استخراج شده و تبدیل به اطلاعات اسب
-        for lines in table_texts:
-            num = None; name = None; weight = None; ior = None; perf_str = "0"; jockey = "نامشخص"
+        # 2. انتخاب جدول مربوط به دور مورد نظر
+        if len(tables_data) < r_num:
+            raise ValueError(f"جدول دور {r_num} پیدا نشد. (تعداد جداول: {len(tables_data)})")
+
+        target_table = tables_data[r_num - 1] # جدول اول برای دور 1، دومی برای دور 2 و ...
+
+        # 3. پردازش ردیف‌های جدول
+        for row in target_table:
+            if any("اسب" in cell for cell in row) or any("مقام" in cell for cell in row):
+                continue # فیلتر هدر
             
-            # به دنبال شماره اسب در خط اول بگرد
-            for line in lines:
-                if re.fullmatch(r'\d{1,2}', line) and not num:
-                    num = int(line)
-                elif re.search(r'[آ-یa-zA-Z]{3,}', line) and not name and 'اسب' not in line:
-                    name = line
-                elif 'kg' in line.lower() and not weight:
-                    weight = float(re.sub(r'[^\d.]', '', line.lower()))
-                elif re.fullmatch(r'\d{2,3}', line) and not ior:
-                    ior = int(line)
-                elif re.search(r'\d+-\d+', line) and perf_str == "0":
-                    perf_str = re.sub(r'[^\d\-]', '', line)
-                elif re.search(r'[آ-ی]{3,}', line) and jockey == "نامشخص" and not name:
-                    jockey = line
+            try:
+                # ستون 0: شماره (مقام)
+                if not row[0].isdigit(): continue
+                num = int(row[0])
 
-            if num and name and num not in horses:
-                if not ior: ior = max(10, int(120 - (weight if weight else 55)))
-                horses[num] = {
-                    "n": name, "num": num, "ior": ior, "j": jockey,
-                    "perf": perf_str if perf_str else "0", "w_odd": 50.0, "weight": weight
-                }
+                # ستون 1: اسب (شامل نام و شماره)
+                name = re.sub(r'[^\u0600-\u06FFa-zA-Z\s]', '', row[1]).strip()
+                if not name: continue
+
+                # ستون 2: سن / وزن / IOR
+                col2_text = row[2]
+                weight = None
+                ior = None
+                
+                # پیدا کردن وزن (مثلا 56kg)
+                w_match = re.search(r'(\d+)kg', col2_text.lower())
+                if w_match: weight = float(w_match.group(1))
+                
+                # پیدا کردن IOR (عدد 2 یا 3 رقمی در خطوط بعدی)
+                lines = col2_text.split('\n')
+                for line in lines:
+                    if line.strip().isdigit() and len(line.strip()) <= 3:
+                        ior = int(line.strip())
+                        break
+
+                # ستون 3: عملکرد (مثلا 1-2-4-1-6)
+                perf_str = "0"
+                perf_match = re.search(r'(\d+[-]\d+[-]\d+.*)', row[3])
+                if perf_match: 
+                    perf_str = re.sub(r'[^\d\-]', '', perf_match.group(1))
+                
+                # ستون 4: مالک / مربی / چابکسوار
+                jockey = row[4].split('\n')[-1].strip() if len(row) > 4 else "نامشخص"
+
+                if num and name and num not in horses:
+                    if not ior: ior = max(10, int(120 - (weight if weight else 55)))
+                    horses[num] = {
+                        "n": name, "num": num, "ior": ior, "j": jockey,
+                        "perf": perf_str if perf_str else "0", "w_odd": 50.0, "weight": weight
+                    }
+            except Exception as e:
+                print(f"Row parse error: {e}")
+                continue
 
         if len(horses) < 2:
             raise ValueError(f"تعداد اسب‌های معتبر ({len(horses)}) کمتر از حد نیاز است.")
 
     except Exception as e:
         print(f"Error in ar: {e}")
-        await _dump_rendered_html(p, c, chat_id, r_num)
         await c.bot.send_message(chat_id, f"🚨 <b>خطا در پارس دور {r_num}:</b>\n<code>{str(e)}</code>", parse_mode='HTML')
         return "ERROR"
 
@@ -819,7 +830,12 @@ async def cmd_debug(u: Update, c: C):
             await pg.goto("https://mosharekat.asbdavani.app/", timeout=90000, wait_until="domcontentloaded")
             await pg.wait_for_timeout(5000)
             await prepare_page(pg)
-            await _dump_rendered_html(pg, c, u.effective_chat.id, r_num)
+            html = await pg.content()
+            fname = f"Table_HTML_R{r_num}.txt"
+            with open(fname, "w", encoding="utf-8") as f:
+                f.write(html)
+            with open(fname, "rb") as f:
+                await c.bot.send_document(u.effective_chat.id, document=f, filename=fname, caption=f"🔍 دیباگ HTML دور {r_num}", parse_mode='HTML')
     except Exception as e:
         await u.message.reply_text(f"❌ خطا: {e}")
     finally:
@@ -846,7 +862,7 @@ async def cmd_start(u: Update, c: C):
         users[chat_id] = expire_date; await set_github_var("ALLOWED_USERS", json.dumps(users))
         welcome_msg = "👋 <b>سلام و خوش آمدید!</b>\n\n🎁 <b>به شما ۱ روز اشتراک رایگان هدیه دادیم!</b>\nاز همین حالا می‌توانید تمام دکمه‌ها را تست کنید.\n\n⏳ <i>اشتراک رایگان شما ۲۴ ساعت دیگر منقضی می‌شود.</i>"
     else:
-        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.6 (استخراج هوشمند متنی)</b>"
+        welcome_msg = "👋 <b>سلام دوباره!</b>\n✅ <b>نسخه 4.7 (استخراج دقیق جدول با ستون‌های استاندارد)</b>"
     await c.bot.send_message(u.effective_chat.id, welcome_msg, reply_markup=get_main_menu(chat_id), parse_mode='HTML')
 
 async def main():
