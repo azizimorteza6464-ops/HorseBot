@@ -46,7 +46,7 @@ COOLDOWN = 60
 _last_call = {}
 AR_CACHE = {}
 SITE_WEATHER_CACHE = None
-CURRENT_RACE_INFO = "🏇 مسابقات امروز" # متغیر جدید برای نگه داشتن اطلاعات مسابقه
+RACE_DAY_INFO = {}  # 👈 متغیر سراسری برای نگهداری اطلاعات روز مسابقه
 RUN_SECONDS = max(60, int(os.environ.get("RUN_SECONDS", "17400")))
 
 RANK_POINTS = {"1": 10, "2": 6, "3": 3, "4": 1, "5": 0.5}
@@ -787,6 +787,7 @@ def get_main_menu(chat_id):
             InlineKeyboardButton("🌤 وضعیت هوا", callback_data="weather"),
             InlineKeyboardButton("🏙 محل مسابقه", callback_data="change_city"),
         ],
+        [InlineKeyboardButton("📖 راهنمای نمادها", callback_data="help_symbols")],  # 👈 دکمه جدید
     ])
     if str(chat_id) == MY_ID:
         keyboard.append([
@@ -893,8 +894,6 @@ def _survey_by_runner(survey_payload):
 
 
 async def fetch_api_races(pg):
-    global CURRENT_RACE_INFO # دسترسی به متغیر سراسری
-    
     days_payload = await api_get_json(pg, "/races/days?limit=50&offset=0&has_races=true")
     days = _api_data(days_payload).get("race_days", [])
     if not days:
@@ -909,29 +908,27 @@ async def fetch_api_races(pg):
         candidates = featured or days
     day = sorted(candidates, key=lambda d: (bool(d.get("featured")), str(d.get("date") or "")), reverse=True)[0]
     
-    # استخراج نام مسابقه/شهر و تاریخ از API
-    city_name = day.get("city") or day.get("track") or day.get("name") or "نامشخص"
-    race_date = day.get("date") or day.get("jalali_date") or "نامشخص"
+    # 🔥 اصلاح شد: استخراج کد شهر و تاریخ به صورت صحیح
+    id_dict = day.get("id", {})
+    day_code = safe_int(id_dict.get("code")) if isinstance(id_dict, dict) else None
+    day_city = clean_text(id_dict.get("name")) if isinstance(id_dict, dict) else "نامشخص"
+    day_date = clean_text(day.get("date", ""))
     
-    # اگر تاریخ به صورت YYYY-MM-DD بود، آن را خوانا کنیم
-    if "-" in str(race_date) and len(str(race_date)) == 10:
-        try:
-            dt = datetime.strptime(race_date, "%Y-%m-%d")
-            race_date = dt.strftime("%Y/%m/%d")
-        except:
-            pass
-            
-    CURRENT_RACE_INFO = f"🏟 {city_name} | 📅 {race_date}"
-
-    day_id = safe_int(day.get("id"))
-    if day_id is None:
+    if day_code is None:
         raise RuntimeError("شناسه روز مسابقه نامعتبر است")
 
-    race_payload = await api_get_json(pg, f"/races/racecard?day_id={day_id}")
+    race_payload = await api_get_json(pg, f"/races/racecard?day_id={day_code}")
     race_data = _api_data(race_payload)
     api_races = race_data.get("races", [])
     if not api_races:
         raise RuntimeError("جدول مسابقات در API خالی است")
+
+    # 🔥 ذخیره اطلاعات روز برای نمایش در پیام
+    global RACE_DAY_INFO
+    RACE_DAY_INFO = {
+        "city": day_city,
+        "date": day_date
+    }
 
     all_data = {}
     sem = asyncio.Semaphore(4)
@@ -978,10 +975,8 @@ async def fetch_api_races(pg):
 
 
 async def fetch_races_for_chat(chat_id, c):
-    global SITE_WEATHER_CACHE, CURRENT_RACE_INFO
+    global SITE_WEATHER_CACHE
     SITE_WEATHER_CACHE = None
-    CURRENT_RACE_INFO = "🏇 مسابقات امروز"
-    
     if not all([A, D, U]):
         await c.bot.send_message(chat_id, "⚠️ اطلاعات ورود سایت در تنظیمات ربات کامل نیست.")
         return None
@@ -1125,8 +1120,11 @@ async def process_odds(
         )
         return
 
-    # اضافه کردن نام مسابقه و تاریخ به ابتدای پیام
-    msg = f"🏇 <b>تحلیل مسابقات</b>\n{CURRENT_RACE_INFO}\n{weather}\n"
+    # 🔥 اصلاح شد: نمایش شهر و تاریخ
+    msg = "🏇 <b>تحلیل مسابقات</b>\n"
+    if RACE_DAY_INFO.get("city"):
+        msg += f"📍 محل: {RACE_DAY_INFO['city']} | 📅 تاریخ: {RACE_DAY_INFO['date']}\n"
+    msg += weather + "\n"
     if bet_amount:
         msg += f"💰 سرمایه ثبت‌شده: <code>{bet_amount:,}</code> تومان\n"
     msg += "━━━━━━━━━━━━━━\n"
@@ -1153,7 +1151,7 @@ async def process_quinellas(chat_id, c, variant_type):
     races = await fetch_races_for_chat(chat_id, c)
     if not races:
         return
-    msg = f"<b>{titles[variant_type]}</b>\n{CURRENT_RACE_INFO}\n━━━━━━━━━━━━━━\n"
+    msg = f"<b>{titles[variant_type]}</b>\n━━━━━━━━━━━━━━\n"
     found = False
     for r in sorted(races):
         try:
@@ -1209,7 +1207,7 @@ async def process_multileg(chat_id, c, leg_type, bet_amount=None):
         except Exception as e:
             details.append(f"R{r}: تحلیل نشد ({html.escape(clean_text(e))})")
     msg = (
-        f"🎯 <b>ترکیب {title}</b>\n{CURRENT_RACE_INFO}\n\n" + "\n".join(details)
+        f"🎯 <b>ترکیب {title}</b>\n\n" + "\n".join(details)
         + ("\n\n<code>" + " | ".join(picks) + "</code>" if picks else "")
         + "\n\n⚠️ احتمال برد ترکیبی حاصل‌ضرب تقریبی احتمال‌هاست و با وابستگی‌ها/شرایط مسابقه تغییر می‌کند؛ تضمینی نیست."
     )
@@ -1222,7 +1220,7 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
     if not races:
         return
     title = "🎲 اسب شگفتی" if mode == "sur_h" else "🔥 دوقلوی شگفتی"
-    msg = f"<b>{title}</b>\n{CURRENT_RACE_INFO}\n━━━━━━━━━━━━━━\n"
+    msg = f"<b>{title}</b>\n━━━━━━━━━━━━━━\n"
     found = False
     for r in sorted(races):
         try:
@@ -1266,7 +1264,7 @@ async def process_value_bets(chat_id, c, bet_amount=None):
     races = await fetch_races_for_chat(chat_id, c)
     if not races:
         return
-    msg = f"💎 <b>شکار ارزش (EV)</b>\n{CURRENT_RACE_INFO}\n━━━━━━━━━━━━━━\n"
+    msg = "💎 <b>شکار ارزش (EV)</b>\n━━━━━━━━━━━━━━\n"
     found = False
     for r in sorted(races):
         try:
@@ -1639,7 +1637,7 @@ async def button_callback(u: Update, c: C):
     key = f"{chat_id}:{data}"
     if (
         now - _last_call.get(key, 0) < COOLDOWN
-        and data not in ("bet_set", "admin_refresh")
+        and data not in ("bet_set", "admin_refresh", "help_symbols")
         and not data.startswith(("rem_", "adm_"))
     ):
         remain = int(COOLDOWN - (now - _last_call.get(key, 0)))
@@ -1681,6 +1679,28 @@ async def button_callback(u: Update, c: C):
     elif data == "off":
         ok = await set_github_var("AUTO_UPDATE", "false")
         await query.message.reply_text("🛑 خاموش شد." if ok else "❌ ذخیره وضعیت ناموفق بود.")
+    elif data == "help_symbols":
+        # 🔥 راهنمای نمادها
+        help_text = (
+            "📖 <b>راهنمای نمادها و اصطلاحات</b>\n"
+            "━━━━━━━━━━━━━━\n\n"
+            "🥇 <b>پیش‌بر:</b> اسبی که بالاترین شانس اول شدن را دارد.\n"
+            "🥈 <b>میان‌بر:</b> اسبی که شانس دوم برد را دارد.\n"
+            "🥉 <b>پی‌بر:</b> اسبی که شانس سوم برد را دارد.\n\n"
+            "👥 <b>دوقلوی اصلی:</b> دو اسبی که با هم بهترین شانس برای برد دوتایی (کوئینلا) را دارند.\n\n"
+            "🎯 <b>اطمینان تحلیل:</b> میزان اعتبار داده‌ها برای پیش‌بینی (🔥 بالا، ⚖️ متوسط، ⚠️ پایین).\n\n"
+            "📊 <b>مدل:</b> درصد شانس برد اسب بر اساس محاسبات آماری ربات.\n\n"
+            "📈 <b>ارزش (EV):</b> میزان سودآوری شرط در بلندمدت. عدد مثبت یعنی شرط ارزشمند است.\n\n"
+            "💰 <b>ضریب برد:</b> ضریب پرداخت در صورت اول شدن اسب.\n"
+            "💰 <b>ضریب مکان:</b> ضریب پرداخت در صورت قرار گرفتن اسب در ۳ نفر اول.\n\n"
+            "📜 <b>فرم:</b> نتایج مسابقات قبلی اسب (مثلاً 5-4 یعنی مقام ۵ و سپس ۴).\n\n"
+            "⚖️ <b>وزن:</b> وزن اسب در مسابقه (کیلوگرم).\n\n"
+            "🏇 <b>چابک:</b> نام چابکسوار (اسب‌سوار).\n\n"
+            "📊 <b>IOR:</b> امتیاز رسمی اسب در فدراسیون.\n\n"
+            "━━━━━━━━━━━━━━\n"
+            "💡 <b>نکته:</b> تحلیل‌ها بر اساس آمار و مدل‌های احتمالاتی است و تضمین قطعی برد نیست."
+        )
+        await query.message.reply_text(help_text, parse_mode="HTML")
     elif data in ("admin_help", "admin_refresh"):
         if str(actor_id) == MY_ID:
             if data == "admin_refresh":
