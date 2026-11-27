@@ -277,7 +277,7 @@ async def _dump_rendered_html(pg, c, chat_id, r_num):
         print(f"Dump HTML error: {e}")
 
 # ============================================================
-# 🆕 Core Analysis (FIXED)
+# 🆕 Core Analysis (FIXED - Flexible Parsing)
 # ============================================================
 async def ar(p, r_num, c, chat_id, save_history=True):
     if r_num in AR_CACHE:
@@ -286,21 +286,22 @@ async def ar(p, r_num, c, chat_id, save_history=True):
 
     horses = {}
     try:
-        await p.wait_for_timeout(2000)
+        await p.wait_for_timeout(3000)
 
-        # استخراج تمام جدول‌هایی که مربوط به اسب‌ها و وزن هستند
+        # استخراج تمام جدول‌هایی که مربوط به اسب‌ها و وزن هستند (با تشخیص هوشمندانه‌تر)
         tables_data = await p.evaluate("""
             () => {
-                let tables = Array.from(document.querySelectorAll('table, .v-data-table, [role="grid"]')).filter(t =>
-                    t.innerText.includes('اسب') && (t.innerText.includes('وزن') || t.innerText.includes('عملکرد'))
-                );
+                let tables = Array.from(document.querySelectorAll('table, .v-data-table, [role="grid"]')).filter(t => {
+                    let txt = t.innerText || '';
+                    return txt.includes('اسب') || txt.includes('وزن') || txt.includes('عملکرد');
+                });
                 let allData = [];
                 for (let table of tables) {
                     let rows = table.querySelectorAll('tr, .v-data-table__tr');
                     let tableData = [];
                     for (let r of rows) {
                         let cols = r.querySelectorAll('td, .v-data-table__td');
-                        if (cols.length >= 4) {
+                        if (cols.length >= 3) { // حداقل 3 ستون برای شماره، نام، و بقیه
                             let rowData = Array.from(cols).map(c => c.innerText.trim());
                             tableData.push(rowData);
                         }
@@ -311,12 +312,15 @@ async def ar(p, r_num, c, chat_id, save_history=True):
             }
         """)
 
-        if not tables_data or len(tables_data) < r_num:
-            raise ValueError(f"جدول دور {r_num} پیدا نشد. (تعداد جداول یافت شده در صفحه: {len(tables_data) if tables_data else 0})")
+        if not tables_data:
+            raise ValueError(f"هیچ جدول اسبی در صفحه پیدا نشد.")
+
+        if len(tables_data) < r_num:
+            raise ValueError(f"جدول دور {r_num} پیدا نشد. (تعداد جداول یافت شده در صفحه: {len(tables_data)})")
 
         target_table = tables_data[r_num - 1] # آرایه از 0 شروع می‌شود
 
-        # پردازش داده‌های استخراج شده
+        # پردازش داده‌های استخراج شده (با انعطاف‌پذیری بیشتر)
         for row in target_table:
             if any("اسب" in cell for cell in row): continue # فیلتر هدر
 
@@ -333,22 +337,24 @@ async def ar(p, r_num, c, chat_id, save_history=True):
                     num = int(row[0])
 
                 # ستون 1: نام اسب
-                name = row[1]
+                if len(row) > 1:
+                    name = row[1]
 
                 # ستون 2: سن / وزن / IOR (مثلا "3\n58kg\n75")
-                col2_parts = row[2].split('\n')
-                for part in col2_parts:
-                    part = part.strip()
-                    if 'kg' in part.lower():
-                        weight = float(re.sub(r'[^\d.]', '', part.lower()))
-                    elif part.isdigit() and len(part) <= 3:
-                        ior = int(part)
+                if len(row) > 2:
+                    col2_parts = row[2].split('\n')
+                    for part in col2_parts:
+                        part = part.strip()
+                        if 'kg' in part.lower():
+                            weight = float(re.sub(r'[^\d.]', '', part.lower()))
+                        elif part.isdigit() and len(part) <= 3:
+                            ior = int(part)
 
                 # ستون 3: عملکرد (مثلا "6-1-2-1-1")
-                perf_str = row[3].replace('\n', '').strip()
-                # تبدیل اعداد فارسی به انگلیسی برای محاسبات
-                perf_str = perf_str.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789'))
-                perf_str = re.sub(r'[^\d\-]', '', perf_str)
+                if len(row) > 3:
+                    perf_str = row[3].replace('\n', '').strip()
+                    perf_str = perf_str.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789'))
+                    perf_str = re.sub(r'[^\d\-]', '', perf_str)
 
                 # ستون 4: مالک / مربی / چابکسوار
                 if len(row) > 4:
