@@ -18,7 +18,6 @@ from telegram.ext import (
 )
 from playwright.async_api import async_playwright as ap
 
-
 # ======================== تنظیمات ========================
 
 T = os.environ.get("BOT_TOKEN")
@@ -29,6 +28,16 @@ G = os.environ.get("GH_PAT")
 R = os.environ.get("GITHUB_REPOSITORY")
 
 MY_ID = os.environ.get("ADMIN_ID", "184149177")
+
+# --- تغییرات جدید برای دکمه‌های ارتباط و نظرسنجی ---
+ADMIN_CONTACT_INFO = (
+    "📞 <b>راه‌های ارتباط با مدیر:</b>\n\n"
+    "آیدی تلگرام: @Your_Admin_Username\n"
+    "شماره تماس: 09120000000\n\n"
+    "💬 در ساعات ۹ صبح تا ۱۰ شب در خدمت شما هستیم."
+)
+SURVEY_LINK = "https://t.me/Your_Username"
+# ---------------------------------------------------
 
 CARD_NUMBER = os.environ.get("CARD_NUMBER", "6219861802290089")
 CARD_HOLDER = os.environ.get("CARD_HOLDER", "مرتضی عزیزی")
@@ -61,18 +70,15 @@ WEEKDAYS_FA = {
     4: "جمعه", 5: "شنبه", 6: "یکشنبه"
 }
 
-
 # ======================== ابزارهای عمومی ========================
 
 def clean_text(value):
     value = str(value or "").replace("\u200c", " ").replace("\xa0", " ")
     return re.sub(r"\s+", " ", value).strip()
 
-
 def normalize_digits(value):
     table = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫٬", "01234567890123456789.,")
     return str(value or "").translate(table)
-
 
 def safe_float(value):
     if value is None:
@@ -84,11 +90,9 @@ def safe_float(value):
     except Exception:
         return None
 
-
 def safe_int(value):
     n = safe_float(value)
     return int(n) if n is not None else None
-
 
 def gregorian_to_jalali(gy, gm, gd):
     g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
@@ -109,7 +113,6 @@ def gregorian_to_jalali(gy, gm, gd):
         jd = 1 + ((days - 186) % 30)
     return jy, jm, jd
 
-
 def format_full_date(date_str):
     try:
         base = str(date_str).split("T")[0]
@@ -119,7 +122,6 @@ def format_full_date(date_str):
         return f"{weekday} {jy}/{jm:02d}/{jd:02d} شمسی ( {dt.strftime('%Y-%m-%d')} میلادی )"
     except Exception:
         return str(date_str)
-
 
 def _split_safe(text, max_len=3900):
     text = str(text)
@@ -142,16 +144,15 @@ def _split_safe(text, max_len=3900):
         chunks.append(current)
     return chunks or [""]
 
-
 async def send_long_message(c, chat_id, text, max_len=3900):
     for part in _split_safe(text, max_len):
         try:
-            await c.bot.send_message(chat_id, part, parse_mode="HTML")
+            # اضافه کردن کاراکتر راست‌چین برای اصلاح نمایش تلگرام
+            await c.bot.send_message(chat_id, "\u200f" + part, parse_mode="HTML")
         except Exception:
             plain = html.unescape(re.sub(r"<[^>]*>", "", part))
-            await c.bot.send_message(chat_id, plain)
+            await c.bot.send_message(chat_id, "\u200f" + plain)
         await asyncio.sleep(0.15)
-
 
 # ======================== GitHub Variables ========================
 
@@ -172,7 +173,6 @@ async def get_github_var(var_name, default_val=""):
     except Exception as e:
         print("get_github_var:", e)
     return default_val
-
 
 async def set_github_var(var_name, val):
     if not R or not G:
@@ -203,7 +203,6 @@ async def set_github_var(var_name, val):
     except Exception:
         return False
 
-
 async def get_allowed_users_dict():
     raw = await get_github_var("ALLOWED_USERS", "{}")
     try:
@@ -218,7 +217,6 @@ async def get_allowed_users_dict():
                     result[uid.strip()] = exp
         return result
 
-
 async def is_premium(chat_id):
     if str(chat_id) == MY_ID:
         return True
@@ -230,7 +228,6 @@ async def is_premium(chat_id):
         return datetime.now() <= datetime.strptime(exp, "%Y-%m-%d %H:%M:%S")
     except Exception:
         return False
-
 
 async def add_vip_days(target_id, days):
     users = await get_allowed_users_dict()
@@ -246,14 +243,12 @@ async def add_vip_days(target_id, days):
     await set_github_var("ALLOWED_USERS", json.dumps(users, ensure_ascii=False))
     return expiry
 
-
 async def get_referrals():
     try:
         result = json.loads(await get_github_var("REFERRALS", "{}"))
         return result if isinstance(result, dict) else {}
     except Exception:
         return {}
-
 
 # ======================== هوا و مدل آماری ========================
 
@@ -275,7 +270,6 @@ async def get_weather():
         print("weather fallback failed:", repr(e))
     return "🌤 اطلاعات هوا دریافت نشد."
 
-
 def extract_site_weather(body_text):
     text = clean_text(body_text)
     temp = re.search(r"(?:دما|temperature|temp)\s*[:：]?\s*(-?\d+(?:[.,]\d+)?)\s*°?\s*C", text, re.I)
@@ -285,7 +279,6 @@ def extract_site_weather(body_text):
         w = wind.group(1).replace(",", ".")
         return f"🌡 دما: {t}°C | 💨 باد: {w} km/h"
     return None
-
 
 def decayed_form(perf_str, decay=0.85):
     if not perf_str:
@@ -297,14 +290,12 @@ def decayed_form(perf_str, decay=0.85):
             total += RANK_POINTS.get(rank, 0) * (decay ** i)
     return total
 
-
 def jockey_score(name):
     name = clean_text(name)
     for tier, names in JOCKEY_TIERS.items():
         if any(x in name for x in names):
             return JOCKEY_POINTS[tier]
     return 0
-
 
 def power_probs(scores, power=1.8):
     if not scores:
@@ -314,7 +305,6 @@ def power_probs(scores, power=1.8):
     total = sum(powered)
     return [x / total for x in powered] if total else [1 / len(values)] * len(values)
 
-
 def quinella_prob(probs, i, j):
     pi, pj = probs[i], probs[j]
     if pi <= 0 or pj <= 0 or pi >= 1 or pj >= 1:
@@ -322,7 +312,6 @@ def quinella_prob(probs, i, j):
     a = pi * pj / max(1e-9, 1 - pi)
     b = pj * pi / max(1e-9, 1 - pj)
     return min(1.0, a + b)
-
 
 def place_probability(probs, index, places=3):
     if not probs or index < 0 or index >= len(probs):
@@ -341,7 +330,6 @@ def place_probability(probs, index, places=3):
             total += probability
     return min(1.0, max(0.0, total))
 
-
 def get_confidence_level(horses, sources=None):
     if not horses:
         return "⚠️ پایین"
@@ -356,7 +344,6 @@ def get_confidence_level(horses, sources=None):
         return "⚖️ متوسط"
     return "⚠️ پایین"
 
-
 # ======================== مرورگر و استخراج جدول ========================
 
 async def prepare_page(pg):
@@ -365,7 +352,6 @@ async def prepare_page(pg):
         await pg.keyboard.press("Escape")
     except Exception:
         pass
-
 
 async def make_browser_context(p):
     browser = await p.chromium.launch(
@@ -383,7 +369,6 @@ async def make_browser_context(p):
     if cookies:
         await context.add_cookies(cookies)
     return browser, context
-
 
 async def extract_race_columns(pg):
     result = await pg.evaluate("""
@@ -417,7 +402,6 @@ async def extract_race_columns(pg):
         raise ValueError(result["error"])
     return result.get("rounds", [])
 
-
 async def extract_selected_horse_details(pg, round_no):
     return await pg.evaluate("""(roundNo) => {
         const root = document.querySelector('main div.flex.items-start.user-select-none');
@@ -443,7 +427,6 @@ async def extract_selected_horse_details(pg, round_no):
         });
     }""", round_no)
 
-
 async def get_all_races(pg):
     await prepare_page(pg)
     rounds = await extract_race_columns(pg)
@@ -468,7 +451,6 @@ async def get_all_races(pg):
             })
         all_data[race["round"]] = horses
     return all_data
-
 
 async def fetch_racecard_performance(pg):
     url = "https://asbdavani.app/racecards"
@@ -521,7 +503,6 @@ async def fetch_racecard_performance(pg):
         print("racecard performance scrape failed:", repr(e))
         return []
 
-
 # ======================== تحلیل هر دور ========================
 
 def _normalized_inverse_odds(horses, field="pishbar_odd"):
@@ -531,7 +512,6 @@ def _normalized_inverse_odds(horses, field="pishbar_odd"):
     if total <= 0 or sum(x > 0 for x in valid) < 2:
         return [None] * len(horses)
     return [(x / total) if x > 0 else None for x in valid]
-
 
 def _normalized_percentages(horses, field="survey_percent"):
     vals = [safe_float(h.get(field)) for h in horses]
@@ -543,10 +523,8 @@ def _normalized_percentages(horses, field="survey_percent"):
         return [None] * len(horses)
     return [(x / total) if vals[i] is not None else None for i, x in enumerate(clean)]
 
-
 def _has_stats_signal(horses):
     return any(safe_float(h.get("starts")) and safe_float(h.get("starts")) > 0 for h in horses)
-
 
 def _history_score(horse):
     form = decayed_form(horse.get("perf"))
@@ -564,7 +542,6 @@ def _history_score(horse):
     jockey = jockey_score(horse.get("j", "")) / 10.0
     return 0.58 * form + 0.27 * career + 0.15 * jockey
 
-
 def _has_form_signal(horses):
     for h in horses:
         perf = str(h.get("perf") or "").strip()
@@ -573,7 +550,6 @@ def _has_form_signal(horses):
         if clean_text(h.get("j", "")) not in ("", "نامشخص", "ناموجود") and jockey_score(h.get("j", "")) > 0:
             return True
     return False
-
 
 def analyze_horses(horses):
     if not horses:
@@ -658,7 +634,6 @@ def analyze_horses(horses):
         "model_signal": has_form or has_stats, "sources": sources,
     }
 
-
 async def save_to_history(res_dict, round_no):
     raw = await get_github_var("BOT_HISTORY", "[]")
     try:
@@ -674,7 +649,6 @@ async def save_to_history(res_dict, round_no):
     }
     history.insert(0, entry)
     await set_github_var("BOT_HISTORY", json.dumps(history[:5], ensure_ascii=False))
-
 
 # ======================== منو و پنل مدیریت ========================
 
@@ -696,13 +670,12 @@ def get_main_menu(chat_id):
         [InlineKeyboardButton("⏰ تنظیم یادآوری", callback_data="rem_start")],
         [InlineKeyboardButton("💳 خرید اشتراک / تمدید", callback_data="buy_sub"), InlineKeyboardButton("👤 وضعیت اشتراک من", callback_data="my_status")],
         [InlineKeyboardButton("🎁 دعوت از دوستان", callback_data="invite")],
-        [InlineKeyboardButton("🌤 وضعیت هوا", callback_data="weather"), InlineKeyboardButton("🏙 محل مسابقه", callback_data="change_city")],
-        [InlineKeyboardButton("📖 راهنمای نمادها", callback_data="help_symbols")],
+        [InlineKeyboardButton("🌤 وضعیت هوا", callback_data="weather"), InlineKeyboardButton("📊 نظرسنجی", callback_data="survey")], # دکمه نظرسنجی جدید
+        [InlineKeyboardButton("📖 راهنمای نمادها", callback_data="help_symbols"), InlineKeyboardButton("📞 ارتباط با مدیر", callback_data="admin_contact")], # دکمه ارتباط با مدیر جدید
     ])
     if str(chat_id) == MY_ID:
         keyboard.append([InlineKeyboardButton("👑 پنل مدیریت", callback_data="admin_help")])
     return InlineKeyboardMarkup(keyboard)
-
 
 async def cmd_admin_panel(chat_id, c):
     enabled = await get_github_var("AUTO_UPDATE", "true")
@@ -735,7 +708,6 @@ async def cmd_admin_panel(chat_id, c):
         ])
     await c.bot.send_message(chat_id, msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
 
-
 # ======================== اجرای تحلیل‌ها ========================
 
 async def api_get_json(pg, path):
@@ -751,10 +723,8 @@ async def api_get_json(pg, path):
         raise RuntimeError(f"API پاسخ success=false داد: {path}")
     return payload
 
-
 def _api_data(payload):
     return payload.get("data", payload) if isinstance(payload, dict) else {}
-
 
 def _odds_by_runner(odds_payload):
     data = _api_data(odds_payload)
@@ -776,7 +746,6 @@ def _odds_by_runner(odds_payload):
             result.setdefault(runner, {})[market_name] = odd
     return result
 
-
 def _survey_by_runner(survey_payload):
     data = _api_data(survey_payload)
     result = {}
@@ -788,7 +757,6 @@ def _survey_by_runner(survey_payload):
         if num is not None and percent is not None:
             result[num] = percent
     return result
-
 
 async def fetch_api_races(pg):
     days_payload = await api_get_json(pg, "/races/days?limit=50&offset=0&has_races=true")
@@ -860,10 +828,10 @@ async def fetch_api_races(pg):
             all_data[rno] = entries
     return all_data
 
-
 async def fetch_races_for_chat(chat_id, c):
-    global SITE_WEATHER_CACHE
+    global SITE_WEATHER_CACHE, RACE_DAY_INFO
     SITE_WEATHER_CACHE = None
+    RACE_DAY_INFO = {} # پاک کردن اطلاعات قبلی
     if not all([A, D, U]):
         await c.bot.send_message(chat_id, "⚠️ اطلاعات ورود سایت در تنظیمات ربات کامل نیست.")
         return None
@@ -883,7 +851,22 @@ async def fetch_races_for_chat(chat_id, c):
             try:
                 races = await fetch_api_races(pg)
             except Exception as api_error:
+                print(f"API failed, using fallback: {api_error}")
                 races = await get_all_races(pg)
+                # تلاش برای استخراج تاریخ و شهر از صفحه در حالت پشتیبان
+                try:
+                    # جستجوی تاریخ در متن صفحه
+                    date_match = re.search(r"(\d{4}[-/]\d{1,2}[-/]\d{1,2})", body)
+                    if date_match:
+                        RACE_DAY_INFO["date"] = date_match.group(1)
+                    # جستجوی نام میدان (مثلاً کورس آق قلا)
+                    city_match = re.search(r"(?:میدان|کورس|مسابقه)\s*([^\n,]+)", body)
+                    if city_match:
+                        RACE_DAY_INFO["city"] = clean_text(city_match.group(1))
+                    else:
+                        RACE_DAY_INFO["city"] = "میدان مسابقه"
+                except Exception as e:
+                    print("Fallback date/city extraction failed:", e)
 
             try:
                 performance_rows = await fetch_racecard_performance(pg)
@@ -922,7 +905,6 @@ async def fetch_races_for_chat(chat_id, c):
     finally:
         if browser:
             await browser.close()
-
 
 def format_round_result(round_no, res, detailed=False):
     w, p, s = res["w"], res["p"], res["s"]
@@ -981,7 +963,6 @@ def format_round_result(round_no, res, detailed=False):
                 msg += f"  📊 IOR: {h.get('ior')}\n"
             msg += "  ─────\n"
     return msg + "━━━━━━━━━━━━━━\n"
-
 
 async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_amount=None, is_reminder=False):
     if (await get_github_var("AUTO_UPDATE", "true")).lower() == "false" and not is_reminder:
@@ -1086,10 +1067,13 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
                 candidates = [h for h in res["horses"][2:] if h["model_prob"] >= 3.0] or res["horses"][2:]
                 if not candidates: continue
                 h = max(candidates, key=lambda x: (x.get("win_ev") or -999, x["model_prob"]))
-                msg += f"\n🏁 دور R{r}: {h['num']}-{html.escape(str(h['n']))} ({h['model_prob']:.1f}%)" + (f" | EV {h['win_ev']:+.1f}%" if h.get("win_ev") is not None else "") + "\n"
+                # اضافه کردن کاراکتر \u200f برای اصلاح جهت متن
+                msg += f"\u200f\n🏁 دور R{r}: {h['num']}-{html.escape(str(h['n']))} ({h['model_prob']:.1f}%)" + (f" | EV {h['win_ev']:+.1f}%" if h.get("win_ev") is not None else "") + "\n"
             else:
                 pair = res["q_candidates"][-1] if res["q_candidates"] else None
-                if pair: msg += f"\n🏁 دور R{r}: {pair['h1']['num']}-{pair['h1']['n']} + {pair['h2']['num']}-{pair['h2']['n']} | احتمال {pair['prob']:.1f}%\n"
+                if pair: 
+                    # اضافه کردن کاراکتر \u200f برای اصلاح جهت متن
+                    msg += f"\u200f\n🏁 دور R{r}: {pair['h1']['num']}-{pair['h1']['n']} + {pair['h2']['num']}-{pair['h2']['n']} | احتمال {pair['prob']:.1f}%\n"
                 else: continue
             found = True
         except Exception:
@@ -1370,7 +1354,7 @@ async def button_callback(u: Update, c: C):
 
     now = time.time()
     key = f"{chat_id}:{data}"
-    if (now - _last_call.get(key, 0) < COOLDOWN and data not in ("bet_set", "admin_refresh", "help_symbols") and not data.startswith(("rem_", "adm_"))):
+    if (now - _last_call.get(key, 0) < COOLDOWN and data not in ("bet_set", "admin_refresh", "help_symbols", "admin_contact", "survey") and not data.startswith(("rem_", "adm_"))):
         remain = int(COOLDOWN - (now - _last_call.get(key, 0)))
         return await query.answer(f"⏳ {remain} ثانیه صبر کنید.", show_alert=True)
     _last_call[key] = now
@@ -1415,6 +1399,12 @@ async def button_callback(u: Update, c: C):
             "💡 <b>نکته:</b> تحلیل‌ها بر اساس آمار و مدل‌های احتمالاتی است و تضمین قطعی برد نیست."
         )
         await query.message.reply_text(help_text, parse_mode="HTML")
+    elif data == "admin_contact":
+        # نمایش اطلاعات تماس با مدیر
+        await query.message.reply_text(ADMIN_CONTACT_INFO, parse_mode="HTML")
+    elif data == "survey":
+        # ارسال لینک نظرسنجی
+        await query.message.reply_text(f"📊 برای شرکت در نظرسنجی روی لینک زیر کلیک کنید:\n{SURVEY_LINK}")
     elif data in ("admin_help", "admin_refresh"):
         if str(actor_id) == MY_ID:
             if data == "admin_refresh":
@@ -1441,7 +1431,8 @@ async def button_callback(u: Update, c: C):
         await cmd_admin_panel(chat_id, c)
     elif data == "history": await cmd_history(chat_id, c)
     elif data == "weather": await query.message.reply_text(await get_weather())
-    elif data == "change_city": await query.message.reply_text("🏙 محل و شرایط مسابقه از اطلاعات رسمی سایت خوانده می‌شود؛ تغییر دستی شهر در نسخه فعلی پشتیبانی نمی‌شود.")
+    elif data == "change_city": 
+        await query.message.reply_text("🏙 این بخش به دکمه نظرسنجی و ارتباط با مدیر تغییر یافت.")
     elif data == "bet_set":
         c.user_data["awaiting_bet"] = True
         current = c.user_data.get("bet_amount", 0)
