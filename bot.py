@@ -5,6 +5,7 @@ import json
 import time
 import asyncio
 import itertools
+import html
 from datetime import datetime, timedelta
 
 import httpx
@@ -94,7 +95,7 @@ async def send_long_message(c, chat_id, text, max_len=3900):
         try:
             await c.bot.send_message(chat_id, part, parse_mode="HTML")
         except Exception:
-            plain = re.sub(r"<[^>]*>", "", part)
+            plain = html.unescape(re.sub(r"<[^>]*>", "", part))
             await c.bot.send_message(chat_id, plain)
         await asyncio.sleep(0.15)
 
@@ -678,7 +679,7 @@ async def cmd_admin_panel(chat_id, c):
         except Exception:
             pass
         kb.append([InlineKeyboardButton(
-            f"👤 {name} ({status_txt})", callback_data="ignore"
+            f"👤 {html.escape(str(name))} ({status_txt})", callback_data="ignore"
         )])
         kb.append([
             InlineKeyboardButton("➕ تمدید ۳۰ روز", callback_data=f"adm_ren_{uid}_30"),
@@ -711,7 +712,7 @@ async def fetch_races_for_chat(chat_id, c):
             races = await get_all_races(pg)
             return races
     except Exception as e:
-        await c.bot.send_message(chat_id, f"❌ دریافت جدول ناموفق بود:\n<code>{str(e)[:800]}</code>", parse_mode="HTML")
+        await c.bot.send_message(chat_id, f"❌ دریافت جدول ناموفق بود:\n<code>{html.escape(str(e)[:800])}</code>", parse_mode="HTML")
         return None
     finally:
         if browser:
@@ -722,19 +723,19 @@ def format_round_result(round_no, res, detailed=False):
     w, p, s = res["w"], res["p"], res["s"]
     msg = (
         f"\n🏁 <b>دور R{round_no}</b>\n"
-        f"🥇 <b>پیش‌بر:</b> {w['num']}-{w['n']} "
+        f"🥇 <b>پیش‌بر:</b> {w['num']}-{html.escape(str(w['n']))} "
         f"({w['model_prob']:.1f}٪)\n"
-        f"🥈 <b>میان‌بر:</b> {p['num']}-{p['n']} "
+        f"🥈 <b>میان‌بر:</b> {p['num']}-{html.escape(str(p['n']))} "
         f"({p['model_prob']:.1f}٪)\n"
-        f"🥉 <b>پی‌بر:</b> {s['num']}-{s['n']} "
+        f"🥉 <b>پی‌بر:</b> {s['num']}-{html.escape(str(s['n']))} "
         f"({s['model_prob']:.1f}٪)\n"
         f"👥 <b>دوقلوی اصلی:</b> "
     )
     if res["q"]:
         q = res["q"]
         msg += (
-            f"{q['h1']['num']}-{q['h1']['n']} + "
-            f"{q['h2']['num']}-{q['h2']['n']} "
+            f"{q['h1']['num']}-{html.escape(str(q['h1']['n']))} + "
+            f"{q['h2']['num']}-{html.escape(str(q['h2']['n']))} "
             f"({q['prob']:.1f}٪)\n"
         )
     else:
@@ -750,7 +751,7 @@ def format_round_result(round_no, res, detailed=False):
                 if h["market_prob"] is not None else "ناموجود"
             )
             msg += (
-                f"{i}. {h['num']}-{h['n']} | مدل {h['model_prob']:.1f}%"
+                f"{i}. {h['num']}-{html.escape(str(h['n']))} | مدل {h['model_prob']:.1f}%"
                 f" | بازار {market}\n"
             )
     return msg + "━━━━━━━━━━━━━━\n"
@@ -838,7 +839,7 @@ async def process_quinellas(chat_id, c, variant_type):
         msg += (
             f"\n🏁 <b>دور R{r}</b>\n"
             f"👥 {chosen['h1']['num']}-{chosen['h1']['n']} + "
-            f"{chosen['h2']['num']}-{chosen['h2']['n']}\n"
+            f"{chosen['h2']['num']}-{html.escape(str(chosen['h2']['n']))}\n"
             f"📊 احتمال تخمینی: {chosen['prob']:.1f}%\n"
         )
         if variant_type == "q_value":
@@ -871,9 +872,9 @@ async def process_multileg(chat_id, c, leg_type, bet_amount=None):
     details = []
     for r in selected:
         res = analyze_horses([dict(x) for x in races[r]])
-        picks.append(f"R{r}: {res['w']['num']}-{res['w']['n']}")
+        picks.append(f"R{r}: {res['w']['num']}-{html.escape(str(res['w']['n']))}")
         details.append(
-            f"R{r}: {res['w']['num']}-{res['w']['n']} "
+            f"R{r}: {res['w']['num']}-{html.escape(str(res['w']['n']))} "
             f"({res['w']['model_prob']:.1f}%)"
         )
     msg = (
@@ -933,7 +934,7 @@ async def process_value_bets(chat_id, c, bet_amount=None):
             msg += f"\n🏁 <b>دور R{r}</b>\n"
             for h in candidates[:3]:
                 msg += (
-                    f"💎 {h['num']}-{h['n']} | مدل {h['model_prob']:.1f}%"
+                    f"💎 {h['num']}-{html.escape(str(h['n']))} | مدل {h['model_prob']:.1f}%"
                     f" | اختلاف با بازار {h['edge']:+.1f}%\n"
                 )
     if not found:
@@ -954,8 +955,8 @@ async def cmd_history(chat_id, c):
     for item in history[:5]:
         msg += (
             f"📅 {item.get('date','') } | دور {item.get('round','')}\n"
-            f"🥇 {item.get('win','')}\n"
-            f"👥 {item.get('quinella','')}\n"
+            f"🥇 {html.escape(str(item.get('win','')))}\n"
+            f"👥 {html.escape(str(item.get('quinella','')))}\n"
             f"🎯 {item.get('confidence','')}\n"
             "━━━━━━━━━━━━━━\n"
         )
@@ -1046,7 +1047,7 @@ async def cmd_broadcast(u: Update, c: C):
     status = await u.message.reply_text(f"⏳ ارسال به {len(users)} کاربر...")
     for uid in users:
         try:
-            await c.bot.send_message(int(uid), " ".join(c.args), parse_mode="HTML")
+            await c.bot.send_message(int(uid), html.escape(" ".join(c.args)))
             ok += 1
             await asyncio.sleep(0.08)
         except Exception:
@@ -1331,6 +1332,8 @@ async def button_callback(u: Update, c: C):
 async def main():
     if not T:
         raise RuntimeError("BOT_TOKEN تنظیم نشده است.")
+    if not all([A, D, U]):
+        print("WARNING: USER_TOKEN / USER_DEVICE_ID / USER_UDI ناقص است؛ استخراج جدول کار نخواهد کرد.")
 
     app = AB().token(T).build()
     app.add_handler(CH("start", cmd_start))
