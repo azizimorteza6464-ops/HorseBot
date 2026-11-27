@@ -485,6 +485,62 @@ async def get_all_races(pg):
     return all_data
 
 
+async def fetch_racecard_performance(pg):
+    """Scrape publicly rendered racecard performance: form, weight, IOR, coach and recent-race interval."""
+    url = "https://asbdavani.app/racecards"
+    try:
+        await pg.goto(url, timeout=90000, wait_until="domcontentloaded")
+        await pg.wait_for_timeout(3500)
+        rows = await pg.evaluate("""() => {
+          const clean = s => (s || '').replace(/\\u200c/g,' ').replace(/\\s+/g,' ').trim();
+          const num = s => {
+            s = String(s || '').replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d));
+            const m = s.match(/\\d+(?:[.,]\\d+)?/); return m ? Number(m[0].replace(',','.')) : null;
+          };
+          return Array.from(document.querySelectorAll('.race-card-item')).map(card => {
+            const a = card.querySelector('a.race-card-horse-name');
+            if (!a) return null;
+            const href = a.getAttribute('href') || '';
+            const idm = href.match(/\\/performance\\/horses\\/([^/?#]+)/);
+            const imgAlt = card.querySelector('.race-card-horse img')?.getAttribute('alt') || '';
+            const nm = imgAlt.match(/([0-9۰-۹]+)\\s*$/);
+            const number = nm ? num(nm[1]) : null;
+            const rating = card.querySelector('.race-card-rating');
+            const spans = rating ? Array.from(rating.querySelectorAll(':scope > span')) : [];
+            const weightEl = spans.find(x => /kg/i.test(x.innerText || ''));
+            const weight = weightEl ? num(weightEl.innerText) : null;
+            const iorEl = rating?.querySelector('.ior');
+            const ior = iorEl ? num(iorEl.innerText) : null;
+            const perf = card.querySelector('.race-card-performance');
+            const perfSpans = perf ? Array.from(perf.querySelectorAll(':scope > span')).map(x => clean(x.innerText)) : [];
+            const ranks = (perfSpans[1] || '').replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/[^0-9-]/g,'');
+            const stat = (perfSpans[2] || '').replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d));
+            const statm = stat.match(/(\\d+)\\s*[-–]\\s*(\\d+)\\s*[-–]\\s*(\\d+)\\s*\\/\\s*(\\d+)/);
+            const jockeyBox = card.querySelector('.race-card-jockey');
+            const coachEl = card.querySelector('a.race-card-coach');
+            const owner = jockeyBox ? clean(Array.from(jockeyBox.children).find(x => !x.matches('a'))?.innerText) : '';
+            const riderEl = card.querySelector('.race-card-rider, .race-card-jockey a.race-card-jockey, [class*="race-card-jockey"] [class*="rider"]');
+            const rider = riderEl ? clean(riderEl.innerText) : '';
+            const coach = coachEl ? clean(coachEl.innerText) : '';
+            const days = num(perfSpans[0]);
+            return {
+              horse_id: idm ? idm[1] : null,
+              name: clean(a.innerText), number, weight, ior,
+              perf: ranks || null, days_since_last: days,
+              p1: statm ? Number(statm[1]) : null,
+              p2: statm ? Number(statm[2]) : null,
+              p3: statm ? Number(statm[3]) : null,
+              starts: statm ? Number(statm[4]) : null,
+              owner, coach, jockey: rider || null
+            };
+          }).filter(Boolean);
+        }""")
+        return rows or []
+    except Exception as e:
+        print("racecard performance scrape failed:", repr(e))
+        return []
+
+
 # ======================== تحلیل هر دور ========================
 
 def _normalized_inverse_odds(horses, field="pishbar_odd"):
@@ -854,6 +910,7 @@ async def fetch_api_races(pg):
                 "n": clean_text(runner.get("horse_name") or f"اسب {num}"),
                 "race_id": rid,
                 "horse_id": safe_int(runner.get("id")),
+                "external_id": clean_text(runner.get("external_id") or ""),
                 "scratched": bool(runner.get("scratched")),
                 "not_finished": bool(runner.get("not_finished")),
                 "pishbar_odd": horse_odds.get("pishbar"),
@@ -897,8 +954,31 @@ async def fetch_races_for_chat(chat_id, c):
                 print("API race fetch failed; trying visible racecard:", repr(api_error))
                 races = await get_all_races(pg)
 
-            # DOM-only fields are merged by race and horse number when available.
+            # Enrich every runner with the official racecard performance page.
+            # This page includes last-rank sequence, starts/podiums, weight, IOR and coach.
             try:
+                performance_rows = await fetch_racecard_performance(pg)
+                perf_by_id = {clean_text(x.get("horse_id")): x for x in performance_rows if x.get("horse_id")}
+                perf_by_name = {clean_text(x.get("name")): x for x in performance_rows if x.get("name")}
+                for horses in races.values():
+                    for horse in horses:
+                        perf = perf_by_id.get(clean_text(horse.get("external_id"))) or perf_by_name.get(clean_text(horse.get("n")))
+                        if not perf:
+                            continue
+                        for dest, srcfield in (("weight","weight"),("ior","ior"),("perf","perf"),
+                                              ("days_since_last","days_since_last"),("p1","p1"),
+                                              ("p2","p2"),("p3","p3"),("starts","starts"),
+                                              ("owner","owner"),("coach","coach"),("j","jockey")):
+                            val = perf.get(srcfield)
+                            if val not in (None, "", "ناموجود", "نامشخص"):
+                                horse[dest] = val
+            except Exception as perf_error:
+                print("racecard performance enrichment skipped:", repr(perf_error))
+
+            # DOM-only fields from participation page are merged by race and horse number.
+            try:
+                await pg.goto(SITE_URL, timeout=90000, wait_until="domcontentloaded")
+                await pg.wait_for_timeout(2200)
                 dom_races = await get_all_races(pg)
                 for rno, horses in races.items():
                     dom_by_num = {safe_int(h.get("num")): h for h in dom_races.get(rno, [])}
@@ -957,7 +1037,13 @@ def format_round_result(round_no, res, detailed=False):
                 f"{rank}) شماره {h['num']} - {html.escape(str(h['n']))}"
                 f" | مدل {h['model_prob']:.1f}% | پیش‌بر {odd}"
                 f" | میان‌بر {mid_odd} | پی‌بر {place_odd}"
-                f" | بازار {market} | مشارکت {survey}\n"
+                f" | بازار {market} | مشارکت {survey}"
+                f" | فرم {html.escape(str(h.get('perf') or 'ناموجود'))}"
+                f" | وزن {html.escape(str(h.get('weight') or 'ناموجود'))}"
+                f" | IOR {html.escape(str(h.get('ior') if h.get('ior') is not None else 'ناموجود'))}"
+                f" | روز از آخرین مسابقه {html.escape(str(h.get('days_since_last') if h.get('days_since_last') is not None else 'ناموجود'))}"
+                f" | مربی {html.escape(str(h.get('coach') or 'ناموجود'))}"
+                f" | چابکسوار {html.escape(str(h.get('j') or 'نامشخص'))}\n"
             )
     return msg + "━━━━━━━━━━━━━━\n"
 
