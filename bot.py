@@ -30,6 +30,7 @@ R = os.environ.get("GITHUB_REPOSITORY")
 MY_ID = os.environ.get("ADMIN_ID", "184149177")
 
 # --- تنظیمات دکمه ارتباط با مدیر ---
+# هر متنی که می‌خواهید اینجا بنویسید (شماره، آیدی، پیام و...)
 ADMIN_CONTACT_INFO = (
     "📞 <b>راه‌های ارتباط با مدیر:</b>\n\n"
     "آیدی تلگرام: @Your_Admin_Username\n"
@@ -352,35 +353,13 @@ async def prepare_page(pg):
         pass
 
 async def make_browser_context(p):
-    # ---------------------------------------------------------
-    # 🚨 در صورت نیاز به پروکسی ایرانی، آدرس را اینجا وارد کنید:
-    PROXY_SERVER = os.environ.get("IRAN_PROXY_URL", "") # مثلا: http://1.2.3.4:8080
-    PROXY_USER = os.environ.get("IRAN_PROXY_USER", "")
-    PROXY_PASS = os.environ.get("IRAN_PROXY_PASS", "")
-    
-    launch_kwargs = {
-        "headless": True,
-        "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-    }
-    
-    if PROXY_SERVER:
-        proxy_config = {"server": PROXY_SERVER}
-        if PROXY_USER and PROXY_PASS:
-            proxy_config["username"] = PROXY_USER
-            proxy_config["password"] = PROXY_PASS
-        launch_kwargs["proxy"] = proxy_config
-        print(f"Using proxy: {PROXY_SERVER}")
-    # ---------------------------------------------------------
-
-    browser = await p.chromium.launch(**launch_kwargs)
-    
-    # اضافه کردن User-Agent واقعی برای جلوگیری از شناسایی
-    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    
+    browser = await p.chromium.launch(
+        headless=True,
+        args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+    )
     context = await browser.new_context(
         viewport={"width": 1440, "height": 1000},
         locale="fa-IR",
-        user_agent=user_agent
     )
     cookies = []
     for name, value in (("auth_token", A), ("device_id", D), ("_udi", U)):
@@ -475,7 +454,7 @@ async def get_all_races(pg):
 async def fetch_racecard_performance(pg):
     url = "https://asbdavani.app/racecards"
     try:
-        await pg.goto(url, timeout=30000, wait_until="load")
+        await pg.goto(url, timeout=90000, wait_until="domcontentloaded")
         await pg.wait_for_timeout(3500)
         rows = await pg.evaluate("""() => {
           const clean = s => (s || '').replace(/\\u200c/g,' ').replace(/\\s+/g,' ').trim();
@@ -852,63 +831,43 @@ async def fetch_races_for_chat(chat_id, c):
     global SITE_WEATHER_CACHE, RACE_DAY_INFO
     SITE_WEATHER_CACHE = None
     RACE_DAY_INFO = {} # پاک کردن اطلاعات قبلی
-    
     if not all([A, D, U]):
         await c.bot.send_message(chat_id, "⚠️ اطلاعات ورود سایت در تنظیمات ربات کامل نیست.")
         return None
-        
     browser = None
     try:
         async with ap() as p:
             browser, context = await make_browser_context(p)
             pg = await context.new_page()
-            
-            # تلاش برای باز کردن سایت با مدیریت خطای بهتر
-            try:
-                print(f"Navigating to {SITE_URL}...")
-                # تغییر wait_until به "load" برای جلوگیری از تایم‌اوت‌های زودهنگام
-                await pg.goto(SITE_URL, timeout=30000, wait_until="load")
-            except Exception as nav_error:
-                print(f"Navigation error: {repr(nav_error)}")
-                await c.bot.send_message(
-                    chat_id, 
-                    "❌ <b>خطا در اتصال به سایت</b>\n\n"
-                    "سایت مسابقات پاسخ نداد یا آی‌پی سرور شما مسدود شده است.\n"
-                    "لطفاً چند دقیقه دیگر تلاش کنید یا به مدیر اطلاع دهید.",
-                    parse_mode="HTML"
-                )
-                return None
-
+            await pg.goto(SITE_URL, timeout=90000, wait_until="domcontentloaded")
             await pg.wait_for_timeout(4500)
             body = clean_text(await pg.locator("body").inner_text())
             SITE_WEATHER_CACHE = extract_site_weather(body) or SITE_WEATHER_CACHE
-            
             if "ورود" in body[:500] or "login" in body[:500].lower():
-                await c.bot.send_message(chat_id, "⚠️ نشست ورود سایت منقضی شده است. لطفاً کوکی‌های جدید را در تنظیمات قرار دهید.")
+                await c.bot.send_message(chat_id, "⚠️ نشست ورود سایت منقضی شده است.")
                 return None
 
             try:
                 races = await fetch_api_races(pg)
             except Exception as api_error:
                 print(f"API failed, using fallback: {api_error}")
+                races = await get_all_races(pg)
+                
+                # تلاش هوشمندانه‌تر برای استخراج تاریخ و شهر در حالت پشتیبان
                 try:
-                    races = await get_all_races(pg)
-                except Exception as dom_error:
-                    await c.bot.send_message(chat_id, f"❌ خطا در دریافت اطلاعات از صفحه:\n<code>{html.escape(str(dom_error)[:300])}</code>", parse_mode="HTML")
-                    return None
-
-                try:
+                    # تلاش برای پیدا کردن نام شهر از منو یا هدر
                     city_match = re.search(r"(?:کورس|مسابقات|میدان)\s*([^\n,]+)", body)
                     if city_match:
                         RACE_DAY_INFO["city"] = clean_text(city_match.group(1))
                     else:
                         RACE_DAY_INFO["city"] = "نامشخص (از صفحه اصلی)"
                     
+                    # تلاش برای پیدا کردن تاریخ میلادی معتبر (مثلاً 2024-05-20)
                     date_match = re.search(r"(20\d{2}[-/]\d{1,2}[-/]\d{1,2})", body)
                     if date_match:
                         RACE_DAY_INFO["date"] = date_match.group(1)
                     else:
-                        RACE_DAY_INFO["date"] = datetime.now().strftime("%Y-%m-%d")
+                        RACE_DAY_INFO["date"] = datetime.now().strftime("%Y-%m-%d") # اگر پیدا نشد، تاریخ امروز
                 except Exception as e:
                     print("Fallback date/city extraction failed:", e)
 
@@ -929,7 +888,7 @@ async def fetch_races_for_chat(chat_id, c):
                 print("racecard performance enrichment skipped:", repr(perf_error))
 
             try:
-                await pg.goto(SITE_URL, timeout=30000, wait_until="load")
+                await pg.goto(SITE_URL, timeout=90000, wait_until="domcontentloaded")
                 await pg.wait_for_timeout(2200)
                 dom_races = await get_all_races(pg)
                 for rno, horses in races.items():
@@ -942,9 +901,7 @@ async def fetch_races_for_chat(chat_id, c):
                                 horse[field] = value
             except Exception as dom_error:
                 print("DOM enrichment skipped:", repr(dom_error))
-                
             return races
-            
     except Exception as e:
         await c.bot.send_message(chat_id, f"❌ دریافت جدول ناموفق بود:\n<code>{html.escape(str(e)[:800])}</code>", parse_mode="HTML")
         return None
@@ -1261,7 +1218,7 @@ async def cmd_debug(u: Update, c: C):
             pages = [("home", SITE_URL), ("odds", SITE_URL.rstrip("/") + "/odds"), ("dorei", SITE_URL.rstrip("/") + "/dorei"), ("bets", SITE_URL.rstrip("/") + "/bets"), ("wallet", SITE_URL.rstrip("/") + "/wallet"), ("racecards", "https://asbdavani.app/racecards"), ("live", "https://asbdavani.app/live")]
             for label, url in pages:
                 try:
-                    await pg.goto(url, timeout=30000, wait_until="load")
+                    await pg.goto(url, timeout=90000, wait_until="domcontentloaded")
                     await pg.wait_for_timeout(3500)
                     with open(os.path.join(dump_dir, label + ".html"), "w", encoding="utf-8") as f: f.write(await pg.content())
                     try:
@@ -1273,7 +1230,7 @@ async def cmd_debug(u: Update, c: C):
             if tasks: await asyncio.gather(*tasks, return_exceptions=True)
             with open(os.path.join(dump_dir, "network_requests.json"), "w", encoding="utf-8") as f: json.dump(network_log, f, ensure_ascii=False, indent=2)
             try:
-                await pg.goto(SITE_URL, timeout=30000, wait_until="load")
+                await pg.goto(SITE_URL, timeout=90000, wait_until="domcontentloaded")
                 await pg.wait_for_timeout(3000)
                 races = await get_all_races(pg)
                 summary = "\n".join(f"R{r}: {len(hs)} اسب - " + "، ".join(x["n"] for x in hs) for r, hs in races.items())
@@ -1532,4 +1489,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt: pass
     except Exception as exc:
         print("CRITICAL ERROR:", repr(exc))
-    sys.exit(1)
+        sys.exit(1)
