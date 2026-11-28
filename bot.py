@@ -36,6 +36,7 @@ ADMIN_CONTACT_INFO = (
     "شماره تماس: 09120000000\n\n"
     "💬 در ساعات ۹ صبح تا ۱۰ شب در خدمت شما هستیم."
 )
+# -----------------------------------------
 
 CARD_NUMBER = os.environ.get("CARD_NUMBER", "6219861802290089")
 CARD_HOLDER = os.environ.get("CARD_HOLDER", "مرتضی عزیزی")
@@ -351,13 +352,35 @@ async def prepare_page(pg):
         pass
 
 async def make_browser_context(p):
-    browser = await p.chromium.launch(
-        headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-    )
+    # ---------------------------------------------------------
+    # 🚨 در صورت نیاز به پروکسی ایرانی، آدرس را اینجا وارد کنید:
+    PROXY_SERVER = os.environ.get("IRAN_PROXY_URL", "") # مثلا: http://1.2.3.4:8080
+    PROXY_USER = os.environ.get("IRAN_PROXY_USER", "")
+    PROXY_PASS = os.environ.get("IRAN_PROXY_PASS", "")
+    
+    launch_kwargs = {
+        "headless": True,
+        "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+    }
+    
+    if PROXY_SERVER:
+        proxy_config = {"server": PROXY_SERVER}
+        if PROXY_USER and PROXY_PASS:
+            proxy_config["username"] = PROXY_USER
+            proxy_config["password"] = PROXY_PASS
+        launch_kwargs["proxy"] = proxy_config
+        print(f"Using proxy: {PROXY_SERVER}")
+    # ---------------------------------------------------------
+
+    browser = await p.chromium.launch(**launch_kwargs)
+    
+    # اضافه کردن User-Agent واقعی برای جلوگیری از شناسایی
+    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    
     context = await browser.new_context(
         viewport={"width": 1440, "height": 1000},
         locale="fa-IR",
+        user_agent=user_agent
     )
     cookies = []
     for name, value in (("auth_token", A), ("device_id", D), ("_udi", U)):
@@ -415,22 +438,11 @@ async def extract_selected_horse_details(pg, round_no):
             const weightMatch = all.match(/(\\d+(?:\\.\\d+)?)\\s*kg/i);
             const iorMatch = all.match(/(?:IOR|ضریب|امتیاز)\\s*[:：]?\\s*(\\d+(?:\\.\\d+)?)/i);
             const perfMatch = all.match(/\\b([1-5](?:\\s*-\\s*[1-5]){1,8})\\b/);
-            // تلاش برای استخراج نام چابک‌سوار از DOM
-            let jockey = null;
-            const textLines = text.split('\\n').map(l => l.trim()).filter(Boolean);
-            if (textLines.length >= 3) {
-                // معمولاً در سطر سوم یا چهارم نام چابک‌سوار قرار دارد
-                const possibleJockey = textLines[2] || textLines[3];
-                if (possibleJockey && !/\\d/.test(possibleJockey) && possibleJockey.length > 2) {
-                    jockey = possibleJockey;
-                }
-            }
             return {
                 row: i,
                 weight: weightMatch ? Number(weightMatch[1]) : null,
                 ior: iorMatch ? Number(iorMatch[1]) : null,
-                perf: perfMatch ? perfMatch[1].replace(/\\s/g, '') : null,
-                j: jockey
+                perf: perfMatch ? perfMatch[1].replace(/\\s/g, '') : null
             };
         });
     }""", round_no)
@@ -453,7 +465,7 @@ async def get_all_races(pg):
             horses.append({
                 "num": horse["num"], "n": clean_text(horse["name"]),
                 "weight": d.get("weight"), "ior": d.get("ior"),
-                "perf": d.get("perf") or "ناموجود", "j": d.get("j") or "نامشخص",
+                "perf": d.get("perf") or "ناموجود", "j": "نامشخص",
                 "pishbar_odd": None, "miyanbar_odd": None, "paybar_odd": None,
                 "survey_percent": None, "scratched": False,
             })
@@ -463,7 +475,7 @@ async def get_all_races(pg):
 async def fetch_racecard_performance(pg):
     url = "https://asbdavani.app/racecards"
     try:
-        await pg.goto(url, timeout=90000, wait_until="domcontentloaded")
+        await pg.goto(url, timeout=30000, wait_until="load")
         await pg.wait_for_timeout(3500)
         rows = await pg.evaluate("""() => {
           const clean = s => (s || '').replace(/\\u200c/g,' ').replace(/\\s+/g,' ').trim();
@@ -819,14 +831,6 @@ async def fetch_api_races(pg):
                 continue
             runner_id = safe_int(runner.get("id"))
             horse_odds = odds_map.get(num) or odds_map.get(runner_id) or {}
-            
-            # استخراج نام چابک‌سوار از API (اگر وجود داشته باشد)
-            jockey_name = clean_text(
-                runner.get("jockey_name") or 
-                runner.get("jockey") or 
-                (runner.get("jockey") or {}).get("name") if isinstance(runner.get("jockey"), dict) else ""
-            ) or "نامشخص"
-            
             entries.append({
                 "num": num, "n": clean_text(runner.get("horse_name") or f"اسب {num}"),
                 "race_id": rid, "horse_id": safe_int(runner.get("id")),
@@ -834,7 +838,7 @@ async def fetch_api_races(pg):
                 "scratched": bool(runner.get("scratched")), "not_finished": bool(runner.get("not_finished")),
                 "pishbar_odd": horse_odds.get("pishbar"), "miyanbar_odd": horse_odds.get("miyanbar"), "paybar_odd": horse_odds.get("paybar"),
                 "survey_percent": survey_map.get(num),
-                "weight": None, "ior": None, "perf": "ناموجود", "j": jockey_name,
+                "weight": None, "ior": None, "perf": "ناموجود", "j": "نامشخص",
             })
         return rno, entries
 
@@ -847,29 +851,52 @@ async def fetch_api_races(pg):
 async def fetch_races_for_chat(chat_id, c):
     global SITE_WEATHER_CACHE, RACE_DAY_INFO
     SITE_WEATHER_CACHE = None
-    RACE_DAY_INFO = {}
+    RACE_DAY_INFO = {} # پاک کردن اطلاعات قبلی
+    
     if not all([A, D, U]):
         await c.bot.send_message(chat_id, "⚠️ اطلاعات ورود سایت در تنظیمات ربات کامل نیست.")
         return None
+        
     browser = None
     try:
         async with ap() as p:
             browser, context = await make_browser_context(p)
             pg = await context.new_page()
-            await pg.goto(SITE_URL, timeout=90000, wait_until="domcontentloaded")
+            
+            # تلاش برای باز کردن سایت با مدیریت خطای بهتر
+            try:
+                print(f"Navigating to {SITE_URL}...")
+                # تغییر wait_until به "load" برای جلوگیری از تایم‌اوت‌های زودهنگام
+                await pg.goto(SITE_URL, timeout=30000, wait_until="load")
+            except Exception as nav_error:
+                print(f"Navigation error: {repr(nav_error)}")
+                await c.bot.send_message(
+                    chat_id, 
+                    "❌ <b>خطا در اتصال به سایت</b>\n\n"
+                    "سایت مسابقات پاسخ نداد یا آی‌پی سرور شما مسدود شده است.\n"
+                    "لطفاً چند دقیقه دیگر تلاش کنید یا به مدیر اطلاع دهید.",
+                    parse_mode="HTML"
+                )
+                return None
+
             await pg.wait_for_timeout(4500)
             body = clean_text(await pg.locator("body").inner_text())
             SITE_WEATHER_CACHE = extract_site_weather(body) or SITE_WEATHER_CACHE
+            
             if "ورود" in body[:500] or "login" in body[:500].lower():
-                await c.bot.send_message(chat_id, "⚠️ نشست ورود سایت منقضی شده است.")
+                await c.bot.send_message(chat_id, "⚠️ نشست ورود سایت منقضی شده است. لطفاً کوکی‌های جدید را در تنظیمات قرار دهید.")
                 return None
 
             try:
                 races = await fetch_api_races(pg)
             except Exception as api_error:
                 print(f"API failed, using fallback: {api_error}")
-                races = await get_all_races(pg)
-                
+                try:
+                    races = await get_all_races(pg)
+                except Exception as dom_error:
+                    await c.bot.send_message(chat_id, f"❌ خطا در دریافت اطلاعات از صفحه:\n<code>{html.escape(str(dom_error)[:300])}</code>", parse_mode="HTML")
+                    return None
+
                 try:
                     city_match = re.search(r"(?:کورس|مسابقات|میدان)\s*([^\n,]+)", body)
                     if city_match:
@@ -902,7 +929,7 @@ async def fetch_races_for_chat(chat_id, c):
                 print("racecard performance enrichment skipped:", repr(perf_error))
 
             try:
-                await pg.goto(SITE_URL, timeout=90000, wait_until="domcontentloaded")
+                await pg.goto(SITE_URL, timeout=30000, wait_until="load")
                 await pg.wait_for_timeout(2200)
                 dom_races = await get_all_races(pg)
                 for rno, horses in races.items():
@@ -915,7 +942,9 @@ async def fetch_races_for_chat(chat_id, c):
                                 horse[field] = value
             except Exception as dom_error:
                 print("DOM enrichment skipped:", repr(dom_error))
+                
             return races
+            
     except Exception as e:
         await c.bot.send_message(chat_id, f"❌ دریافت جدول ناموفق بود:\n<code>{html.escape(str(e)[:800])}</code>", parse_mode="HTML")
         return None
@@ -989,10 +1018,7 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
     races = await fetch_races_for_chat(chat_id, c)
     if not races:
         return
-    
-    # دریافت اطلاعات هواشناسی
     weather = await get_weather()
-    
     available = sorted(races.keys())
     if specific_round is not None:
         selected = [specific_round] if specific_round in races else []
@@ -1005,25 +1031,16 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
         await c.bot.send_message(chat_id, "⚠️ دور درخواستی در جدول فعلی وجود ندارد.\n" f"دورهای موجود: {', '.join('R'+str(x) for x in available)}")
         return
 
-    # --- بخش هدر (میدان، تاریخ و هوا) ---
-    msg = "🏇 <b>تحلیل مسابقات اسب‌دوانی</b>\n"
-    msg += "━━━━━━━━━━━━━━\n"
-    
-    if RACE_DAY_INFO.get("city") or RACE_DAY_INFO.get("date"):
-        if RACE_DAY_INFO.get("city"):
-            msg += f"📍 <b>میدان:</b> {RACE_DAY_INFO['city']}\n"
-        if RACE_DAY_INFO.get("date"):
-            full_date = format_full_date(RACE_DAY_INFO.get("date", ""))
-            msg += f"📅 <b>تاریخ:</b> {full_date}\n"
-    
-    msg += f"🌤 <b>وضعیت هوا:</b> {weather}\n"
-    
+    msg = "🏇 <b>تحلیل مسابقات اسب‌دوانی</b>\n━━━━━━━━━━━━━━\n"
+    if RACE_DAY_INFO.get("city"):
+        full_date = format_full_date(RACE_DAY_INFO.get("date", ""))
+        msg += f"📍 <b>میدان:</b> {RACE_DAY_INFO['city']}\n"
+        msg += f"📅 <b>تاریخ:</b> {full_date}\n"
+    msg += f"🌤 {weather}\n"
     if bet_amount:
-        msg += f"💰 <b>سرمایه:</b> <code>{bet_amount:,}</code> تومان\n"
-    
+        msg += f"💰 سرمایه: <code>{bet_amount:,}</code> تومان\n"
     msg += "━━━━━━━━━━━━━━\n"
 
-    # اضافه کردن تحلیل دورها
     for r in selected:
         try:
             res = analyze_horses([dict(x) for x in races[r]])
@@ -1032,7 +1049,6 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                 await save_to_history(res, r)
         except Exception as e:
             msg += f"\n🏁 دور R{r}: ⚠️ تحلیل نشد ({clean_text(e)})\n"
-            
     msg += "\n⚠️ تحلیل آماری تضمین نتیجه نیست."
     await send_long_message(c, chat_id, msg)
 
@@ -1245,7 +1261,7 @@ async def cmd_debug(u: Update, c: C):
             pages = [("home", SITE_URL), ("odds", SITE_URL.rstrip("/") + "/odds"), ("dorei", SITE_URL.rstrip("/") + "/dorei"), ("bets", SITE_URL.rstrip("/") + "/bets"), ("wallet", SITE_URL.rstrip("/") + "/wallet"), ("racecards", "https://asbdavani.app/racecards"), ("live", "https://asbdavani.app/live")]
             for label, url in pages:
                 try:
-                    await pg.goto(url, timeout=90000, wait_until="domcontentloaded")
+                    await pg.goto(url, timeout=30000, wait_until="load")
                     await pg.wait_for_timeout(3500)
                     with open(os.path.join(dump_dir, label + ".html"), "w", encoding="utf-8") as f: f.write(await pg.content())
                     try:
@@ -1257,7 +1273,7 @@ async def cmd_debug(u: Update, c: C):
             if tasks: await asyncio.gather(*tasks, return_exceptions=True)
             with open(os.path.join(dump_dir, "network_requests.json"), "w", encoding="utf-8") as f: json.dump(network_log, f, ensure_ascii=False, indent=2)
             try:
-                await pg.goto(SITE_URL, timeout=90000, wait_until="domcontentloaded")
+                await pg.goto(SITE_URL, timeout=30000, wait_until="load")
                 await pg.wait_for_timeout(3000)
                 races = await get_all_races(pg)
                 summary = "\n".join(f"R{r}: {len(hs)} اسب - " + "، ".join(x["n"] for x in hs) for r, hs in races.items())
@@ -1516,4 +1532,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt: pass
     except Exception as exc:
         print("CRITICAL ERROR:", repr(exc))
-        sys.exit(1)
+    sys.exit(1)
