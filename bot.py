@@ -354,7 +354,13 @@ async def prepare_page(pg):
 async def make_browser_context(p):
     browser = await p.chromium.launch(
         headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-web-security", "--ignore-certificate-errors"],
+        args=[
+            "--no-sandbox", 
+            "--disable-dev-shm-usage", 
+            "--disable-gpu", 
+            "--ignore-certificate-errors",
+            "--disable-setuid-sandbox"
+        ],
     )
     context = await browser.new_context(
         viewport={"width": 1440, "height": 1000},
@@ -455,7 +461,7 @@ async def get_all_races(pg):
 async def fetch_racecard_performance(pg):
     url = "https://asbdavani.app/racecards"
     try:
-        await pg.goto(url, timeout=90000, wait_until="domcontentloaded")
+        await pg.goto(url, timeout=60000, wait_until="domcontentloaded")
         await pg.wait_for_timeout(3500)
         rows = await pg.evaluate("""() => {
           const clean = s => (s || '').replace(/\\u200c/g,' ').replace(/\\s+/g,' ').trim();
@@ -831,20 +837,37 @@ async def fetch_api_races(pg):
 async def fetch_races_for_chat(chat_id, c):
     global SITE_WEATHER_CACHE, RACE_DAY_INFO
     SITE_WEATHER_CACHE = None
-    RACE_DAY_INFO = {} # پاک کردن اطلاعات قبلی
+    RACE_DAY_INFO = {}
     if not all([A, D, U]):
         await c.bot.send_message(chat_id, "⚠️ اطلاعات ورود سایت در تنظیمات ربات کامل نیست.")
         return None
+    
     browser = None
     try:
         async with ap() as p:
             browser, context = await make_browser_context(p)
             pg = await context.new_page()
-            try:
-                await pg.goto(SITE_URL, timeout=90000, wait_until="commit")
-                await pg.wait_for_selector("body", timeout=45000)
-            except Exception as e:
-                await c.bot.send_message(chat_id, f"❌ خطا در اتصال به سایت:\n<code>{html.escape(str(e)[:800])}</code>", parse_mode="HTML")
+            
+            # تلاش برای اتصال با مکانیزم Retry و Timeout های متفاوت
+            success = False
+            last_error = None
+            for attempt in range(3):
+                try:
+                    if attempt == 0:
+                        await pg.goto(SITE_URL, timeout=45000, wait_until="domcontentloaded")
+                    elif attempt == 1:
+                        await pg.goto(SITE_URL, timeout=45000, wait_until="commit")
+                    else:
+                        await pg.goto(SITE_URL, timeout=60000, wait_until="load")
+                    success = True
+                    break
+                except Exception as e:
+                    last_error = e
+                    print(f"Navigation attempt {attempt + 1} failed: {e}")
+                    await asyncio.sleep(2)
+
+            if not success:
+                await c.bot.send_message(chat_id, f"❌ اتصال به سایت پس از ۳ تلاش ناموفق بود.\nخطا: <code>{html.escape(str(last_error)[:500])}</code>", parse_mode="HTML")
                 return None
                 
             await pg.wait_for_timeout(4500)
@@ -864,7 +887,6 @@ async def fetch_races_for_chat(chat_id, c):
                     await c.bot.send_message(chat_id, f"❌ خطا در دریافت جدول از سایت:\n<code>{html.escape(str(fallback_err)[:800])}</code>", parse_mode="HTML")
                     return None
                 
-                # تلاش هوشمندانه‌تر برای استخراج تاریخ و شهر در حالت پشتیبان
                 try:
                     city_match = re.search(r"(?:کورس|مسابقات|میدان)\s*([^\n,]+)", body)
                     if city_match:
@@ -897,7 +919,7 @@ async def fetch_races_for_chat(chat_id, c):
                 print("racecard performance enrichment skipped:", repr(perf_error))
 
             try:
-                await pg.goto(SITE_URL, timeout=90000, wait_until="domcontentloaded")
+                await pg.goto(SITE_URL, timeout=60000, wait_until="domcontentloaded")
                 await pg.wait_for_timeout(2200)
                 dom_races = await get_all_races(pg)
                 for rno, horses in races.items():
@@ -1227,7 +1249,7 @@ async def cmd_debug(u: Update, c: C):
             pages = [("home", SITE_URL), ("odds", SITE_URL.rstrip("/") + "/odds"), ("dorei", SITE_URL.rstrip("/") + "/dorei"), ("bets", SITE_URL.rstrip("/") + "/bets"), ("wallet", SITE_URL.rstrip("/") + "/wallet"), ("racecards", "https://asbdavani.app/racecards"), ("live", "https://asbdavani.app/live")]
             for label, url in pages:
                 try:
-                    await pg.goto(url, timeout=90000, wait_until="domcontentloaded")
+                    await pg.goto(url, timeout=60000, wait_until="domcontentloaded")
                     await pg.wait_for_timeout(3500)
                     with open(os.path.join(dump_dir, label + ".html"), "w", encoding="utf-8") as f: f.write(await pg.content())
                     try:
@@ -1239,7 +1261,7 @@ async def cmd_debug(u: Update, c: C):
             if tasks: await asyncio.gather(*tasks, return_exceptions=True)
             with open(os.path.join(dump_dir, "network_requests.json"), "w", encoding="utf-8") as f: json.dump(network_log, f, ensure_ascii=False, indent=2)
             try:
-                await pg.goto(SITE_URL, timeout=90000, wait_until="domcontentloaded")
+                await pg.goto(SITE_URL, timeout=60000, wait_until="domcontentloaded")
                 await pg.wait_for_timeout(3000)
                 races = await get_all_races(pg)
                 summary = "\n".join(f"R{r}: {len(hs)} اسب - " + "، ".join(x["n"] for x in hs) for r, hs in races.items())
