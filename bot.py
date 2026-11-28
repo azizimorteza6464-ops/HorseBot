@@ -30,7 +30,6 @@ R = os.environ.get("GITHUB_REPOSITORY")
 MY_ID = os.environ.get("ADMIN_ID", "184149177")
 
 # --- تنظیمات دکمه ارتباط با مدیر ---
-# هر متنی که می‌خواهید اینجا بنویسید (شماره، آیدی، پیام و...)
 ADMIN_CONTACT_INFO = (
     "📞 <b>راه‌های ارتباط با مدیر:</b>\n\n"
     "آیدی تلگرام: @Your_Admin_Username\n"
@@ -355,11 +354,13 @@ async def prepare_page(pg):
 async def make_browser_context(p):
     browser = await p.chromium.launch(
         headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-web-security", "--ignore-certificate-errors"],
     )
     context = await browser.new_context(
         viewport={"width": 1440, "height": 1000},
         locale="fa-IR",
+        ignore_https_errors=True,
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
     cookies = []
     for name, value in (("auth_token", A), ("device_id", D), ("_udi", U)):
@@ -839,7 +840,13 @@ async def fetch_races_for_chat(chat_id, c):
         async with ap() as p:
             browser, context = await make_browser_context(p)
             pg = await context.new_page()
-            await pg.goto(SITE_URL, timeout=90000, wait_until="domcontentloaded")
+            try:
+                await pg.goto(SITE_URL, timeout=90000, wait_until="commit")
+                await pg.wait_for_selector("body", timeout=45000)
+            except Exception as e:
+                await c.bot.send_message(chat_id, f"❌ خطا در اتصال به سایت:\n<code>{html.escape(str(e)[:800])}</code>", parse_mode="HTML")
+                return None
+                
             await pg.wait_for_timeout(4500)
             body = clean_text(await pg.locator("body").inner_text())
             SITE_WEATHER_CACHE = extract_site_weather(body) or SITE_WEATHER_CACHE
@@ -851,23 +858,25 @@ async def fetch_races_for_chat(chat_id, c):
                 races = await fetch_api_races(pg)
             except Exception as api_error:
                 print(f"API failed, using fallback: {api_error}")
-                races = await get_all_races(pg)
+                try:
+                    races = await get_all_races(pg)
+                except Exception as fallback_err:
+                    await c.bot.send_message(chat_id, f"❌ خطا در دریافت جدول از سایت:\n<code>{html.escape(str(fallback_err)[:800])}</code>", parse_mode="HTML")
+                    return None
                 
                 # تلاش هوشمندانه‌تر برای استخراج تاریخ و شهر در حالت پشتیبان
                 try:
-                    # تلاش برای پیدا کردن نام شهر از منو یا هدر
                     city_match = re.search(r"(?:کورس|مسابقات|میدان)\s*([^\n,]+)", body)
                     if city_match:
                         RACE_DAY_INFO["city"] = clean_text(city_match.group(1))
                     else:
                         RACE_DAY_INFO["city"] = "نامشخص (از صفحه اصلی)"
                     
-                    # تلاش برای پیدا کردن تاریخ میلادی معتبر (مثلاً 2024-05-20)
                     date_match = re.search(r"(20\d{2}[-/]\d{1,2}[-/]\d{1,2})", body)
                     if date_match:
                         RACE_DAY_INFO["date"] = date_match.group(1)
                     else:
-                        RACE_DAY_INFO["date"] = datetime.now().strftime("%Y-%m-%d") # اگر پیدا نشد، تاریخ امروز
+                        RACE_DAY_INFO["date"] = datetime.now().strftime("%Y-%m-%d")
                 except Exception as e:
                     print("Fallback date/city extraction failed:", e)
 
