@@ -30,14 +30,12 @@ R = os.environ.get("GITHUB_REPOSITORY")
 MY_ID = os.environ.get("ADMIN_ID", "184149177")
 
 # --- تنظیمات دکمه ارتباط با مدیر ---
-# هر متنی که می‌خواهید اینجا بنویسید (شماره، آیدی، پیام و...)
 ADMIN_CONTACT_INFO = (
     "📞 <b>راه‌های ارتباط با مدیر:</b>\n\n"
     "آیدی تلگرام: @Your_Admin_Username\n"
     "شماره تماس: 09120000000\n\n"
     "💬 در ساعات ۹ صبح تا ۱۰ شب در خدمت شما هستیم."
 )
-# -----------------------------------------
 
 CARD_NUMBER = os.environ.get("CARD_NUMBER", "6219861802290089")
 CARD_HOLDER = os.environ.get("CARD_HOLDER", "مرتضی عزیزی")
@@ -417,11 +415,22 @@ async def extract_selected_horse_details(pg, round_no):
             const weightMatch = all.match(/(\\d+(?:\\.\\d+)?)\\s*kg/i);
             const iorMatch = all.match(/(?:IOR|ضریب|امتیاز)\\s*[:：]?\\s*(\\d+(?:\\.\\d+)?)/i);
             const perfMatch = all.match(/\\b([1-5](?:\\s*-\\s*[1-5]){1,8})\\b/);
+            // تلاش برای استخراج نام چابک‌سوار از DOM
+            let jockey = null;
+            const textLines = text.split('\\n').map(l => l.trim()).filter(Boolean);
+            if (textLines.length >= 3) {
+                // معمولاً در سطر سوم یا چهارم نام چابک‌سوار قرار دارد
+                const possibleJockey = textLines[2] || textLines[3];
+                if (possibleJockey && !/\\d/.test(possibleJockey) && possibleJockey.length > 2) {
+                    jockey = possibleJockey;
+                }
+            }
             return {
                 row: i,
                 weight: weightMatch ? Number(weightMatch[1]) : null,
                 ior: iorMatch ? Number(iorMatch[1]) : null,
-                perf: perfMatch ? perfMatch[1].replace(/\\s/g, '') : null
+                perf: perfMatch ? perfMatch[1].replace(/\\s/g, '') : null,
+                j: jockey
             };
         });
     }""", round_no)
@@ -444,7 +453,7 @@ async def get_all_races(pg):
             horses.append({
                 "num": horse["num"], "n": clean_text(horse["name"]),
                 "weight": d.get("weight"), "ior": d.get("ior"),
-                "perf": d.get("perf") or "ناموجود", "j": "نامشخص",
+                "perf": d.get("perf") or "ناموجود", "j": d.get("j") or "نامشخص",
                 "pishbar_odd": None, "miyanbar_odd": None, "paybar_odd": None,
                 "survey_percent": None, "scratched": False,
             })
@@ -810,6 +819,14 @@ async def fetch_api_races(pg):
                 continue
             runner_id = safe_int(runner.get("id"))
             horse_odds = odds_map.get(num) or odds_map.get(runner_id) or {}
+            
+            # استخراج نام چابک‌سوار از API (اگر وجود داشته باشد)
+            jockey_name = clean_text(
+                runner.get("jockey_name") or 
+                runner.get("jockey") or 
+                (runner.get("jockey") or {}).get("name") if isinstance(runner.get("jockey"), dict) else ""
+            ) or "نامشخص"
+            
             entries.append({
                 "num": num, "n": clean_text(runner.get("horse_name") or f"اسب {num}"),
                 "race_id": rid, "horse_id": safe_int(runner.get("id")),
@@ -817,7 +834,7 @@ async def fetch_api_races(pg):
                 "scratched": bool(runner.get("scratched")), "not_finished": bool(runner.get("not_finished")),
                 "pishbar_odd": horse_odds.get("pishbar"), "miyanbar_odd": horse_odds.get("miyanbar"), "paybar_odd": horse_odds.get("paybar"),
                 "survey_percent": survey_map.get(num),
-                "weight": None, "ior": None, "perf": "ناموجود", "j": "نامشخص",
+                "weight": None, "ior": None, "perf": "ناموجود", "j": jockey_name,
             })
         return rno, entries
 
@@ -830,7 +847,7 @@ async def fetch_api_races(pg):
 async def fetch_races_for_chat(chat_id, c):
     global SITE_WEATHER_CACHE, RACE_DAY_INFO
     SITE_WEATHER_CACHE = None
-    RACE_DAY_INFO = {} # پاک کردن اطلاعات قبلی
+    RACE_DAY_INFO = {}
     if not all([A, D, U]):
         await c.bot.send_message(chat_id, "⚠️ اطلاعات ورود سایت در تنظیمات ربات کامل نیست.")
         return None
@@ -853,21 +870,18 @@ async def fetch_races_for_chat(chat_id, c):
                 print(f"API failed, using fallback: {api_error}")
                 races = await get_all_races(pg)
                 
-                # تلاش هوشمندانه‌تر برای استخراج تاریخ و شهر در حالت پشتیبان
                 try:
-                    # تلاش برای پیدا کردن نام شهر از منو یا هدر
                     city_match = re.search(r"(?:کورس|مسابقات|میدان)\s*([^\n,]+)", body)
                     if city_match:
                         RACE_DAY_INFO["city"] = clean_text(city_match.group(1))
                     else:
                         RACE_DAY_INFO["city"] = "نامشخص (از صفحه اصلی)"
                     
-                    # تلاش برای پیدا کردن تاریخ میلادی معتبر (مثلاً 2024-05-20)
                     date_match = re.search(r"(20\d{2}[-/]\d{1,2}[-/]\d{1,2})", body)
                     if date_match:
                         RACE_DAY_INFO["date"] = date_match.group(1)
                     else:
-                        RACE_DAY_INFO["date"] = datetime.now().strftime("%Y-%m-%d") # اگر پیدا نشد، تاریخ امروز
+                        RACE_DAY_INFO["date"] = datetime.now().strftime("%Y-%m-%d")
                 except Exception as e:
                     print("Fallback date/city extraction failed:", e)
 
@@ -975,7 +989,10 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
     races = await fetch_races_for_chat(chat_id, c)
     if not races:
         return
+    
+    # دریافت اطلاعات هواشناسی
     weather = await get_weather()
+    
     available = sorted(races.keys())
     if specific_round is not None:
         selected = [specific_round] if specific_round in races else []
@@ -988,16 +1005,25 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
         await c.bot.send_message(chat_id, "⚠️ دور درخواستی در جدول فعلی وجود ندارد.\n" f"دورهای موجود: {', '.join('R'+str(x) for x in available)}")
         return
 
-    msg = "🏇 <b>تحلیل مسابقات اسب‌دوانی</b>\n━━━━━━━━━━━━━━\n"
-    if RACE_DAY_INFO.get("city"):
-        full_date = format_full_date(RACE_DAY_INFO.get("date", ""))
-        msg += f"📍 <b>میدان:</b> {RACE_DAY_INFO['city']}\n"
-        msg += f"📅 <b>تاریخ:</b> {full_date}\n"
-    msg += f"🌤 {weather}\n"
+    # --- بخش هدر (میدان، تاریخ و هوا) ---
+    msg = "🏇 <b>تحلیل مسابقات اسب‌دوانی</b>\n"
+    msg += "━━━━━━━━━━━━━━\n"
+    
+    if RACE_DAY_INFO.get("city") or RACE_DAY_INFO.get("date"):
+        if RACE_DAY_INFO.get("city"):
+            msg += f"📍 <b>میدان:</b> {RACE_DAY_INFO['city']}\n"
+        if RACE_DAY_INFO.get("date"):
+            full_date = format_full_date(RACE_DAY_INFO.get("date", ""))
+            msg += f"📅 <b>تاریخ:</b> {full_date}\n"
+    
+    msg += f"🌤 <b>وضعیت هوا:</b> {weather}\n"
+    
     if bet_amount:
-        msg += f"💰 سرمایه: <code>{bet_amount:,}</code> تومان\n"
+        msg += f"💰 <b>سرمایه:</b> <code>{bet_amount:,}</code> تومان\n"
+    
     msg += "━━━━━━━━━━━━━━\n"
 
+    # اضافه کردن تحلیل دورها
     for r in selected:
         try:
             res = analyze_horses([dict(x) for x in races[r]])
@@ -1006,6 +1032,7 @@ async def process_odds(chat_id, c, specific_round=None, all_rounds=False, bet_am
                 await save_to_history(res, r)
         except Exception as e:
             msg += f"\n🏁 دور R{r}: ⚠️ تحلیل نشد ({clean_text(e)})\n"
+            
     msg += "\n⚠️ تحلیل آماری تضمین نتیجه نیست."
     await send_long_message(c, chat_id, msg)
 
