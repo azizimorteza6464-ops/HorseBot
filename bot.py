@@ -29,15 +29,15 @@ R = os.environ.get("GITHUB_REPOSITORY")
 
 MY_ID = os.environ.get("ADMIN_ID", "184149177")
 
-# --- تغییرات جدید برای دکمه‌های ارتباط و نظرسنجی ---
+# --- تنظیمات دکمه ارتباط با مدیر ---
+# هر متنی که می‌خواهید اینجا بنویسید (شماره، آیدی، پیام و...)
 ADMIN_CONTACT_INFO = (
     "📞 <b>راه‌های ارتباط با مدیر:</b>\n\n"
     "آیدی تلگرام: @Your_Admin_Username\n"
     "شماره تماس: 09120000000\n\n"
     "💬 در ساعات ۹ صبح تا ۱۰ شب در خدمت شما هستیم."
 )
-SURVEY_LINK = "https://t.me/Your_Username"
-# ---------------------------------------------------
+# -----------------------------------------
 
 CARD_NUMBER = os.environ.get("CARD_NUMBER", "6219861802290089")
 CARD_HOLDER = os.environ.get("CARD_HOLDER", "مرتضی عزیزی")
@@ -147,7 +147,6 @@ def _split_safe(text, max_len=3900):
 async def send_long_message(c, chat_id, text, max_len=3900):
     for part in _split_safe(text, max_len):
         try:
-            # اضافه کردن کاراکتر راست‌چین برای اصلاح نمایش تلگرام
             await c.bot.send_message(chat_id, "\u200f" + part, parse_mode="HTML")
         except Exception:
             plain = html.unescape(re.sub(r"<[^>]*>", "", part))
@@ -670,8 +669,8 @@ def get_main_menu(chat_id):
         [InlineKeyboardButton("⏰ تنظیم یادآوری", callback_data="rem_start")],
         [InlineKeyboardButton("💳 خرید اشتراک / تمدید", callback_data="buy_sub"), InlineKeyboardButton("👤 وضعیت اشتراک من", callback_data="my_status")],
         [InlineKeyboardButton("🎁 دعوت از دوستان", callback_data="invite")],
-        [InlineKeyboardButton("🌤 وضعیت هوا", callback_data="weather"), InlineKeyboardButton("📊 نظرسنجی", callback_data="survey")], # دکمه نظرسنجی جدید
-        [InlineKeyboardButton("📖 راهنمای نمادها", callback_data="help_symbols"), InlineKeyboardButton("📞 ارتباط با مدیر", callback_data="admin_contact")], # دکمه ارتباط با مدیر جدید
+        [InlineKeyboardButton("🌤 وضعیت هوا", callback_data="weather"), InlineKeyboardButton("📖 راهنمای نمادها", callback_data="help_symbols")],
+        [InlineKeyboardButton("📞 ارتباط با مدیر", callback_data="admin_contact")],
     ])
     if str(chat_id) == MY_ID:
         keyboard.append([InlineKeyboardButton("👑 پنل مدیریت", callback_data="admin_help")])
@@ -853,18 +852,22 @@ async def fetch_races_for_chat(chat_id, c):
             except Exception as api_error:
                 print(f"API failed, using fallback: {api_error}")
                 races = await get_all_races(pg)
-                # تلاش برای استخراج تاریخ و شهر از صفحه در حالت پشتیبان
+                
+                # تلاش هوشمندانه‌تر برای استخراج تاریخ و شهر در حالت پشتیبان
                 try:
-                    # جستجوی تاریخ در متن صفحه
-                    date_match = re.search(r"(\d{4}[-/]\d{1,2}[-/]\d{1,2})", body)
-                    if date_match:
-                        RACE_DAY_INFO["date"] = date_match.group(1)
-                    # جستجوی نام میدان (مثلاً کورس آق قلا)
-                    city_match = re.search(r"(?:میدان|کورس|مسابقه)\s*([^\n,]+)", body)
+                    # تلاش برای پیدا کردن نام شهر از منو یا هدر
+                    city_match = re.search(r"(?:کورس|مسابقات|میدان)\s*([^\n,]+)", body)
                     if city_match:
                         RACE_DAY_INFO["city"] = clean_text(city_match.group(1))
                     else:
-                        RACE_DAY_INFO["city"] = "میدان مسابقه"
+                        RACE_DAY_INFO["city"] = "نامشخص (از صفحه اصلی)"
+                    
+                    # تلاش برای پیدا کردن تاریخ میلادی معتبر (مثلاً 2024-05-20)
+                    date_match = re.search(r"(20\d{2}[-/]\d{1,2}[-/]\d{1,2})", body)
+                    if date_match:
+                        RACE_DAY_INFO["date"] = date_match.group(1)
+                    else:
+                        RACE_DAY_INFO["date"] = datetime.now().strftime("%Y-%m-%d") # اگر پیدا نشد، تاریخ امروز
                 except Exception as e:
                     print("Fallback date/city extraction failed:", e)
 
@@ -1067,12 +1070,10 @@ async def process_surprises(chat_id, c, mode, bet_amount=None):
                 candidates = [h for h in res["horses"][2:] if h["model_prob"] >= 3.0] or res["horses"][2:]
                 if not candidates: continue
                 h = max(candidates, key=lambda x: (x.get("win_ev") or -999, x["model_prob"]))
-                # اضافه کردن کاراکتر \u200f برای اصلاح جهت متن
                 msg += f"\u200f\n🏁 دور R{r}: {h['num']}-{html.escape(str(h['n']))} ({h['model_prob']:.1f}%)" + (f" | EV {h['win_ev']:+.1f}%" if h.get("win_ev") is not None else "") + "\n"
             else:
                 pair = res["q_candidates"][-1] if res["q_candidates"] else None
                 if pair: 
-                    # اضافه کردن کاراکتر \u200f برای اصلاح جهت متن
                     msg += f"\u200f\n🏁 دور R{r}: {pair['h1']['num']}-{pair['h1']['n']} + {pair['h2']['num']}-{pair['h2']['n']} | احتمال {pair['prob']:.1f}%\n"
                 else: continue
             found = True
@@ -1316,16 +1317,6 @@ async def cmd_start(u: Update, c: C):
     welcome = (
         "🏇 <b>به ربات تحلیل مسابقات اسب‌دوانی خوش آمدید!</b> 🏇\n"
         "━━━━━━━━━━━━━━━━\n\n"
-        "🎉 <b>همزمان با شروع فصل جدید مسابقات، نسخه جدید ربات با قابلیت‌های فوق‌العاده به‌روزرسانی شد!</b>\n\n"
-        "✨ <b>تازه‌های این نسخه:</b>\n"
-        "📍 نمایش نام میدان، تاریخ شمسی و روز هفته در ابتدای هر تحلیل\n"
-        "🏇 افزودن نام چابک‌سواران به تحلیل‌ها\n"
-        "🎨 بازطراحی ظاهری پیام‌ها برای خوانایی بهتر\n"
-        "📖 اضافه شدن بخش «راهنمای نمادها» برای درک آسان اصطلاحات\n\n"
-        "🙏 <b>عذرخواهی بابت:</b>\n"
-        "در نسخه قبلی، به دلیل یک باگ فنی، اطلاعات میدان و تاریخ به درستی نمایش داده نمی‌شد و چیدمان پیام‌ها کمی شلوغ بود. از صبر و همراهی شما سپاسگزاریم. این مشکل به طور کامل برطرف شد.\n\n"
-        "🍀 <b>آرزوی موفقیت و شرط‌های پرسود برای شما!</b>\n"
-        "━━━━━━━━━━━━━━━━\n"
         "👇 <b>از منوی زیر، تحلیل مورد نظر خود را انتخاب کنید:</b>"
     )
     
@@ -1354,7 +1345,7 @@ async def button_callback(u: Update, c: C):
 
     now = time.time()
     key = f"{chat_id}:{data}"
-    if (now - _last_call.get(key, 0) < COOLDOWN and data not in ("bet_set", "admin_refresh", "help_symbols", "admin_contact", "survey") and not data.startswith(("rem_", "adm_"))):
+    if (now - _last_call.get(key, 0) < COOLDOWN and data not in ("bet_set", "admin_refresh", "help_symbols", "admin_contact") and not data.startswith(("rem_", "adm_"))):
         remain = int(COOLDOWN - (now - _last_call.get(key, 0)))
         return await query.answer(f"⏳ {remain} ثانیه صبر کنید.", show_alert=True)
     _last_call[key] = now
@@ -1400,11 +1391,7 @@ async def button_callback(u: Update, c: C):
         )
         await query.message.reply_text(help_text, parse_mode="HTML")
     elif data == "admin_contact":
-        # نمایش اطلاعات تماس با مدیر
         await query.message.reply_text(ADMIN_CONTACT_INFO, parse_mode="HTML")
-    elif data == "survey":
-        # ارسال لینک نظرسنجی
-        await query.message.reply_text(f"📊 برای شرکت در نظرسنجی روی لینک زیر کلیک کنید:\n{SURVEY_LINK}")
     elif data in ("admin_help", "admin_refresh"):
         if str(actor_id) == MY_ID:
             if data == "admin_refresh":
@@ -1431,8 +1418,6 @@ async def button_callback(u: Update, c: C):
         await cmd_admin_panel(chat_id, c)
     elif data == "history": await cmd_history(chat_id, c)
     elif data == "weather": await query.message.reply_text(await get_weather())
-    elif data == "change_city": 
-        await query.message.reply_text("🏙 این بخش به دکمه نظرسنجی و ارتباط با مدیر تغییر یافت.")
     elif data == "bet_set":
         c.user_data["awaiting_bet"] = True
         current = c.user_data.get("bet_amount", 0)
